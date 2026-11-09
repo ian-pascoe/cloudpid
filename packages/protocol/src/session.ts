@@ -1129,14 +1129,12 @@ export const SecretRequests = Schema.Struct({
 });
 
 /**
- * A call's request for the owner's Approval of an Agent change (GLOSSARY.md → Approval; `docs/architecture/agent-changes.md` → Approval): a
- * change to a Limit, or one no revert can undo. Every field is text the card shows as it is.
+ * What an Approval card shows (GLOSSARY.md → Approval; `docs/architecture/agent-changes.md` → Approval): the change, its
+ * target, the values before and after, and the agent's reason. Every field is text the card shows as it is. A Session's
+ * `ApprovalRequest` and the Registry's Approval requests (`docs/architecture/mcp-endpoint.md` → Approvals with no Session)
+ * share it, so the same component draws both.
  */
-export const ApprovalRequest = Schema.Struct({
-  /** What the answer names: the asking call's task, unique within the Session. */
-  id: Schema.String,
-  /** The conversation whose call asks. */
-  conversationId: ConversationId,
+export const ApprovalCardContent = Schema.Struct({
   /** The tool that makes the change, such as `settings_spend_limit_set`. */
   tool: Schema.String,
   /** What it changes: an Environment, by name, or the Settings. */
@@ -1154,6 +1152,20 @@ export const ApprovalRequest = Schema.Struct({
    * lines of 200 characters; shown above the values and never scrolled away. A client from before it shows none.
    */
   notes: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+});
+
+export type ApprovalCardContent = typeof ApprovalCardContent.Type;
+
+/**
+ * A call's request for the owner's Approval of an Agent change (GLOSSARY.md → Approval; `docs/architecture/agent-changes.md` → Approval): a
+ * change to a Limit, or one no revert can undo. Its card is `ApprovalCardContent`.
+ */
+export const ApprovalRequest = Schema.Struct({
+  /** What the answer names: the asking call's task, unique within the Session. */
+  id: Schema.String,
+  /** The conversation whose call asks. */
+  conversationId: ConversationId,
+  ...ApprovalCardContent.fields,
 });
 
 export type ApprovalRequest = typeof ApprovalRequest.Type;

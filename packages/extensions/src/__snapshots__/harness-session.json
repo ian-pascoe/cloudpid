@@ -13379,5 +13379,3394 @@
       "structured": null,
       "details": null
     }
+  },
+  "approvals": {
+    "spend_limit_global": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "the Global Settings",
+          "change": "Spend limit",
+          "before": "$5 per Session",
+          "after": "$8 per Session",
+          "reason": "The reason.",
+          "expected": 5,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": 8,
+              "expected": {
+                "value": 5
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_spend_limit_set",
+          "field": "spendLimit.perSession"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the spend limit at Global was $5 per Session, and is $8 per Session now. This Session's own Environment \"Default\" (default) overrides the spend limit per Session, so the change does not reach this Session, nor the Environment's other Sessions; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "spendLimit.perSession",
+              "before": 5,
+              "before_truncated": false,
+              "after": 8,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "spendLimit.perSession",
+              "before": 5,
+              "after": 8
+            }
+          ]
+        }
+      }
+    },
+    "spend_limit_global_off": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "the Global Settings",
+          "change": "Spend limit",
+          "before": "$5 per Session",
+          "after": "no limit",
+          "reason": "The reason.",
+          "expected": 5,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": null,
+              "expected": {
+                "value": 5
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_spend_limit_set",
+          "field": "spendLimit.perSession"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the spend limit at Global was $5 per Session, and is no limit now. This Session's own Environment \"Default\" (default) overrides the spend limit per Session, so the change does not reach this Session, nor the Environment's other Sessions; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "spendLimit.perSession",
+              "before": 5,
+              "before_truncated": false,
+              "after": null,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "spendLimit.perSession",
+              "before": 5,
+              "after": null
+            }
+          ]
+        }
+      }
+    },
+    "spend_limit_environment": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Spend limit",
+          "before": "$2 per Session (overridden)",
+          "after": "$3.50 per Session",
+          "reason": "The reason.",
+          "expected": {
+            "value": 2,
+            "inherited": false
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": 3.5,
+              "expected": {
+                "value": 2,
+                "inherited": false
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_spend_limit_set",
+          "field": "spendLimit.perSession",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the spend limit for Environment \"Default\" (default) was $2 per Session (overridden), and is $3.50 per Session now. This Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "spendLimit.perSession",
+              "before": 2,
+              "before_truncated": false,
+              "after": 3.5,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "default",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "spendLimit.perSession",
+              "before": 2,
+              "after": 3.5,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "spend_limit_declined": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "the Global Settings",
+          "change": "Spend limit",
+          "before": "$5 per Session",
+          "after": "$8 per Session",
+          "reason": "The reason.",
+          "expected": 5,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: Spend limit at Global, from $5 per Session to $8 per Session. Nothing changed. Their reason: Too much. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": "Too much."
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": "Too much."
+          }
+        }
+      }
+    },
+    "spend_limit_declined_silently": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Spend limit",
+          "before": "$2 per Session (overridden)",
+          "after": "$9 per Session",
+          "reason": "The reason.",
+          "expected": {
+            "value": 2,
+            "inherited": false
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: Spend limit for Environment \"Default\" (default), from $2 per Session (overridden) to $9 per Session. Nothing changed. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": null
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": null
+          }
+        }
+      }
+    },
+    "spend_limit_same": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The spend limit at Global is $5 per Session already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["spendLimit.perSession"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["spendLimit.perSession"],
+          "agentChanges": []
+        }
+      }
+    },
+    "spend_limit_same_as_override": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The spend limit for Environment \"Default\" (default) is $2 per Session as its Override already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["spendLimit.perSession"],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": ["spendLimit.perSession"],
+          "agentChanges": []
+        }
+      }
+    },
+    "spend_limit_approved_but_same": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "the Global Settings",
+          "change": "Spend limit",
+          "before": "$5 per Session",
+          "after": "$8 per Session",
+          "reason": "The reason.",
+          "expected": 5,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": 8,
+              "expected": {
+                "value": 5
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, and the spend limit at Global is $8 per Session already, as approved: nothing more needed changing."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["spendLimit.perSession"],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": []
+        }
+      }
+    },
+    "spend_limit_changed_since": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "the Global Settings",
+          "change": "Spend limit",
+          "before": "$5 per Session",
+          "after": "$8 per Session",
+          "reason": "The reason.",
+          "expected": 5,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": 8,
+              "expected": {
+                "value": 5
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but the spend limit at Global changed since they were asked: it is $6 per Session now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "spend_limit_changed_since_environment": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Spend limit",
+          "before": "$2 per Session (overridden)",
+          "after": "$8 per Session",
+          "reason": "The reason.",
+          "expected": {
+            "value": 2,
+            "inherited": false
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": 8,
+              "expected": {
+                "value": 2,
+                "inherited": false
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but the spend limit for Environment \"Default\" (default) changed since they were asked: it is $4 per Session (inherited from Global) now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "spend_limit_rejected": {
+      "asked": [
+        {
+          "tool": "settings_spend_limit_set",
+          "target": "the Global Settings",
+          "change": "Spend limit",
+          "before": "$5 per Session",
+          "after": "$8 per Session",
+          "reason": "The reason.",
+          "expected": 5,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": 8,
+              "expected": {
+                "value": 5
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_spend_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but nothing was saved: spendLimit: not a limit"
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "spend_limit_unknown_scope": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "No Environment has the id \"nope\". Call environment_list for the Environments and their ids."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "spend_limit_reason_with_reference": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: the reason holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. Say why without it."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "subagent_depth_global": {
+      "asked": [
+        {
+          "tool": "settings_subagent_depth_set",
+          "target": "the Global Settings",
+          "change": "Subagent depth",
+          "before": "1 level of subagents below the root",
+          "after": "2 levels of subagents below the root",
+          "reason": "The reason.",
+          "expected": 1,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.subagents.maxSubagentDepth",
+              "value": 2,
+              "expected": {
+                "value": 1
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_subagent_depth_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_subagent_depth_set",
+          "field": "extensions.subagents.maxSubagentDepth"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the subagent depth at Global was 1 level of subagents below the root, and is 2 levels of subagents below the root now. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.subagents.maxSubagentDepth",
+              "before": 1,
+              "before_truncated": false,
+              "after": 2,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "extensions.subagents.maxSubagentDepth",
+              "before": 1,
+              "after": 2
+            }
+          ]
+        }
+      }
+    },
+    "subagent_depth_environment": {
+      "asked": [
+        {
+          "tool": "settings_subagent_depth_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Subagent depth",
+          "before": "1 level of subagents below the root (inherited from Global)",
+          "after": "1 level of subagents below the root",
+          "reason": "The reason.",
+          "expected": {
+            "value": 1,
+            "inherited": true
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "extensions.subagents.maxSubagentDepth",
+              "value": 1,
+              "expected": {
+                "value": 1,
+                "inherited": true
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_subagent_depth_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_subagent_depth_set",
+          "field": "extensions.subagents.maxSubagentDepth",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the subagent depth for Environment \"Default\" (default) was 1 level of subagents below the root (inherited from Global), and is 1 level of subagents below the root now. This Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.subagents.maxSubagentDepth",
+              "before": 1,
+              "before_truncated": false,
+              "after": 1,
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "default",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "extensions.subagents.maxSubagentDepth",
+              "before": 1,
+              "after": 1,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": true,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "subagent_depth_same": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The subagent depth at Global is 1 level of subagents below the root already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["extensions.subagents.maxSubagentDepth"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["extensions.subagents.maxSubagentDepth"],
+          "agentChanges": []
+        }
+      }
+    },
+    "subagent_workspaces_global": {
+      "asked": [
+        {
+          "tool": "settings_subagent_workspaces_set",
+          "target": "the Global Settings",
+          "change": "Subagent Workspace limit",
+          "before": "3 Subagent Workspaces per Session",
+          "after": "0 Subagent Workspaces per Session",
+          "reason": "The reason.",
+          "expected": 3,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.subagents.maxSubagentWorkspaces",
+              "value": 0,
+              "expected": {
+                "value": 3
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_subagent_workspaces_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_subagent_workspaces_set",
+          "field": "extensions.subagents.maxSubagentWorkspaces"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the Subagent Workspace limit at Global was 3 Subagent Workspaces per Session, and is 0 Subagent Workspaces per Session now. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.subagents.maxSubagentWorkspaces",
+              "before": 3,
+              "before_truncated": false,
+              "after": 0,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "extensions.subagents.maxSubagentWorkspaces",
+              "before": 3,
+              "after": 0
+            }
+          ]
+        }
+      }
+    },
+    "subagent_workspaces_declined": {
+      "asked": [
+        {
+          "tool": "settings_subagent_workspaces_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Subagent Workspace limit",
+          "before": "3 Subagent Workspaces per Session (inherited from Global)",
+          "after": "6 Subagent Workspaces per Session",
+          "reason": "The reason.",
+          "expected": {
+            "value": 3,
+            "inherited": true
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: Subagent Workspace limit for Environment \"Default\" (default), from 3 Subagent Workspaces per Session (inherited from Global) to 6 Subagent Workspaces per Session. Nothing changed. Their reason: Costly. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": "Costly."
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": "Costly."
+          }
+        }
+      }
+    },
+    "subagent_workspaces_same": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The Subagent Workspace limit at Global is 3 Subagent Workspaces per Session already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["extensions.subagents.maxSubagentWorkspaces"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["extensions.subagents.maxSubagentWorkspaces"],
+          "agentChanges": []
+        }
+      }
+    },
+    "reset_limit_environment": {
+      "asked": [
+        {
+          "tool": "settings_reset",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Spend limit, reset",
+          "before": "$2 per Session (overridden)",
+          "after": "$5 per Session (inherited from Global)",
+          "reason": "The reason.",
+          "expected": {
+            "value": 2,
+            "inherited": false
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "spendLimit.perSession",
+              "value": null,
+              "reset": true,
+              "expected": {
+                "value": 2,
+                "inherited": false
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_reset",
+          "field": "spendLimit.perSession",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the spend limit for Environment \"Default\" (default) was $2 per Session (overridden), and is $5 per Session (inherited from Global) now. This Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "spendLimit.perSession",
+              "before": 2,
+              "before_truncated": false,
+              "after": 5,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": true
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "default",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "spendLimit.perSession",
+              "before": 2,
+              "after": 5,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": true
+            }
+          ]
+        }
+      }
+    },
+    "reset_limit_environment_declined": {
+      "asked": [
+        {
+          "tool": "settings_reset",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Spend limit, reset",
+          "before": "$2 per Session (overridden)",
+          "after": "$5 per Session (inherited from Global)",
+          "reason": "The reason.",
+          "expected": {
+            "value": 2,
+            "inherited": false
+          },
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: Spend limit, reset for Environment \"Default\" (default), from $2 per Session (overridden) to $5 per Session (inherited from Global). Nothing changed. Their reason: No. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": "No."
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": "No."
+          }
+        }
+      }
+    },
+    "reset_limit_environment_inherited": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Environment \"Big\" (big) does not override the spend limit per Session: it inherits Global already, so nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "big",
+            "name": "Big"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["spendLimit.perSession"],
+          "approval": null
+        },
+        "details": {
+          "scope": "big",
+          "unchanged": ["spendLimit.perSession"],
+          "agentChanges": []
+        }
+      }
+    },
+    "reset_limit_global": {
+      "asked": [
+        {
+          "tool": "settings_reset",
+          "target": "the Global Settings",
+          "change": "Subagent depth, reset",
+          "before": "1 level of subagents below the root",
+          "after": "2 levels of subagents below the root (the default)",
+          "reason": "The reason.",
+          "expected": 1,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.subagents.maxSubagentDepth",
+              "value": null,
+              "reset": true,
+              "expected": {
+                "value": 1
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_reset",
+          "field": "extensions.subagents.maxSubagentDepth"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the subagent depth at Global was 1 level of subagents below the root, and is 2 levels of subagents below the root (the default) now. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.subagents.maxSubagentDepth",
+              "before": 1,
+              "before_truncated": false,
+              "after": 2,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "extensions.subagents.maxSubagentDepth",
+              "before": 1,
+              "after": 2
+            }
+          ]
+        }
+      }
+    },
+    "reset_limit_global_changed_since": {
+      "asked": [
+        {
+          "tool": "settings_reset",
+          "target": "the Global Settings",
+          "change": "Subagent Workspace limit, reset",
+          "before": "3 Subagent Workspaces per Session",
+          "after": "1 Subagent Workspace per Session (the default)",
+          "reason": "The reason.",
+          "expected": 3,
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.subagents.maxSubagentWorkspaces",
+              "value": null,
+              "reset": true,
+              "expected": {
+                "value": 3
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but the Subagent Workspace limit at Global changed since they were asked: it is 7 Subagent Workspaces per Session now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "instructions_global": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "the Global Settings",
+          "change": "Instructions",
+          "before": "Prefer small commits.",
+          "after": "Prefer rebasing.",
+          "reason": "The reason.",
+          "expected": "Prefer small commits.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "Prefer rebasing.",
+              "expected": {
+                "value": "Prefer small commits."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_instructions_set",
+          "field": "instructions"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the Instructions at Global are changed (1 line, 16 bytes of UTF-8 now). Every conversation is shown them from the start of its next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "instructions",
+              "before": "Prefer small commits.",
+              "before_truncated": false,
+              "after": "Prefer rebasing.",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "instructions",
+              "before": "Prefer small commits.",
+              "after": "Prefer rebasing."
+            }
+          ]
+        }
+      }
+    },
+    "instructions_global_removed": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "the Global Settings",
+          "change": "Instructions",
+          "before": "Prefer small commits.",
+          "after": "None",
+          "reason": "The reason.",
+          "expected": "Prefer small commits.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "",
+              "expected": {
+                "value": "Prefer small commits."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_instructions_set",
+          "field": "instructions"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the Instructions at Global are removed. Conversations stop being shown them from the start of their next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "instructions",
+              "before": "Prefer small commits.",
+              "before_truncated": false,
+              "after": "",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "instructions",
+              "before": "Prefer small commits.",
+              "after": ""
+            }
+          ]
+        }
+      }
+    },
+    "instructions_environment": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Instructions",
+          "before": "Run the tests with bun.",
+          "after": "Run the tests with vitest.",
+          "reason": "The reason.",
+          "expected": "Run the tests with bun.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "Run the tests with vitest.",
+              "expected": {
+                "value": "Run the tests with bun."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_instructions_set",
+          "field": "instructions",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the Instructions for Environment \"Default\" (default) are changed (1 line, 26 bytes of UTF-8 now). Every conversation of its Sessions is shown them after the Global ones from the start of its next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "instructions",
+              "before": "Run the tests with bun.",
+              "before_truncated": false,
+              "after": "Run the tests with vitest.",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "default",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "instructions",
+              "before": "Run the tests with bun.",
+              "after": "Run the tests with vitest.",
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "instructions_environment_removed": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Instructions",
+          "before": "Run the tests with bun.",
+          "after": "None",
+          "reason": "The reason.",
+          "expected": "Run the tests with bun.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "",
+              "expected": {
+                "value": "Run the tests with bun."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_instructions_set",
+          "field": "instructions",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the Instructions for Environment \"Default\" (default) are removed. Its Sessions' conversations stop being shown them from the start of their next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with. The change is recorded as approved, with your reason; the user can revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "instructions",
+              "before": "Run the tests with bun.",
+              "before_truncated": false,
+              "after": "",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "default",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "instructions",
+              "before": "Run the tests with bun.",
+              "after": "",
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "instructions_declined": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "the Global Settings",
+          "change": "Instructions",
+          "before": "Prefer small commits.",
+          "after": "Prefer rebasing.",
+          "reason": "The reason.",
+          "expected": "Prefer small commits.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: the new text of the Instructions at Global. Nothing changed. Their reason: Not now. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": "Not now."
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": "Not now."
+          }
+        }
+      }
+    },
+    "instructions_removal_declined": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Instructions",
+          "before": "Run the tests with bun.",
+          "after": "None",
+          "reason": "The reason.",
+          "expected": "Run the tests with bun.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: removing the Instructions for Environment \"Default\" (default). Nothing changed. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": null
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": null
+          }
+        }
+      }
+    },
+    "instructions_same": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The Instructions at Global have that text already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["instructions"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["instructions"],
+          "agentChanges": []
+        }
+      }
+    },
+    "instructions_approved_but_same": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "the Global Settings",
+          "change": "Instructions",
+          "before": "Prefer small commits.",
+          "after": "Prefer rebasing.",
+          "reason": "The reason.",
+          "expected": "Prefer small commits.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "Prefer rebasing.",
+              "expected": {
+                "value": "Prefer small commits."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, and the Instructions at Global have that text already, as approved: nothing more needed changing."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["instructions"],
+          "approval": {
+            "approved": true,
+            "reason": null
+          }
+        },
+        "details": {
+          "scope": "*",
+          "approval": {
+            "approved": true
+          },
+          "agentChanges": []
+        }
+      }
+    },
+    "instructions_changed_since": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "the Global Settings",
+          "change": "Instructions",
+          "before": "Prefer small commits.",
+          "after": "Prefer rebasing.",
+          "reason": "The reason.",
+          "expected": "Prefer small commits.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "Prefer rebasing.",
+              "expected": {
+                "value": "Prefer small commits."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but the Instructions at Global changed since they were asked: it is 1 line, 15 bytes of UTF-8 long now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "instructions_changed_since_none": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "Environment \"Default\"'s Settings",
+          "change": "Instructions",
+          "before": "Run the tests with bun.",
+          "after": "Prefer rebasing.",
+          "reason": "The reason.",
+          "expected": "Run the tests with bun.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "Prefer rebasing.",
+              "expected": {
+                "value": "Run the tests with bun."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but the Instructions for Environment \"Default\" (default) changed since they were asked: it is none now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "instructions_rejected": {
+      "asked": [
+        {
+          "tool": "settings_instructions_set",
+          "target": "the Global Settings",
+          "change": "Instructions",
+          "before": "Prefer small commits.",
+          "after": "Prefer rebasing.",
+          "reason": "The reason.",
+          "expected": "Prefer small commits.",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "instructions",
+              "value": "Prefer rebasing.",
+              "expected": {
+                "value": "Prefer small commits."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_instructions_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but nothing was saved: instructions: too long"
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "instructions_too_long": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: the Instructions are 70,000 bytes of UTF-8, and may be at most 65,536 (64 KiB). Make them shorter."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "instructions_with_reference": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: the text holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. The Instructions are plain and every conversation is shown them: say it without the value."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_environment": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Default\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "default",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "environmentName": "Default",
+          "field": "maxInstance"
+        }
+      ],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the size limit of Environment \"Default\" (default) was cpu-2, and is cpu-3 now. environment_container_resize and container_resize may now use sizes up to cpu-3. It applies at the next Container start of each of the Environment's Workspaces: a Container that runs keeps what it started with. This is this Session's own Environment, and its Workspace has the change already: container_restart applies it to this Workspace's Container now. The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed). The change is recorded as approved, with your reason; the user can revert it on the Environments page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "maxInstance",
+              "before": "cpu-2",
+              "before_truncated": false,
+              "after": "cpu-3",
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": true,
+          "new_build": true,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          },
+          "agentChange": {
+            "id": 7,
+            "environment": {
+              "id": "default",
+              "name": "Default"
+            },
+            "field": "maxInstance",
+            "before": "cpu-2",
+            "after": "cpu-3"
+          }
+        }
+      }
+    },
+    "size_limit_other_environment": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Other\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "0000abcd",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "environmentName": "Other",
+          "field": "maxInstance"
+        }
+      ],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the size limit of Environment \"Other\" (0000abcd) was cpu-2, and is cpu-3 now. environment_container_resize and container_resize may now use sizes up to cpu-3. It applies at the next Container start of each of the Environment's Workspaces: a Container that runs keeps what it started with. The change is recorded as approved, with your reason; the user can revert it on the Environments page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "0000abcd",
+            "name": "Other"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "maxInstance",
+              "before": "cpu-2",
+              "before_truncated": false,
+              "after": "cpu-3",
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          },
+          "agentChange": {
+            "id": 7,
+            "environment": {
+              "id": "0000abcd",
+              "name": "Other"
+            },
+            "field": "maxInstance",
+            "before": "cpu-2",
+            "after": "cpu-3"
+          }
+        }
+      }
+    },
+    "size_limit_global": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Global",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "*",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "environmentName": "Global",
+          "field": "maxInstance"
+        }
+      ],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: the size limit of Global was cpu-2, and is cpu-3 now. environment_container_resize and container_resize may now use sizes up to cpu-3. An Environment's own value wins; it does not reach Environment \"Other\" (0000abcd), which override it. It applies at the next Container start of every Workspace that inherits it: a Container that runs keeps what it started with. This Session's Workspace has the change already: container_restart applies it to its Container now. The Builds are made with it, so a new Build was asked for in Environment \"Default\" (default) (environment_get shows how each goes). The change is recorded as approved, with your reason; the user can revert it on the Environments page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "maxInstance",
+              "before": "cpu-2",
+              "before_truncated": false,
+              "after": "cpu-3",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": true,
+          "new_build": false,
+          "global": {
+            "overridden_in": [
+              {
+                "id": "0000abcd",
+                "name": "Other"
+              }
+            ],
+            "overridden_in_truncated": false,
+            "new_builds": [
+              {
+                "id": "default",
+                "name": "Default"
+              }
+            ],
+            "new_builds_truncated": false
+          }
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          },
+          "agentChange": {
+            "id": 7,
+            "environment": {
+              "id": "*",
+              "name": "Global"
+            },
+            "field": "maxInstance",
+            "before": "cpu-2",
+            "after": "cpu-3"
+          }
+        }
+      }
+    },
+    "size_limit_declined": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Default\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: the size limit of Environment \"Default\" (default) from cpu-2 to cpu-3. Nothing changed. Their reason: No more. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": "No more."
+          },
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": "No more."
+          }
+        }
+      }
+    },
+    "size_limit_same_as_global": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The size limit of Global is cpu-2 already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["maxInstance"],
+          "approval": null,
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "unchanged": {
+            "environment": {
+              "id": "*",
+              "name": "Global"
+            },
+            "field": "maxInstance"
+          }
+        }
+      }
+    },
+    "size_limit_approved_but_same": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Default\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "default",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, and the size limit of Environment \"Default\" (default) is cpu-3 already, as approved: nothing more needed changing."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["maxInstance"],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          }
+        }
+      }
+    },
+    "size_limit_changed_since": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Default\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "default",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but the size limit of Environment \"Default\" (default) changed since they were asked: it is cpu-1 (1 vCPU, 3 GiB memory, 12 GB disk) now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_rejected": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Default\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "default",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but nothing was saved: maxInstance: no longer a size"
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_missing": {
+      "asked": [
+        {
+          "tool": "environment_container_size_limit_set",
+          "target": "Environment \"Default\"",
+          "change": "Size limit",
+          "before": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+          "after": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+          "reason": "The reason.",
+          "expected": "cpu-2",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "default",
+          "change": {
+            "field": "maxInstance",
+            "value": "cpu-3"
+          },
+          "expected": {
+            "value": "cpu-2"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_container_size_limit_set",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "No Environment has the id \"default\". Call environment_list for the Environments and their ids."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_unknown_environment": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "No Environment has the id \"nope\". Call environment_list for the Environments and their ids."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_below_size": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: cpu-2 is below the size of Environment \"Large\" (00bb00bb), cpu-3, and the limit cannot be below the size. Lower the size first with environment_container_resize."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_below_inheriting_size": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: cpu-1 is below the own size of Environment \"Large\" (00bb00bb), cpu-3, which inherits the size limit at Global, and the limit cannot be below the size. Give each its own limit with environment_container_size_limit_set, or lower its size first with environment_container_resize."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "size_limit_reason_with_reference": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: the reason holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. Say why without it."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "reset_size_limit": {
+      "asked": [
+        {
+          "tool": "environment_setting_reset",
+          "target": "Environment \"Large\"",
+          "change": "Size limit (reset to Global's)",
+          "before": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk), its own",
+          "after": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk), inherited from Global",
+          "reason": "The reason.",
+          "expected": "cpu-3",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "00bb00bb",
+          "change": {
+            "field": "maxInstance",
+            "value": null
+          },
+          "expected": {
+            "value": "cpu-3"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_setting_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [
+        {
+          "tool": "environment_setting_reset",
+          "environmentName": "Large",
+          "field": "maxInstance"
+        }
+      ],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: reset the size limit of Environment \"Large\" (00bb00bb): it was cpu-3 (its own), and inherits Global's cpu-2 now, and each change of it at Global. It applies at the next Container start of each of the Environment's Workspaces: a Container that runs keeps what it started with. The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed). The change is recorded as approved with your reason; the user can revert it on the Environments page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "00bb00bb",
+            "name": "Large"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "maxInstance",
+              "before": "cpu-3",
+              "before_truncated": false,
+              "after": "cpu-2",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": true
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": false,
+          "new_build": true,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          },
+          "agentChange": {
+            "id": 7,
+            "environment": {
+              "id": "00bb00bb",
+              "name": "Large"
+            },
+            "field": "maxInstance",
+            "before": "cpu-3",
+            "after": "cpu-2"
+          }
+        }
+      }
+    },
+    "reset_size_limit_own": {
+      "asked": [
+        {
+          "tool": "environment_setting_reset",
+          "target": "Environment \"Default\"",
+          "change": "Size limit (reset to Global's)",
+          "before": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk), its own",
+          "after": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk), inherited from Global",
+          "reason": "The reason.",
+          "expected": "cpu-3",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "default",
+          "change": {
+            "field": "maxInstance",
+            "value": null
+          },
+          "expected": {
+            "value": "cpu-3"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_setting_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [
+        {
+          "tool": "environment_setting_reset",
+          "environmentName": "Default",
+          "field": "maxInstance"
+        }
+      ],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved: reset the size limit of Environment \"Default\" (default): it was cpu-3 (its own), and inherits Global's cpu-2 now, and each change of it at Global. It applies at the next Container start of each of the Environment's Workspaces: a Container that runs keeps what it started with. This is this Session's own Environment, and its Workspace has the change already: container_restart applies it to this Workspace's Container now. The change is recorded as approved with your reason; the user can revert it on the Environments page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "maxInstance",
+              "before": "cpu-3",
+              "before_truncated": false,
+              "after": "cpu-2",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": true
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": true,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          },
+          "agentChange": {
+            "id": 7,
+            "environment": {
+              "id": "default",
+              "name": "Default"
+            },
+            "field": "maxInstance",
+            "before": "cpu-3",
+            "after": "cpu-2"
+          }
+        }
+      }
+    },
+    "reset_size_limit_declined": {
+      "asked": [
+        {
+          "tool": "environment_setting_reset",
+          "target": "Environment \"Large\"",
+          "change": "Size limit (reset to Global's)",
+          "before": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk), its own",
+          "after": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk), inherited from Global",
+          "reason": "The reason.",
+          "expected": "cpu-3",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user declined: the reset of the size limit of Environment \"Large\" (00bb00bb) from cpu-3 to Global's cpu-2. Nothing changed. Their reason: Keep it. Do not ask again for the same change unless the user wants it."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "00bb00bb",
+            "name": "Large"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": {
+            "approved": false,
+            "reason": "Keep it."
+          },
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": false,
+            "reason": "Keep it."
+          }
+        }
+      }
+    },
+    "reset_size_limit_inherited": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The size limit of Environment \"Default\" (default) is inherited from Global already (cpu-2): nothing changed, and nothing was recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["maxInstance"],
+          "approval": null,
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "unchanged": {
+            "environment": {
+              "id": "default",
+              "name": "Default",
+              "repos": [
+                {
+                  "name": "app",
+                  "url": "https://github.com/o/app.git"
+                }
+              ],
+              "build": {
+                "status": "ready",
+                "at": 1792454400000
+              },
+              "overrides": {
+                "variables": {
+                  "NODE_ENV": "test",
+                  "VAR_01": "<4096 characters, sha256 c451c4e4ba50fd983d75162b480f8a75d14c072c2c8a6806406c462c138f8678, starting \"VAR_01=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_02": "<4096 characters, sha256 d5e6b49ee2adc42dfc885ea4c5e39abbd04ea3d290eb83f0012f8391a5369413, starting \"VAR_02=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_03": "<4096 characters, sha256 c13a7ce1454886508ab62d80ae83f529174ba2e68cb1dfd7f848e5baf7118e38, starting \"VAR_03=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_04": "<4096 characters, sha256 4f6eb793db678e60678c814fba7adc06a53be9ee79b2f4c00d1d3094208dd321, starting \"VAR_04=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_05": "<4096 characters, sha256 d868e9132c130d9ec3a14fbc13e696a05c3c2569d6f6ecebd7b3770f62cdec7a, starting \"VAR_05=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_06": "<4096 characters, sha256 c03070d9f750b35d562f24ea3d84e0436c5b417af10007c7512819d9fed09b18, starting \"VAR_06=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_07": "<4096 characters, sha256 9003036958d34c88b7bfeb21ce0c45513289e2ff29103257d05c593cf2bfd316, starting \"VAR_07=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_08": "<4096 characters, sha256 b75cd26be024d8f8acdae95988e02508f87cc5fafe1a8c183bacc87cf46e434b, starting \"VAR_08=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_09": "<4096 characters, sha256 51ae40210458c6400b10a95c17317a8589030fec7d6f487a7d0024406dd0fd8d, starting \"VAR_09=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_10": "<4096 characters, sha256 0cfc77d893f9b3612c1db3743eef90644a8fd918954968980a530e80e5c96ce6, starting \"VAR_10=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_11": "<4096 characters, sha256 c439febb61223960e36e190e6a6014a4ae7f7ca72df6c236267aaeae3427bd80, starting \"VAR_11=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_12": "<4096 characters, sha256 736b8e72917c059f0386160b4a7524fdb8e448c54baba1368c299582cda148bc, starting \"VAR_12=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_13": "<4096 characters, sha256 6e0bd8c3595b05c1901913a7d5c86ff2e5c5852563f9fb8f67e27dba3b3ae11d, starting \"VAR_13=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_14": "<4096 characters, sha256 3d0fa0a43483fc084b0acf959823dae61f04ecb6cdfe172583fa6f565d050209, starting \"VAR_14=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_15": "<4096 characters, sha256 2bc0497b3466852379fda9796c3a3815eea0e47bd3fdd59f30f89ddc68dbba83, starting \"VAR_15=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_16": "<4096 characters, sha256 00b7e45e54468bacb3987a61090b11e786344235ec52d9ec47b810839d896844, starting \"VAR_16=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_17": "<4096 characters, sha256 7918405b99d9e7108b821d2936264d2dfe92df02cda9fdf7ec6060e9f1e89f20, starting \"VAR_17=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_18": "<4096 characters, sha256 af130db3ffc2c3eab5e9b6cf9a5eb1bd4089acbf5329bcbe72bbb0775d8d0f25, starting \"VAR_18=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_19": "<4096 characters, sha256 5368284ec19bb841496b9c2a3f4f5d09c48065d173ad21ffa64ee9c9005133a5, starting \"VAR_19=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_20": "<4096 characters, sha256 7053824308eda96b5132458ec5d150a76c363d605869cf4fe5e07be9e3d23f06, starting \"VAR_20=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_21": "<4096 characters, sha256 72e6b9707ed986978b94690de7398b0a01e89bfe54e901f77e406206e776ace8, starting \"VAR_21=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_22": "<4096 characters, sha256 dc765ebbfcd342ee3e661c566ca917e33447b0b7d121c5bbef04a50335ce835e, starting \"VAR_22=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_23": "<4096 characters, sha256 1c7c1845b7e63e255c11820d67b3595815c4d62e4f05a492b220e8b4f8ad5d97, starting \"VAR_23=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_24": "<4096 characters, sha256 cb9d00be0769b18c5adbcd1faa3276f3abb7272bc7d8d66cef6ea5264fcff307, starting \"VAR_24=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_25": "<4096 characters, sha256 6332969e28b292beca3dbb8f965714ad6d5d66179ac435b4b263737792998cf3, starting \"VAR_25=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_26": "<4096 characters, sha256 3583ad31147b3fec6fcc05d8756372fc780aa1379fb6b531e3fe2bb90a9d5365, starting \"VAR_26=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_27": "<4096 characters, sha256 fad399baa5cad5c8ce0e73b27fd23454620ed17e0b4cae5ebeb6a7946ce7d250, starting \"VAR_27=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_28": "<4096 characters, sha256 99af0d57af892a3fbedbc0135647a2f4f6499b1cd1aeef23a95159dd6ecc1793, starting \"VAR_28=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_29": "<4096 characters, sha256 6d283d661dcee1deb705f4d03cd7472c5d2a9e921500c3e481ea101b2aaefc8a, starting \"VAR_29=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_30": "<4096 characters, sha256 0a832091cf1779939e3b7ee06610787a4fcf396eb5871bf292b2e321b3e9bf1f, starting \"VAR_30=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_31": "<4096 characters, sha256 67a185b14d674d7793065d3e8d7768b9a1cbd994faf697bfcccf31ba86328e48, starting \"VAR_31=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_32": "<4096 characters, sha256 177f5c70de6f20500e737ee70d1d8a3c9312f6d8c01cc923d37cc394b2fceb3b, starting \"VAR_32=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_33": "<4096 characters, sha256 548caeadfd5e2e4d9633aacb9ac41233ec8c0cf980a006fcec1fabed5d79dd1d, starting \"VAR_33=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_34": "<4096 characters, sha256 6d499ca1ee8f447a9c80b64d21014449f4e27a250a9ec3f1d25ef7415f96f1da, starting \"VAR_34=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_35": "<4096 characters, sha256 0ff70e3f1bd348c7af5c9d075cacf84f10128134476af7e5407f81e28806e579, starting \"VAR_35=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_36": "<4096 characters, sha256 d525e27ff15cfc9692e0aa34776d2f72ade5ad89b2cf6800d3a8527340ce16da, starting \"VAR_36=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_37": "<4096 characters, sha256 f43eae87b06ebae6c08267ed41dd5ddec198c3b0af6d1b408db98d30980f1169, starting \"VAR_37=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_38": "<4096 characters, sha256 7d32f1c4c569c4cd1faef976ad2f0466f59df1a95fe1e1ffc48010051e8156e7, starting \"VAR_38=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_39": "<4096 characters, sha256 c8bcc45bfbf7a4191ba4e167e14808617399e45405d01c0bf148d024957e1e8c, starting \"VAR_39=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_40": "<4096 characters, sha256 b66824b14d3bb529a880ad0f3224f4d97982f406ac0999f3cc0a92961d6c03ff, starting \"VAR_40=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_41": "<4096 characters, sha256 07bf0072e023ba43f582d6fd253a20f812d06aa5ba2d22a65c8da4496f6c2dd2, starting \"VAR_41=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_42": "<4096 characters, sha256 3d232f65b0072a66ad64ae4fa4ddcd7e1af73c8c789f9117a53eab2b1afa5e5c, starting \"VAR_42=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_43": "<4096 characters, sha256 0b4c9274375a105c2e8ffdd61e12d9520017033a761299611c2b2dd6408081de, starting \"VAR_43=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_44": "<4096 characters, sha256 f8f6d3b66ffe0849aec9fc5611b44c6f0a7c2cd41836a48469270eb1d2bd9ad9, starting \"VAR_44=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_45": "<4096 characters, sha256 6b991e10d0123906a92087dfb6dc1ea2a43ed785a7d5bbc971df64daa85f8004, starting \"VAR_45=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_46": "<4096 characters, sha256 adb2c761e7d74c39dabd4c3575c403dcf318db81055e8b11351820c9e1b84722, starting \"VAR_46=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">"
+                }
+              },
+              "settings": {
+                "instance": "cpu-1",
+                "maxInstance": "cpu-2",
+                "idleMinutes": 2,
+                "ignore": ["node_modules"],
+                "variables": {
+                  "SHARED": "all",
+                  "NODE_ENV": "test",
+                  "VAR_01": "<4096 characters, sha256 c451c4e4ba50fd983d75162b480f8a75d14c072c2c8a6806406c462c138f8678, starting \"VAR_01=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_02": "<4096 characters, sha256 d5e6b49ee2adc42dfc885ea4c5e39abbd04ea3d290eb83f0012f8391a5369413, starting \"VAR_02=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_03": "<4096 characters, sha256 c13a7ce1454886508ab62d80ae83f529174ba2e68cb1dfd7f848e5baf7118e38, starting \"VAR_03=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_04": "<4096 characters, sha256 4f6eb793db678e60678c814fba7adc06a53be9ee79b2f4c00d1d3094208dd321, starting \"VAR_04=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_05": "<4096 characters, sha256 d868e9132c130d9ec3a14fbc13e696a05c3c2569d6f6ecebd7b3770f62cdec7a, starting \"VAR_05=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_06": "<4096 characters, sha256 c03070d9f750b35d562f24ea3d84e0436c5b417af10007c7512819d9fed09b18, starting \"VAR_06=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_07": "<4096 characters, sha256 9003036958d34c88b7bfeb21ce0c45513289e2ff29103257d05c593cf2bfd316, starting \"VAR_07=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_08": "<4096 characters, sha256 b75cd26be024d8f8acdae95988e02508f87cc5fafe1a8c183bacc87cf46e434b, starting \"VAR_08=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_09": "<4096 characters, sha256 51ae40210458c6400b10a95c17317a8589030fec7d6f487a7d0024406dd0fd8d, starting \"VAR_09=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_10": "<4096 characters, sha256 0cfc77d893f9b3612c1db3743eef90644a8fd918954968980a530e80e5c96ce6, starting \"VAR_10=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_11": "<4096 characters, sha256 c439febb61223960e36e190e6a6014a4ae7f7ca72df6c236267aaeae3427bd80, starting \"VAR_11=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_12": "<4096 characters, sha256 736b8e72917c059f0386160b4a7524fdb8e448c54baba1368c299582cda148bc, starting \"VAR_12=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_13": "<4096 characters, sha256 6e0bd8c3595b05c1901913a7d5c86ff2e5c5852563f9fb8f67e27dba3b3ae11d, starting \"VAR_13=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_14": "<4096 characters, sha256 3d0fa0a43483fc084b0acf959823dae61f04ecb6cdfe172583fa6f565d050209, starting \"VAR_14=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_15": "<4096 characters, sha256 2bc0497b3466852379fda9796c3a3815eea0e47bd3fdd59f30f89ddc68dbba83, starting \"VAR_15=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_16": "<4096 characters, sha256 00b7e45e54468bacb3987a61090b11e786344235ec52d9ec47b810839d896844, starting \"VAR_16=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_17": "<4096 characters, sha256 7918405b99d9e7108b821d2936264d2dfe92df02cda9fdf7ec6060e9f1e89f20, starting \"VAR_17=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_18": "<4096 characters, sha256 af130db3ffc2c3eab5e9b6cf9a5eb1bd4089acbf5329bcbe72bbb0775d8d0f25, starting \"VAR_18=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_19": "<4096 characters, sha256 5368284ec19bb841496b9c2a3f4f5d09c48065d173ad21ffa64ee9c9005133a5, starting \"VAR_19=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_20": "<4096 characters, sha256 7053824308eda96b5132458ec5d150a76c363d605869cf4fe5e07be9e3d23f06, starting \"VAR_20=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_21": "<4096 characters, sha256 72e6b9707ed986978b94690de7398b0a01e89bfe54e901f77e406206e776ace8, starting \"VAR_21=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_22": "<4096 characters, sha256 dc765ebbfcd342ee3e661c566ca917e33447b0b7d121c5bbef04a50335ce835e, starting \"VAR_22=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_23": "<4096 characters, sha256 1c7c1845b7e63e255c11820d67b3595815c4d62e4f05a492b220e8b4f8ad5d97, starting \"VAR_23=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_24": "<4096 characters, sha256 cb9d00be0769b18c5adbcd1faa3276f3abb7272bc7d8d66cef6ea5264fcff307, starting \"VAR_24=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_25": "<4096 characters, sha256 6332969e28b292beca3dbb8f965714ad6d5d66179ac435b4b263737792998cf3, starting \"VAR_25=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_26": "<4096 characters, sha256 3583ad31147b3fec6fcc05d8756372fc780aa1379fb6b531e3fe2bb90a9d5365, starting \"VAR_26=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_27": "<4096 characters, sha256 fad399baa5cad5c8ce0e73b27fd23454620ed17e0b4cae5ebeb6a7946ce7d250, starting \"VAR_27=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_28": "<4096 characters, sha256 99af0d57af892a3fbedbc0135647a2f4f6499b1cd1aeef23a95159dd6ecc1793, starting \"VAR_28=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_29": "<4096 characters, sha256 6d283d661dcee1deb705f4d03cd7472c5d2a9e921500c3e481ea101b2aaefc8a, starting \"VAR_29=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_30": "<4096 characters, sha256 0a832091cf1779939e3b7ee06610787a4fcf396eb5871bf292b2e321b3e9bf1f, starting \"VAR_30=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_31": "<4096 characters, sha256 67a185b14d674d7793065d3e8d7768b9a1cbd994faf697bfcccf31ba86328e48, starting \"VAR_31=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_32": "<4096 characters, sha256 177f5c70de6f20500e737ee70d1d8a3c9312f6d8c01cc923d37cc394b2fceb3b, starting \"VAR_32=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_33": "<4096 characters, sha256 548caeadfd5e2e4d9633aacb9ac41233ec8c0cf980a006fcec1fabed5d79dd1d, starting \"VAR_33=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_34": "<4096 characters, sha256 6d499ca1ee8f447a9c80b64d21014449f4e27a250a9ec3f1d25ef7415f96f1da, starting \"VAR_34=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_35": "<4096 characters, sha256 0ff70e3f1bd348c7af5c9d075cacf84f10128134476af7e5407f81e28806e579, starting \"VAR_35=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_36": "<4096 characters, sha256 d525e27ff15cfc9692e0aa34776d2f72ade5ad89b2cf6800d3a8527340ce16da, starting \"VAR_36=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_37": "<4096 characters, sha256 f43eae87b06ebae6c08267ed41dd5ddec198c3b0af6d1b408db98d30980f1169, starting \"VAR_37=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_38": "<4096 characters, sha256 7d32f1c4c569c4cd1faef976ad2f0466f59df1a95fe1e1ffc48010051e8156e7, starting \"VAR_38=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_39": "<4096 characters, sha256 c8bcc45bfbf7a4191ba4e167e14808617399e45405d01c0bf148d024957e1e8c, starting \"VAR_39=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_40": "<4096 characters, sha256 b66824b14d3bb529a880ad0f3224f4d97982f406ac0999f3cc0a92961d6c03ff, starting \"VAR_40=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_41": "<4096 characters, sha256 07bf0072e023ba43f582d6fd253a20f812d06aa5ba2d22a65c8da4496f6c2dd2, starting \"VAR_41=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_42": "<4096 characters, sha256 3d232f65b0072a66ad64ae4fa4ddcd7e1af73c8c789f9117a53eab2b1afa5e5c, starting \"VAR_42=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_43": "<4096 characters, sha256 0b4c9274375a105c2e8ffdd61e12d9520017033a761299611c2b2dd6408081de, starting \"VAR_43=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_44": "<4096 characters, sha256 f8f6d3b66ffe0849aec9fc5611b44c6f0a7c2cd41836a48469270eb1d2bd9ad9, starting \"VAR_44=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_45": "<4096 characters, sha256 6b991e10d0123906a92087dfb6dc1ea2a43ed785a7d5bbc971df64daa85f8004, starting \"VAR_45=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">",
+                  "VAR_46": "<4096 characters, sha256 adb2c761e7d74c39dabd4c3575c403dcf318db81055e8b11351820c9e1b84722, starting \"VAR_46=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\">"
+                },
+                "setupScript": "bun install",
+                "startScript": "",
+                "toolchains": "",
+                "spareWorkspace": true
+              },
+              "global": {
+                "instance": "cpu-1",
+                "maxInstance": "cpu-2",
+                "idleMinutes": 2,
+                "ignore": ["node_modules"],
+                "variables": {
+                  "SHARED": "all",
+                  "NODE_ENV": "prod"
+                },
+                "setupScript": "bun install",
+                "startScript": "",
+                "toolchains": "",
+                "spareWorkspace": true
+              },
+              "secrets": [
+                {
+                  "name": "API_KEY",
+                  "scope": "environment",
+                  "build": true
+                },
+                {
+                  "name": "NPM_TOKEN",
+                  "scope": "every",
+                  "build": false
+                }
+              ],
+              "skills": [],
+              "globalSkills": []
+            },
+            "field": "maxInstance"
+          }
+        }
+      }
+    },
+    "reset_size_limit_below_size": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: the size limit at Global, cpu-2, is below the size of Environment \"Large\" (00bb00bb), cpu-3, and the limit cannot be below the size. Lower the size first with environment_container_resize."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "reset_size_limit_approved_but_inherited": {
+      "asked": [
+        {
+          "tool": "environment_setting_reset",
+          "target": "Environment \"Large\"",
+          "change": "Size limit (reset to Global's)",
+          "before": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk), its own",
+          "after": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk), inherited from Global",
+          "reason": "The reason.",
+          "expected": "cpu-3",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "00bb00bb",
+          "change": {
+            "field": "maxInstance",
+            "value": null
+          },
+          "expected": {
+            "value": "cpu-3"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_setting_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, and the size limit of Environment \"Large\" (00bb00bb) is inherited from Global already, as approved: nothing more needed changing."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "00bb00bb",
+            "name": "Large"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["maxInstance"],
+          "approval": {
+            "approved": true,
+            "reason": null
+          },
+          "own": false,
+          "new_build": false,
+          "global": null
+        },
+        "details": {
+          "approval": {
+            "approved": true
+          }
+        }
+      }
+    },
+    "reset_size_limit_changed_since": {
+      "asked": [
+        {
+          "tool": "environment_setting_reset",
+          "target": "Environment \"Large\"",
+          "change": "Size limit (reset to Global's)",
+          "before": "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk), its own",
+          "after": "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk), inherited from Global",
+          "reason": "The reason.",
+          "expected": "cpu-3",
+          "id": "11",
+          "conversationId": 1
+        }
+      ],
+      "settingsCalls": [],
+      "environmentCalls": [
+        {
+          "environment": "00bb00bb",
+          "change": {
+            "field": "maxInstance",
+            "value": null
+          },
+          "expected": {
+            "value": "cpu-3"
+          },
+          "author": {
+            "conversation": 1,
+            "tool": "environment_setting_reset",
+            "reason": "The reason.",
+            "approved": true
+          }
+        }
+      ],
+      "logged": [],
+      "reloads": 0,
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "The user approved, but nothing was saved: the size limit changed since the user was asked, to cpu-1. Ask again if the reset is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    }
   }
 }

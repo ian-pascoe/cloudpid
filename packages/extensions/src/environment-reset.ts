@@ -19,30 +19,34 @@ import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type { ApprovalCore } from "./approval-cores.ts";
 import {
   type ApprovalCall,
+  approvedChange,
   type ApprovalsService,
   approvedAlready,
-  askedBefore,
-  declinedWith,
-  withApproval,
+  declinedAnswer,
 } from "./approvals.ts";
 import {
-  type AppliedChange,
   type ChangedEnvironment,
   describeApplied,
   type EnvironmentDetails,
-  EnvironmentsError,
+  type EnvironmentsService,
   IdNotGlobal,
   MAX_CHANGE_REASON,
   pathsLine,
   plainValue,
+  recordContainerSettingChange,
+  type ContainerSettingResult,
   sizeWords,
+  storedText,
   textSize,
 } from "./environment.ts";
+import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import type { LifecycleDeps } from "./environment-lifecycle.ts";
 import { changeOutput, declinedOutput, unchangedOutput } from "./environment-outputs.ts";
 import { asJsonValue, named } from "./environment-skill-results.ts";
+import { type HarnessAnswer, toolResult } from "./harness.ts";
 import { APPROVED, asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 
 /** A Container setting an Environment may override and reset, but its variables (`environment_variable_unset`). */
@@ -85,18 +89,208 @@ const valueWords = (setting: ResettableSetting, value: Schema.Json | null): stri
   }
 };
 
+/** The tool's name, which its cards and the changes it makes carry. */
+const RESET_TOOL = "environment_setting_reset";
+
+/** The card's view of a reset made. */
+const agentChangeOf = (
+  setting: ResettableSetting,
+  environment: ChangedEnvironment,
+  change: AgentChange,
+) => ({
+  id: change.id,
+  environment,
+  field: setting,
+  before: asJsonValue(change.before),
+  after: asJsonValue(change.after),
+});
+
+/** The reset of a field the Environment does not override: nothing to do. */
+const inheritedAlready = (
+  setting: ResettableSetting,
+  environment: ChangedEnvironment,
+  value: Schema.Json | null,
+): HarnessAnswer => ({
+  text: `The ${SETTING_WORDS[setting]} of ${named(environment)} is inherited from Global already (${valueWords(setting, value)}): nothing changed, and nothing was recorded.`,
+  structured: asOutput(EnvironmentChangeOutput, unchangedOutput(environment, setting)),
+  details: { unchanged: { environment, field: setting } },
+});
+
+/**
+ * What a reset of `setting` in `environment` answers once the Registry has answered the write, `approved` by the owner or
+ * not: a reset made, or found made already, or the refusal of one that was not (nothing was saved). `result` is the write's
+ * own answer, or one built from the Agent change it recorded (whose `newBuild`, the upkeep's, is then unknown).
+ */
+const resetAnswer = ({
+  environment,
+  setting,
+  result,
+  own,
+  approved,
+}: {
+  readonly environment: string;
+  readonly setting: ResettableSetting;
+  readonly result: ContainerSettingResult;
+  readonly own: boolean;
+  readonly approved: boolean;
+}): Effect.Effect<HarnessAnswer, EnvironmentsError> => {
+  const prefix = approved ? "The user approved, but nothing was saved" : "Nothing was saved";
+
+  switch (result.status) {
+    case "missing":
+      return Effect.fail(notFound(environment));
+    case "rejected":
+      return Effect.fail(EnvironmentsError.make({ message: `${prefix}: ${result.message}` }));
+    case "changed-since":
+      return Effect.fail(
+        EnvironmentsError.make({
+          message: `${prefix}: the ${SETTING_WORDS[setting]} changed since the user was asked, to ${valueWords(setting, result.current)}. Ask again if the reset is still needed.`,
+        }),
+      );
+    case "unchanged":
+      return Effect.succeed(
+        approved
+          ? {
+              text: approvedAlready(
+                `the ${SETTING_WORDS[setting]} of ${named(result.environment)} is inherited from Global`,
+              ),
+              structured: asOutput(
+                EnvironmentChangeOutput,
+                unchangedOutput(result.environment, setting, APPROVED),
+              ),
+              details: { approval: { approved: true } },
+            }
+          : inheritedAlready(setting, result.environment, result.value),
+      );
+    case "changed":
+      return Effect.succeed({
+        text: `${approved ? "The user approved: r" : "R"}eset the ${SETTING_WORDS[setting]} of ${named(result.environment)}: it was ${valueWords(setting, result.change.before)} (its own), and inherits Global's ${valueWords(setting, result.change.after)} now, and each change of it at Global. ${describeApplied(own, result.newBuild)} The change is recorded${approved ? " as approved" : ""} with your reason; the user can revert it on the Environments page.`,
+        structured: asOutput(
+          EnvironmentChangeOutput,
+          changeOutput(result, own, approved ? APPROVED : null),
+        ),
+        details: approved
+          ? {
+              approval: { approved: true },
+              agentChange: agentChangeOf(setting, result.environment, result.change),
+            }
+          : { agentChange: agentChangeOf(setting, result.environment, result.change) },
+      });
+  }
+};
+
+/** What the core of the reset of the size limit reads and writes. */
+export type ResetLimitServices = Pick<LifecycleDeps, "refuseSecrets" | "target"> & {
+  readonly environments: Pick<EnvironmentsService, "get" | "change">;
+};
+
+/** The arguments of the reset of the size limit: `environment_setting_reset` with the setting `maxInstance`. */
+export type ResetLimitArgs = { readonly id: string; readonly reason: string };
+
+/** What `prepare` read of the reset's target: the Environment, and whether it is the Session's own (never, with no Session). */
+export type ResetLimitKnown = { readonly details: EnvironmentDetails; readonly own: boolean };
+
+/**
+ * The core of the reset of the size limit (`maxInstance`), the one setting of `environment_setting_reset` that waits for the
+ * owner's Approval (`./approval-cores.ts` describes `prepare`, `apply` and `render`): the Environment takes Global's limit
+ * again, which may raise or lower the largest size it allows.
+ */
+export const resetLimitCore = ({
+  environments,
+  refuseSecrets,
+  target,
+}: ResetLimitServices): ApprovalCore<
+  ResetLimitArgs,
+  ResetLimitKnown,
+  ContainerSettingResult,
+  EnvironmentsError
+> => {
+  /** The Environment `id` names, found, and whether it is the Session's own. */
+  const read = (id: string) =>
+    Effect.gen(function* () {
+      const { environment, own } = yield* target(id);
+      const details = yield* environments.get(environment);
+
+      if (details === null) return yield* notFound(environment);
+
+      return { details, own };
+    });
+
+  return {
+    tool: RESET_TOOL,
+    prepare: ({ id, reason }) =>
+      Effect.gen(function* () {
+        yield* refuseSecrets([{ what: "the reason", text: reason }]);
+
+        const known = yield* read(id);
+        const { details } = known;
+        const where = named(details);
+        const { instance, maxInstance } = details.settings;
+        const inherited = details.global.maxInstance;
+
+        const prepared = {
+          card: {
+            tool: RESET_TOOL,
+            target: `Environment ${JSON.stringify(details.name)}`,
+            change: "Size limit (reset to Global's)",
+            before: `${sizeWords(maxInstance)}, its own`,
+            after: `${sizeWords(inherited)}, inherited from Global`,
+            reason,
+          },
+          expected: maxInstance,
+          known,
+        };
+
+        if (details.overrides.maxInstance === undefined) {
+          return { ...prepared, unchanged: inheritedAlready("maxInstance", details, maxInstance) };
+        }
+
+        if (compareInstances(instance, inherited) > 0) {
+          return yield* EnvironmentsError.make({
+            message: `Nothing was asked or saved: the size limit at Global, ${inherited}, is below the size of ${where}, ${instance}, and the limit cannot be below the size. Lower the size first with environment_container_resize.`,
+          });
+        }
+
+        return prepared;
+      }),
+
+    apply: ({ id }, expected, author, known) =>
+      Effect.gen(function* () {
+        const found = known ?? (yield* read(id));
+
+        const result = yield* environments.change({
+          environment: id,
+          change: { field: "maxInstance", value: null },
+          expected: { value: expected },
+          author: { ...author, approved: true },
+        });
+
+        return { known: found, result };
+      }),
+
+    render: ({ id }, _expected, { known, result }) =>
+      resetAnswer({
+        environment: id,
+        setting: "maxInstance",
+        result,
+        own: known.own,
+        approved: true,
+      }),
+
+    declined: (_args, { details }, answer) =>
+      declinedAnswer(
+        answer,
+        `the reset of the size limit of ${named(details)} from ${storedText(answer.expected)} to Global's ${details.global.maxInstance}`,
+        (approval) => asOutput(EnvironmentChangeOutput, declinedOutput(details, approval)),
+      ),
+  };
+};
+
 /** The Session's Approvals, which a reset of the size limit asks. */
 export type ResetDeps = LifecycleDeps & { readonly approvals: ApprovalsService };
 
 /** `environment_setting_reset`, over the Session's `Environments`. */
-export const resetTool = ({
-  environments,
-  approvals,
-  log,
-  refuseSecrets,
-  target,
-  notFound,
-}: ResetDeps) => {
+export const resetTool = ({ environments, approvals, log, refuseSecrets, target }: ResetDeps) => {
   // Built here, not at the module's top: `environment.ts` imports this file, so its exports are not there yet then.
   const Reason = Schema.String.check(
     Schema.isMinLength(1),
@@ -106,196 +300,48 @@ export const resetTool = ({
       "Why you make the change, for the user to read in the Environment's Agent changes (and on the Approval card, for the size limit), such as 'the Global Setup Script now installs what this one did'",
   });
 
-  /** The card's view of a reset made. */
-  const agentChangeOf = (
-    setting: ResettableSetting,
-    environment: ChangedEnvironment,
-    change: AgentChange,
-  ) => ({
-    id: change.id,
-    environment,
-    field: setting,
-    before: asJsonValue(change.before),
-    after: asJsonValue(change.after),
-  });
+  const limit = resetLimitCore({ environments, refuseSecrets, target });
 
-  /** The result of a reset made: what it says, what the card shows, and what a program gets. */
-  const resetResult = (
-    setting: ResettableSetting,
-    applied: Extract<AppliedChange, { readonly status: "changed" }>,
-    own: boolean,
-    text: string,
-    approved: boolean,
-  ) =>
-    log
-      .record({
-        tool: "environment_setting_reset",
-        environmentName: applied.environment.name,
-        field: setting,
-      })
-      .pipe(
-        Effect.as({
-          output: [{ type: "text" as const, text }],
-          structuredOutput: asOutput(
-            EnvironmentChangeOutput,
-            changeOutput(applied, own, approved ? APPROVED : null),
-          ),
-          details: approved
-            ? {
-                approval: { approved: true },
-                agentChange: agentChangeOf(setting, applied.environment, applied.change),
-              }
-            : { agentChange: agentChangeOf(setting, applied.environment, applied.change) },
-        }),
-      );
-
-  /** The reset of a field the Environment does not override: nothing to do. */
-  const inheritedAlready = (
-    setting: ResettableSetting,
-    environment: ChangedEnvironment,
-    value: Schema.Json | null,
-  ) => ({
-    output: [
-      {
-        type: "text" as const,
-        text: `The ${SETTING_WORDS[setting]} of ${named(environment)} is inherited from Global already (${valueWords(setting, value)}): nothing changed, and nothing was recorded.`,
-      },
-    ],
-    structuredOutput: asOutput(EnvironmentChangeOutput, unchangedOutput(environment, setting)),
-    details: { unchanged: { environment, field: setting } },
-  });
-
-  /** Make the reset of `setting` in `environment`, approved or not, and say how it went. */
+  /** Reset `setting` in `environment` at once, with no Approval, and say how it went. */
   const reset = ({
     environment,
     own,
     setting,
     reason,
     api,
-    expected,
   }: {
     readonly environment: string;
     readonly own: boolean;
     readonly setting: ResettableSetting;
     readonly reason: string;
     readonly api: ApprovalCall;
-    /** For an approved reset: the value in force the owner saw. */
-    readonly expected?: { readonly value: Schema.Json | null } | undefined;
   }) =>
     Effect.gen(function* () {
-      const approved = expected !== undefined;
-
-      const applied = yield* environments.change({
+      const result = yield* environments.change({
         environment,
         change: { field: setting, value: null },
-        expected,
+        expected: undefined,
         author: {
           conversation: api.conversationId,
-          tool: "environment_setting_reset",
+          tool: RESET_TOOL,
           reason,
-          approved: approved ? true : undefined,
+          approved: undefined,
         },
       });
 
-      const prefix = approved ? "The user approved, but nothing was saved" : "Nothing was saved";
-
-      switch (applied.status) {
-        case "missing":
-          return yield* notFound(environment);
-        case "rejected":
-          return yield* EnvironmentsError.make({ message: `${prefix}: ${applied.message}` });
-        case "changed-since":
-          return yield* EnvironmentsError.make({
-            message: `${prefix}: the ${SETTING_WORDS[setting]} changed since the user was asked, to ${valueWords(setting, applied.current)}. Ask again if the reset is still needed.`,
-          });
-        case "unchanged":
-          return approved
-            ? {
-                output: [
-                  {
-                    type: "text" as const,
-                    text: approvedAlready(
-                      `the ${SETTING_WORDS[setting]} of ${named(applied.environment)} is inherited from Global`,
-                    ),
-                  },
-                ],
-                structuredOutput: asOutput(
-                  EnvironmentChangeOutput,
-                  unchangedOutput(applied.environment, setting, APPROVED),
-                ),
-                details: { approval: { approved: true } },
-              }
-            : inheritedAlready(setting, applied.environment, applied.value);
-        case "changed":
-          return yield* resetResult(
-            setting,
-            applied,
-            own,
-            `${approved ? "The user approved: r" : "R"}eset the ${SETTING_WORDS[setting]} of ${named(applied.environment)}: it was ${valueWords(setting, applied.change.before)} (its own), and inherits Global's ${valueWords(setting, applied.change.after)} now, and each change of it at Global. ${describeApplied(own, applied.newBuild)} The change is recorded${approved ? " as approved" : ""} with your reason; the user can revert it on the Environments page.`,
-            approved,
-          );
-      }
-    });
-
-  /** The reset of the size limit, which waits for the owner's Approval. */
-  const resetLimit = (
-    details: EnvironmentDetails,
-    own: boolean,
-    reason: string,
-    api: ApprovalCall,
-  ) =>
-    Effect.gen(function* () {
-      const where = named(details);
-      const { instance, maxInstance } = details.settings;
-      const inherited = details.global.maxInstance;
-
-      if (details.overrides.maxInstance === undefined && !(yield* askedBefore(approvals, api))) {
-        return inheritedAlready("maxInstance", details, maxInstance);
-      }
-
-      if (compareInstances(instance, inherited) > 0) {
-        return yield* EnvironmentsError.make({
-          message: `Nothing was asked or saved: the size limit at Global, ${inherited}, is below the size of ${where}, ${instance}, and the limit cannot be below the size. Lower the size first with environment_container_resize.`,
+      if (result.status === "changed") {
+        yield* log.record({
+          tool: RESET_TOOL,
+          environmentName: result.environment.name,
+          field: setting,
         });
       }
 
-      const change = "Size limit (reset to Global's)";
-
-      return yield* withApproval(
-        approvals,
-        api,
-        {
-          tool: "environment_setting_reset",
-          target: `Environment ${JSON.stringify(details.name)}`,
-          change,
-          before: `${sizeWords(maxInstance)}, its own`,
-          after: `${sizeWords(inherited)}, inherited from Global`,
-          reason,
-          expected: maxInstance,
-        },
-        (answer) =>
-          answer.approved
-            ? reset({
-                environment: details.id,
-                own,
-                setting: "maxInstance",
-                reason,
-                api,
-                expected: { value: answer.expected },
-              })
-            : Effect.succeed(
-                declinedWith(
-                  answer,
-                  `the reset of the size limit of ${where} from ${maxInstance} to Global's ${inherited}`,
-                  (approval) =>
-                    asOutput(EnvironmentChangeOutput, declinedOutput(details, approval)),
-                ),
-              ),
-      );
+      return toolResult(yield* resetAnswer({ environment, setting, result, own, approved: false }));
     });
 
   return defineEffectTool({
-    name: "environment_setting_reset",
+    name: RESET_TOOL,
     description: Arr.join(
       [
         "Reset one of an Environment's Container settings (the one id names): take its own value (its Override) back, so the setting inherits the value at Global again, and each later change of it at Global. environment_get shows which settings are the Environment's own (overridden here) and which are inherited from Global.",
@@ -319,19 +365,21 @@ export const resetTool = ({
     replay: "safe",
     execute: ({ id, setting, reason }, api) =>
       Effect.gen(function* () {
+        if (setting === "maxInstance") {
+          return yield* approvedChange(
+            approvals,
+            api,
+            limit,
+            { id, reason },
+            recordContainerSettingChange(log, RESET_TOOL, "maxInstance"),
+          );
+        }
+
         yield* refuseSecrets([{ what: "the reason", text: reason }]);
 
         const { environment, own } = yield* target(id);
 
-        if (setting !== "maxInstance") {
-          return yield* reset({ environment, own, setting, reason, api });
-        }
-
-        const details = yield* environments.get(environment);
-
-        if (details === null) return yield* notFound(environment);
-
-        return yield* resetLimit(details, own, reason, api);
+        return yield* reset({ environment, own, setting, reason, api });
       }),
   });
 };

@@ -13,8 +13,9 @@
 //   (the Session hibernates while nobody looks, and each heartbeat starts it again) never end the call (#647).
 //
 // `withApproval` is the way a tool waits: one request per call (its task's id), settled when the call ends however it
-// ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept Global, and meant for the Guardian (#38) too.
+// ends. A tool whose core is split (`./approval-cores.ts`) runs it through `approvedChange`. It is shared by the tools that change a Limit or delete, by those that change the Skills kept Global, and meant for the Guardian (#38) too.
 import { reachedWait } from "@cloudpid/effect-durable";
+import { ApprovalCardContent } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Context from "effect/Context";
@@ -22,6 +23,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import type { Applied, ApprovalCore } from "./approval-cores.ts";
+import { type HarnessAnswer, toolResult } from "./harness.ts";
 import { type ApprovalOutcome, approvalOutput } from "./outputs.ts";
 
 /** The Durable Object's synchronous key-value storage, as the requests use it. */
@@ -35,28 +38,19 @@ export type ApprovalStorage = {
 export const MAX_APPROVAL_NOTES = 12;
 export const MAX_APPROVAL_NOTE = 200;
 
-/** A request for the owner's Approval of one change, waiting for an answer from a client. */
+/**
+ * A request for the owner's Approval of one change, waiting for an answer from a client: the card (`ApprovalCardContent`,
+ * in `@cloudpid/protocol`, shared with the Registry's requests) with the Session's own id and conversation, and what the
+ * target was when the owner was asked. `notes` has at most `MAX_APPROVAL_NOTES` lines of `MAX_APPROVAL_NOTE` characters.
+ */
 export const ApprovalAsk = Schema.Struct({
   /** Unique within the Session: the asking call's task. */
   id: Schema.String,
   /** The conversation whose call asks. */
   conversationId: Schema.Finite,
-  /** The tool that makes the change. */
-  tool: Schema.String,
-  /** What it changes: an Environment, by name, or the Settings. */
-  target: Schema.String,
-  /** The change, in a few words. */
-  change: Schema.String,
-  /** The value before as the owner reads it; for a delete, what is deleted. */
-  before: Schema.String,
-  /** The value after as the owner reads it. */
-  after: Schema.String,
-  /** Why the agent makes it. */
-  reason: Schema.String,
+  ...ApprovalCardContent.fields,
   /** The Notification's words for the request, "what, where" (`Approval needed: …`), when `change` and `target` do not read well there. */
   notice: Schema.optionalKey(Schema.String),
-  /** What the change does that the values do not say, at most `MAX_APPROVAL_NOTES` lines of `MAX_APPROVAL_NOTE` characters. */
-  notes: Schema.String.pipe(Schema.Array, Schema.optionalKey),
   /**
    * What the target was when the owner was asked, for the call to check once approved: the change is applied only
    * while the target still has it, so the value applied is the one the owner saw. Never sent to a client.
@@ -329,17 +323,30 @@ export const withApproval = <A, E, R>(
     .pipe(Effect.flatMap(then), Effect.ensuring(approvals.settle(id)));
 };
 
+/** What the text of a declined request says. */
+const declinedText = (answer: Extract<ApprovalAnswer, { approved: false }>, what: string): string =>
+  `The user declined: ${what}. Nothing changed.${
+    answer.reason === undefined ? "" : ` Their reason: ${answer.reason}`
+  } Do not ask again for the same change unless the user wants it.`;
+
 /** What the result of a declined request says. */
 export const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, what: string) => ({
-  output: [
-    {
-      type: "text" as const,
-      text: `The user declined: ${what}. Nothing changed.${
-        answer.reason === undefined ? "" : ` Their reason: ${answer.reason}`
-      } Do not ask again for the same change unless the user wants it.`,
-    },
-  ],
+  output: [{ type: "text" as const, text: declinedText(answer, what) }],
   // The reason is null when the owner gave none.
+  details: { approval: { approved: false, reason: answer.reason ?? null } },
+});
+
+/**
+ * A declined request's answer as a core gives it: its text, the value it gives programs (`value` makes it of the owner's
+ * answer as a value gives it, `approvalOutput`) and its details.
+ */
+export const declinedAnswer = (
+  answer: Extract<ApprovalAnswer, { approved: false }>,
+  what: string,
+  value: (approval: typeof ApprovalOutcome.Type) => JsonValue,
+): HarnessAnswer => ({
+  text: declinedText(answer, what),
+  structured: value(approvalOutput(answer)),
   details: { approval: { approved: false, reason: answer.reason ?? null } },
 });
 
@@ -359,3 +366,56 @@ export const declinedWith = (
  */
 export const approvedAlready = (what: string) =>
   `The user approved, and ${what} already, as approved: nothing more needed changing.`;
+
+/** What a change the owner approved says when the target changed between the request and the answer. */
+export const changedSince = (what: string, now: string) =>
+  `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
+
+/**
+ * The Session's run of a tool's core (`./approval-cores.ts`): `prepare`, then, unless the target has the value asked for
+ * already (or the call asked before, which goes on to report what the owner answered), `withApproval`, then on Approve
+ * `apply` against what the owner saw, `after` (the Session's own after-steps for a change made: the Run's Notification,
+ * the reload, what the change reaches, which give `render` its `how`), and `render`. On Decline nothing is applied and the
+ * core says so. The result is the tool's: its output, its structured output and its details.
+ */
+export const approvedChange = <
+  Args extends { readonly reason: string },
+  Known,
+  Result,
+  How,
+  Failure,
+>(
+  approvals: ApprovalsService,
+  api: ApprovalCall,
+  core: ApprovalCore<Args, Known, Result, Failure, How>,
+  args: Args,
+  after: (applied: Applied<Known, Result>) => Effect.Effect<How, Failure>,
+): Effect.Effect<ReturnType<typeof toolResult>, Failure | ApprovalsError> =>
+  Effect.gen(function* () {
+    const prepared = yield* core.prepare(args);
+
+    if (prepared.unchanged !== undefined && !(yield* askedBefore(approvals, api))) {
+      return toolResult(prepared.unchanged);
+    }
+
+    return yield* withApproval(
+      approvals,
+      api,
+      { ...prepared.card, expected: prepared.expected },
+      (answer) =>
+        Effect.gen(function* () {
+          if (!answer.approved) return toolResult(core.declined(args, prepared.known, answer));
+
+          const applied = yield* core.apply(
+            args,
+            answer.expected,
+            { conversation: api.conversationId, tool: core.tool, reason: args.reason },
+            prepared.known,
+          );
+
+          const how = yield* after(applied);
+
+          return toolResult(yield* core.render(args, answer.expected, applied, how));
+        }),
+    );
+  });
