@@ -249,7 +249,8 @@ export type TriggerSecretsRequest =
 /**
  * The URL and Signing secret of webhook Trigger `id` the owner asked to see, or got new ones of: held only while the
  * row shows them, and gone (`Atom.Reset`) when it hides them. The answer of a rotation is the new pair, and the old
- * value stopped working before it came.
+ * value stopped working before it came; a rotation asks for the Triggers again, since it moves a GitHub-managed hook,
+ * whose state their rows show.
  */
 export const triggerSecretsAtom = Atom.family((id: string) =>
   appRuntime.fn(
@@ -258,7 +259,7 @@ export const triggerSecretsAtom = Atom.family((id: string) =>
         request.kind === "reveal"
           ? registry("revealTrigger", { id })
           : registry("rotateTrigger", { id, what: request.what }),
-      ),
+      ).pipe(changing(request.kind === "rotate" ? ["triggers"] : [])),
     { concurrent: true },
   ),
 );

@@ -23,6 +23,7 @@ import {
   triggerDraftAtom,
   triggerFormAtom,
   triggerNoticeAtom,
+  triggersAtom,
 } from "./triggers-state.ts";
 import { emptyTriggerDraft, triggerDraftOf } from "./triggers.ts";
 
@@ -217,7 +218,7 @@ describe("a webhook Trigger's URL, secret and Fire again", () => {
   const SECRETS = { path: "/hooks/t1/tok", secret: "whsec_abc" };
 
   it.effect(
-    "asks the RPC the request names: reveal or rotate, and the new pair is the answer",
+    "asks the RPC the request names: reveal or rotate, the new pair the answer, the Triggers asked again after a rotation",
     () =>
       Effect.gen(function* () {
         const asked: string[] = [];
@@ -235,17 +236,29 @@ describe("a webhook Trigger's URL, secret and Fire again", () => {
 
               return { ...SECRETS, path: "/hooks/t1/new" };
             }),
+          // A rotation moves a GitHub-managed hook, whose state the rows show.
+          listTriggers: () =>
+            Effect.sync(() => {
+              asked.push("list");
+
+              return [];
+            }),
         });
 
+        registry.mount(triggersAtom("work"));
+        yield* settled(registry, triggersAtom("work"));
         registry.mount(triggerSecretsAtom("t1"));
         registry.set(triggerSecretsAtom("t1"), { kind: "reveal" });
         yield* settled(registry, triggerSecretsAtom("t1"));
+        yield* settled(registry, triggersAtom("work"));
         registry.set(triggerSecretsAtom("t1"), { kind: "rotate", what: "url" });
 
         const rotated = yield* settled(registry, triggerSecretsAtom("t1"));
 
+        yield* settled(registry, triggersAtom("work"));
+
         expect(AsyncResult.isSuccess(rotated) && rotated.value.path).toBe("/hooks/t1/new");
-        expect(asked).toEqual(["reveal t1", "rotate t1 url"]);
+        expect(asked).toEqual(["list", "reveal t1", "rotate t1 url", "list"]);
         registry.dispose();
       }),
   );

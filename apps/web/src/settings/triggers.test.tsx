@@ -7,6 +7,7 @@ import {
   EnvironmentError,
   type EnvironmentRecord,
   type FireRecord,
+  githubHookProblem,
   type TriggerDefinition,
   type TriggerOverview,
 } from "@cloudpid/protocol";
@@ -378,6 +379,28 @@ describe("the Triggers section", () => {
       }),
   );
 
+  it.effect("says beside a revealed or rotated pair when GitHub's hook did not take it", () =>
+    Effect.gen(function* () {
+      const row = yield* afterReveal({
+        revealTrigger: () =>
+          Effect.succeed({
+            origin: "https://cloudpid.example",
+            path: "/hooks/0190-t3/abcDEF",
+            secret: "s3cr3t-value",
+            github: {
+              repo: "octo-org/octo-repo",
+              state: "failed",
+              problem: { code: "unreachable", message: "GitHub could not be reached" },
+            },
+          }),
+      });
+
+      expect(row).toContain("s3cr3t-value");
+      expect(row).toContain('data-github-hook="failed"');
+      expect(row).toContain("GitHub could not be reached");
+    }),
+  );
+
   it.effect("still offers to replace the URL and secret when the reveal failed", () =>
     Effect.gen(function* () {
       const row = yield* afterReveal({
@@ -442,12 +465,11 @@ describe("the Triggers section", () => {
         "CI failed",
       );
 
-      expect(row).toContain("Webhook · github · octo-org/octo-repo");
-      expect(row).toContain("Events: workflow_run, check_suite");
+      expect(row).toContain("octo-org/octo-repo");
+      expect(row).toContain("workflow_run, check_suite");
       expect(row).toContain('data-github-hook="failed"');
-      expect(row).toContain(
-        "GitHub hook on octo-org/octo-repo failed: Accept Webhooks: write on octo-org",
-      );
+      // GitHub's reason, as the object kept it.
+      expect(row).toContain("Accept Webhooks: write on octo-org");
       expect(row).toContain("data-reveal");
     }),
   );
@@ -479,7 +501,10 @@ describe("the Triggers section", () => {
 
         const half = yield* open({ ...draft, repo: "octo-org/octo-repo" });
 
-        expect(half).toContain("A GitHub-managed hook lists the events GitHub sends it");
+        // The field says the Registry's own refusal.
+        expect(half).toContain(
+          githubHookProblem({ type: "webhook", format: "github", repo: "octo-org/octo-repo" }),
+        );
         expect(half).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
 
         // A Standard Webhooks sender has no GitHub hook to ask for.
