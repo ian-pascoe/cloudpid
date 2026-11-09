@@ -3,12 +3,21 @@
 // repo. The Registry DO is in the main Worker, which holds the app's key (ADR-0025); a Session DO or a Container never
 // gets a token, it asks the Registry to install. The Worker itself builds the same reader (once, so one token) for the repo
 // page's listing (`skill-repo.ts`), since a Durable Object has no Cache API to keep what it reads of each SKILL.md in.
+// `SkillReaderOverride` is the one seam in place of GitHub: a workerd test's Registry reads a fake repo through it, and
+// every other step of a Skill write (the checks, the Secret check of an endpoint write, the claim) is the deployed one. A
+// deploy provides none.
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
+import * as Context from "effect/Context";
 import * as Redacted from "effect/Redacted";
 import { GitHubApp } from "../github/app.ts";
 import type { GitHubAppSecrets } from "../github/config.ts";
 import { githubContents, SKILL_FETCH_PERMISSIONS } from "../github/contents.ts";
 import type { RepoReader } from "../github/skill-fetch.ts";
+
+/** The reader the Registry reads Skills with in place of GitHub's, when provided: a test's. */
+export class SkillReaderOverride extends Context.Service<SkillReaderOverride, RepoReader>()(
+  "@cloudpid/server/registry/skill-reader/SkillReaderOverride",
+) {}
 
 /** A `RepoReader` over GitHub as the GitHub App `secrets`, made once per object so its token is shared. */
 export const githubSkillReader = (secrets: GitHubAppSecrets): RepoReader =>

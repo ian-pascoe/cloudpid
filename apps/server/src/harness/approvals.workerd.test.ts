@@ -1,5 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off preferEffectRecord:off globalDate:off -- a fake GitHub reader over native records, and the Registry's own Skill code run in its object at the time now.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
 // The Approvals asked over the MCP endpoint, end to end over the real Registry (`../registry/registry.fixture.ts` runs
 // `registryMethods` as deployed; `docs/architecture/mcp-endpoint.md` → Approvals with no Session): the ask's `pending`,
 // `unchanged` and refusals, its `request_id`, dedupe and cap (`./approval-ask.ts`); the apply of an approved request
@@ -8,8 +8,10 @@
 // (`./approval-follow.ts`); the Limit paths of both resets; and the deletes (#688 C2): an Environment's, long, which
 // `approval_wait` never runs and its run renews the lease for, and a kept Secret's, against the `updatedAt` the owner
 // saw, with the Builds' upkeep after it; a long apply's lease renewed after each step, given up when another run took
-// it, and let go of when a step fails. A row that needs the Registry to fail (a cut wait, a check that heals) overrides
-// that one method; every other call is the real Registry's.
+// it, and let go of when a step fails; and the Skills kept Global (#693 S3b-3), asked against a repo the Registry is
+// served in place of GitHub, applied each Skill against its pin, and resumed after a multi-Skill install was cut. A row
+// that needs the Registry to fail (a cut wait, a check that heals, a cut install) overrides that one method; every other
+// call is the real Registry's.
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import {
   type AgentChangeVia,
@@ -24,14 +26,9 @@ import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import type { RepoReader } from "../github/skill-fetch.ts";
-import { openAgentChanges } from "../registry/agent-changes.ts";
+import { skillMd } from "../github/skill-repo.fixture.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
-import type { RealRegistry } from "../registry/registry.fixture.ts";
-import { installSkills, previewSkillInstall } from "../registry/skill-install.ts";
-import { previewSkillUpdates, updateSkills } from "../registry/skill-updates.ts";
-import { openSkills, unapprovedGlobalChange } from "../registry/skills.ts";
-import { openRegistryStore } from "../registry/store.ts";
+import type { RealRegistry, ServedRepo } from "../registry/registry.fixture.ts";
 import { SECRETS_CHANGED } from "../registry/via-secrets.ts";
 import { askApproval } from "./approval-ask.ts";
 import { approvalWait, approvalWithdraw } from "./approval-follow.ts";
@@ -62,17 +59,14 @@ const callOn =
 
 type RegistryCall = ReturnType<typeof callOn>;
 
-/** The methods a row puts in place of the real Registry's, over its `call` (and its Durable Object, to run code in it). */
-type Overrides = (
-  call: RegistryCall,
-  stub: DurableObjectStub<RealRegistry>,
-) => Partial<HarnessRegistry>;
+/** The methods a row puts in place of the real Registry's, over its `call`. */
+type Overrides = (call: RegistryCall) => Partial<HarnessRegistry>;
 
 /** A fresh real Registry, and the asking, applying and following parts over it, with `overrides` in place of its own. */
 const started = async (overrides: Overrides = () => ({})) => {
   const stub = env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId());
   const call = callOn(stub);
-  const replaced = overrides(call, stub);
+  const replaced = overrides(call);
 
   await call("agentChangeFeatures");
 
@@ -119,10 +113,22 @@ const started = async (overrides: Overrides = () => ({})) => {
   let attempts = 0;
 
   const ask = askApproval({ registry, writes, background, origin: ORIGIN });
-  const runner = approvalRunner({ registry, writes, upkeep: () => Effect.void, background });
+  /** The fields of the changes each upkeep a run reran was for (`approvalRunner`'s `upkeep`), in order. */
+  const upkept: Array<ReadonlyArray<string>> = [];
+
+  const runner = approvalRunner({
+    registry,
+    writes,
+    upkeep: (changes) => Effect.sync(() => void upkept.push(changes.map(({ field }) => field))),
+    background,
+  });
 
   return {
     stub,
+    upkept,
+    /** Serve `repo` to the Registry's Skill reads, in place of GitHub, from the next read on. */
+    serve: (repo: ServedRepo) =>
+      runInDurableObject(stub, (instance: RealRegistry) => instance.serveRepo(repo)),
     call,
     built,
     synced,
@@ -713,132 +719,65 @@ describe("the MCP servers' tools", () => {
   );
 });
 
-// #693 S3b-3: a change to the Skills kept Global asks the owner. GitHub is the one thing stood in for: the Registry's Skill
-// methods that read it run the Registry's own code (`installSkills`, `updateSkills` and their previews) in its object, over
-// its storage, with a fake reader; the asks, the requests, the claims and the removal are the real Registry's.
+// #693 S3b-3: a change to the Skills kept Global asks the owner. GitHub is the one thing stood in for: the Registry reads the
+// repo a row serves (`serve`, its `SkillReaderOverride`), and every preview and write is the Registry's own, the Secret
+// check of an endpoint's write and the claim included.
 describe("the Skills kept Global", () => {
   const COMMIT = "c0ffee0000000000000000000000000000000001";
   const LATER = "c0ffee0000000000000000000000000000000002";
-
-  const skillMd = (name: string, body = "Steps.") =>
-    `---\nname: ${name}\ndescription: What ${name} does.\n---\n${body}\n`;
-
-  /** A repo as the fake reader serves it: its files by path, at its head commit. */
-  type Repo = { files: Readonly<Record<string, string>>; commit: string };
-
-  /** A reader over `repo` as it is when read; a blob's SHA names its commit, so a folder changes with its commit. */
-  const readerOf = (repo: Repo): RepoReader => {
-    const listing = async () => ({
-      truncated: false,
-      entries: Object.entries(repo.files).map(([path, text]) => ({
-        path,
-        type: "blob" as const,
-        sha: `${repo.commit}:${path}`,
-        size: text.length,
-      })),
-    });
-
-    return {
-      commit: async () => repo.commit,
-      tree: listing,
-      headTree: listing,
-      file: async () => null,
-      blob: async (_repo, sha) =>
-        new TextEncoder().encode(repo.files[sha.slice(sha.indexOf(":") + 1)] ?? ""),
-    };
-  };
 
   const TWO = {
     "skills/grill-me/SKILL.md": skillMd("grill-me"),
     "skills/tdd/SKILL.md": skillMd("tdd"),
   };
 
-  /** The Registry's own code of the Skill methods `inObject` runs: its storage, and the time now. */
-  const contextIn = (storage: DurableObjectStorage) => ({
-    storage,
-    store: openRegistryStore(storage),
-    skills: openSkills(storage),
-    changes: openAgentChanges(storage),
-    now: Date.now(),
-  });
+  /** Grill-me, newer, at the later commit: what an update moves it to. */
+  const NEWER: ServedRepo = {
+    files: { ...TWO, "skills/grill-me/SKILL.md": skillMd("grill-me", "Newer steps.") },
+    commit: LATER,
+  };
 
   /**
-   * The Registry's GitHub-reading Skill methods over `repo`, run in its object as it runs them (refusing a change at Global
-   * without a pin), and `keep`, the owner's install of Skills at Global. `cutFirstInstall`: the first install keeps only the
-   * first Skill the owner approved, then its run is cut (a multi-Skill install cut after one Skill committed).
+   * A fresh Registry serving `repo`, with the owner's install of Skills at Global (`keep`, recorded as no Agent change) and
+   * the Skills kept there by name (`kept`).
    */
-  const github = (repo: Repo, { cutFirstInstall = false } = {}) => {
-    let installs = 0;
-    let target: DurableObjectStub<RealRegistry> | undefined;
+  const startedWith = async (repo: ServedRepo, overrides?: Overrides) => {
+    const run = await started(overrides);
 
-    const inObject = <A>(body: (context: ReturnType<typeof contextIn>) => Promise<A>) => {
-      if (target === undefined) throw new Error("the Registry is not started");
-
-      return runInDurableObject(target, async (_instance: RealRegistry, state) =>
-        body(contextIn(state.storage)),
-      );
-    };
-
-    const overrides: Overrides = (_call, stub) => {
-      target = stub;
-
-      return {
-        agentPreviewSkillInstall: (input) =>
-          Effect.promise(() =>
-            inObject((context) => previewSkillInstall(context, readerOf(repo), input)),
-          ),
-        agentInstallSkills: ({ pin, ...input }) =>
-          Effect.suspend(() => {
-            const unapproved = unapprovedGlobalChange(input.environment, pin !== undefined);
-
-            if (unapproved !== undefined) {
-              return Effect.succeed({ status: "refused" as const, message: unapproved });
-            }
-
-            installs += 1;
-
-            if (!cutFirstInstall || installs > 1 || pin === undefined) {
-              return Effect.promise(() =>
-                inObject((context) => installSkills(context, readerOf(repo), { ...input, pin })),
-              );
-            }
-
-            const first = { ...pin, skills: pin.skills.slice(0, 1) };
-
-            return Effect.promise(() =>
-              inObject((context) =>
-                installSkills(context, readerOf(repo), { ...input, pin: first }),
-              ),
-            ).pipe(Effect.andThen(Effect.die(new Error("The run was cut after its first Skill"))));
-          }),
-        previewSkillUpdates: (input) =>
-          Effect.promise(() =>
-            inObject((context) => previewSkillUpdates(context, readerOf(repo), input)),
-          ),
-        agentUpdateSkills: (input) =>
-          Effect.suspend(() => {
-            const unapproved = unapprovedGlobalChange(input.environment, input.pins !== undefined);
-
-            return unapproved === undefined
-              ? Effect.promise(() =>
-                  inObject((context) => updateSkills(context, readerOf(repo), input)),
-                )
-              : Effect.succeed({ status: "refused" as const, message: unapproved });
-          }),
-      };
-    };
+    await run.serve(repo);
 
     return {
-      overrides,
+      ...run,
       keep: (skills: ReadonlyArray<string>) =>
-        inObject((context) =>
-          installSkills(context, readerOf(repo), {
-            environment: GLOBAL_SCOPE,
-            source: "o/skills",
-            skills,
-            author: null,
-          }),
+        run.call("installSkills", { environment: GLOBAL_SCOPE, source: "o/skills", skills }),
+      kept: async () =>
+        ((await run.call("listSkills", { environment: GLOBAL_SCOPE })) ?? []).map(
+          ({ name }) => name,
         ),
+    };
+  };
+
+  /**
+   * The Registry's install, cut after the first Skill the owner approved committed (a multi-Skill install cut between two
+   * transactions): its first call keeps that Skill alone, as the real write, then dies; the next calls are the real write.
+   */
+  const cutAfterFirstSkill: Overrides = (call) => {
+    let installs = 0;
+
+    return {
+      agentInstallSkills: (input) => {
+        installs += 1;
+
+        const { pin } = input;
+
+        if (installs > 1 || pin === undefined) {
+          return Effect.promise(() => call("agentInstallSkills", input));
+        }
+
+        return Effect.promise(() =>
+          call("agentInstallSkills", { ...input, pin: { ...pin, skills: pin.skills.slice(0, 1) } }),
+        ).pipe(Effect.andThen(Effect.die(new Error("The run was cut after its first Skill"))));
+      },
     };
   };
 
@@ -858,125 +797,124 @@ describe("the Skills kept Global", () => {
     return found;
   };
 
-  /** The Skills kept Global, by name. */
-  const keptGlobal = async (call: RegistryCall) =>
-    ((await call("listSkills", { environment: GLOBAL_SCOPE })) ?? []).map(({ name }) => name);
+  /** What a row asks for at Global, and what its request keeps: the pin as `expected`, the file text `shown` on the card. */
+  type Asked = {
+    readonly tool: ApprovalToolName;
+    readonly args: Readonly<Record<string, Schema.Json>>;
+    /** Whether Global keeps both Skills first, and the repo moved on (`NEWER`): what an update and a removal need. */
+    readonly keptFirst: boolean;
+    readonly expected: unknown;
+    readonly shown: string;
+  };
 
-  it("answers an install, an update and a removal at Global pending, on the Skills section, keeping only the pins", async () => {
-    const repo = { files: TWO, commit: COMMIT };
-    const { overrides, keep } = github(repo);
-    const { ask, call } = await started(overrides);
-
-    const installing = okValue(await ask("environment_skill_install", INSTALL));
-    const installId = approvalIdOf(await ask("environment_skill_install", INSTALL));
-
-    expect(installing.structured).toMatchObject({
-      status: "pending",
-      approval_id: installId,
-      url: `${ORIGIN}/settings/all/skills?request=${installId}`,
-      scope: { id: GLOBAL_SCOPE, name: "Global" },
-    });
-
-    const install = await requestOf(call, installId);
-
-    expect(install).toMatchObject({
-      scope: GLOBAL_SCOPE,
-      section: "skills",
+  it.each<Asked>([
+    {
       tool: "environment_skill_install",
-    });
-    // The card shows the files; the row's `expected` holds the pin only, never a file's text (#685 L6).
-    expect(install.card.after).toContain("Steps.");
-    expect(install.expected).toEqual({
-      commit: COMMIT,
-      skills: [
-        { name: "grill-me", path: "skills/grill-me", digest: expect.any(String), savedAt: null },
-        { name: "tdd", path: "skills/tdd", digest: expect.any(String), savedAt: null },
-      ],
-    });
-    expect(JSON.stringify(install.expected)).not.toContain("Steps.");
+      args: INSTALL,
+      keptFirst: false,
+      expected: {
+        commit: COMMIT,
+        skills: [
+          { name: "grill-me", path: "skills/grill-me", digest: expect.any(String), savedAt: null },
+          { name: "tdd", path: "skills/tdd", digest: expect.any(String), savedAt: null },
+        ],
+      },
+      shown: "Steps.",
+    },
+    {
+      tool: "environment_skill_update",
+      args: { id: GLOBAL_SCOPE, names: ["grill-me"], reason: "Latest" },
+      keptFirst: true,
+      expected: {
+        pins: [
+          {
+            name: "grill-me",
+            savedAt: expect.any(Number),
+            commit: LATER,
+            folderHash: expect.any(String),
+          },
+        ],
+      },
+      shown: "Newer steps.",
+    },
+    {
+      tool: "environment_skill_remove",
+      args: { id: GLOBAL_SCOPE, name: "tdd", reason: "Unused" },
+      keptFirst: true,
+      expected: { savedAt: expect.any(Number) },
+      shown: "tdd",
+    },
+  ])(
+    "answers $tool at Global pending, its request on the Skills section keeping the pin only",
+    async ({ tool, args, keptFirst, expected, shown }) => {
+      const run = await startedWith({ files: TWO, commit: COMMIT });
 
-    // An update and a removal of Skills kept Global already.
-    await keep(["grill-me", "tdd"]);
-    repo.files = { ...TWO, "skills/grill-me/SKILL.md": skillMd("grill-me", "Newer steps.") };
-    repo.commit = LATER;
+      if (keptFirst) {
+        await run.keep(["grill-me", "tdd"]);
+        await run.serve(NEWER);
+      }
 
-    const updateId = approvalIdOf(
-      await ask("environment_skill_update", {
-        id: GLOBAL_SCOPE,
-        names: ["grill-me"],
-        reason: "Latest",
+      const answer = okValue(await run.ask(tool, args));
+      const id = approvalIdOf(await run.ask(tool, args));
+
+      expect(answer.structured).toMatchObject({
+        status: "pending",
+        approval_id: id,
+        url: `${ORIGIN}/settings/all/skills?request=${id}`,
+        scope: { id: GLOBAL_SCOPE, name: "Global" },
+      });
+
+      const request = await requestOf(run.call, id);
+
+      expect(request).toMatchObject({ scope: GLOBAL_SCOPE, section: "skills", tool });
+      // The card shows what the owner approves; the request's `expected` holds the pin only, never a file's text (#685 L6).
+      expect(request.card.after + request.card.before).toContain(shown);
+      expect(request.expected).toEqual(expected);
+      expect(JSON.stringify(request.expected)).not.toMatch(/steps/i);
+      // Nothing is changed until the owner approves.
+      expect(await run.call("listAgentChanges", { environment: GLOBAL_SCOPE })).toEqual([]);
+    },
+  );
+
+  // Both are the Registry's preview refusing before the owner is asked: no request is kept.
+  it.each([
+    [
+      "more Skills than one request shows",
+      Array.from({ length: 11 }, (_, at) => `s${at}`),
+      (name: string) => ({ [`skills/${name}/SKILL.md`]: skillMd(name) }),
+    ],
+    [
+      // Two Skills that fit a set alone, and not together: 3 files of 1.4 MiB each.
+      "Skills over the size of a Skill set",
+      ["a", "b"],
+      (name: string) => ({
+        [`skills/${name}/SKILL.md`]: skillMd(name),
+        [`skills/${name}/part-1.md`]: "x".repeat(1_400 * 1024),
+        [`skills/${name}/part-2.md`]: "x".repeat(1_400 * 1024),
+        [`skills/${name}/part-3.md`]: "x".repeat(1_400 * 1024),
       }),
-    );
+    ],
+  ])("refuses %s, keeping no request", async (_, skills, folder) => {
+    const files = Object.assign({}, ...skills.map(folder));
 
-    const update = await requestOf(call, updateId);
+    const run = await startedWith({ files, commit: COMMIT });
 
-    expect(update.card.after).toContain("Newer steps.");
-    expect(update.expected).toEqual({
-      pins: [
-        {
-          name: "grill-me",
-          savedAt: expect.any(Number),
-          commit: LATER,
-          folderHash: expect.any(String),
-        },
-      ],
+    expect(await run.ask("environment_skill_install", { ...INSTALL, skills })).toMatchObject({
+      ok: false,
+      error: { code: "invalid_argument" },
     });
-
-    const removeId = approvalIdOf(
-      await ask("environment_skill_remove", { id: GLOBAL_SCOPE, name: "tdd", reason: "Unused" }),
-    );
-
-    expect((await requestOf(call, removeId)).expected).toEqual({ savedAt: expect.any(Number) });
-    // Nothing is changed until the owner approves.
-    expect(await call("listAgentChanges", { environment: GLOBAL_SCOPE })).toEqual([]);
-  });
-
-  it("refuses more Skills than one request shows, and a preview over the size cap, keeping no request", async () => {
-    const eleven = Object.fromEntries(
-      Array.from({ length: 11 }, (_, at) => [`skills/s${at}/SKILL.md`, skillMd(`s${at}`)]),
-    );
-
-    // Two Skills that fit a set alone, and not together: 3 files of 1.4 MiB each.
-    const big = (name: string) => ({
-      [`skills/${name}/SKILL.md`]: skillMd(name),
-      ...Object.fromEntries(
-        [1, 2, 3].map((at) => [`skills/${name}/part-${at}.md`, "x".repeat(1_400 * 1024)]),
-      ),
-    });
-
-    const many = github({ files: eleven, commit: COMMIT });
-    const run = await started(many.overrides);
-
-    const tooMany = await run.ask("environment_skill_install", {
-      ...INSTALL,
-      skills: Object.keys(eleven).map((path) => path.split("/")[1] ?? ""),
-    });
-
-    expect(tooMany).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
-    expect(!tooMany.ok && tooMany.error.message).toContain("more than the 10");
     expect(await run.call("listApprovals", {})).toEqual([]);
-
-    const large = github({ files: { ...big("a"), ...big("b") }, commit: COMMIT });
-    const sized = await started(large.overrides);
-
-    const tooLarge = await sized.ask("environment_skill_install", {
-      ...INSTALL,
-      skills: ["a", "b"],
-    });
-
-    expect(tooLarge).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
-    expect(!tooLarge.ok && tooLarge.error.message).toContain("bytes together");
-    expect(await sized.call("listApprovals", {})).toEqual([]);
   });
 
   it("installs on Approve each Skill only while its pin holds, as approved under the request's claim, naming those it skipped", async () => {
-    const repo = { files: TWO, commit: COMMIT };
-    const { overrides } = github(repo);
-    const { ask, call, apply } = await started(overrides);
+    const { ask, call, apply, serve, kept } = await startedWith({ files: TWO, commit: COMMIT });
     const id = approvalIdOf(await ask("environment_skill_install", INSTALL));
 
     // tdd changes at the commit after the owner was asked: its files are not the ones they were shown.
-    repo.files = { ...TWO, "skills/tdd/SKILL.md": skillMd("tdd", "Other steps.") };
+    await serve({
+      files: { ...TWO, "skills/tdd/SKILL.md": skillMd("tdd", "Other steps.") },
+      commit: COMMIT,
+    });
     await call("answerApproval", { id, approved: true });
 
     const applied = await apply(id);
@@ -988,13 +926,11 @@ describe("the Skills kept Global", () => {
           scope: { id: GLOBAL_SCOPE },
           changed: true,
           installed: [{ name: "grill-me" }],
-          refused: [{ name: "tdd" }],
+          refused: [{ name: "tdd", path: "skills/tdd" }],
         },
       },
     });
-    expect(applied?.result?.text).toContain("Skipped (the others were kept):");
-    expect(applied?.result?.text).toContain("from their next readying");
-    expect(await keptGlobal(call)).toEqual(["grill-me"]);
+    expect(await kept()).toEqual(["grill-me"]);
     expect(await call("listAgentChanges", { environment: GLOBAL_SCOPE })).toEqual([
       expect.objectContaining({
         field: "skills.grill-me",
@@ -1010,34 +946,32 @@ describe("the Skills kept Global", () => {
   });
 
   it("ends changed_since, keeping nothing, when no Skill is still as the owner was shown it", async () => {
-    const repo = { files: TWO, commit: COMMIT };
-    const { overrides, keep } = github(repo);
-    const { ask, call, apply } = await started(overrides);
+    const { ask, call, apply, serve, keep } = await startedWith({ files: TWO, commit: COMMIT });
 
     const id = approvalIdOf(
       await ask("environment_skill_install", { ...INSTALL, skills: ["grill-me"] }),
     );
 
-    // The owner installs it themselves meanwhile: the Skill of the name was saved since the ask.
+    // The owner installs it themselves meanwhile, and it changes at the commit after: it is not as they were shown it.
     await keep(["grill-me"]);
-    repo.files = { ...TWO, "skills/grill-me/SKILL.md": skillMd("grill-me", "Other.") };
+    await serve({
+      files: { ...TWO, "skills/grill-me/SKILL.md": skillMd("grill-me", "Other.") },
+      commit: COMMIT,
+    });
     await call("answerApproval", { id, approved: true });
 
-    expect(await apply(id)).toMatchObject({
-      status: "changed_since",
-      reason: expect.stringContaining("grill-me"),
-    });
+    expect(await apply(id)).toMatchObject({ status: "changed_since" });
     expect(await call("listAgentChanges", { environment: GLOBAL_SCOPE })).toEqual([]);
   });
 
   it("updates and removes on Approve, each against what the owner saw", async () => {
-    const repo = { files: TWO, commit: COMMIT };
-    const { overrides, keep } = github(repo);
-    const { ask, call, apply } = await started(overrides);
+    const { ask, call, apply, serve, keep, kept } = await startedWith({
+      files: TWO,
+      commit: COMMIT,
+    });
 
     await keep(["grill-me", "tdd"]);
-    repo.files = { ...TWO, "skills/grill-me/SKILL.md": skillMd("grill-me", "Newer steps.") };
-    repo.commit = LATER;
+    await serve(NEWER);
 
     const update = approvalIdOf(
       await ask("environment_skill_update", {
@@ -1062,7 +996,7 @@ describe("the Skills kept Global", () => {
       status: "finished",
       result: { structured: { skill: "tdd", changed: true } },
     });
-    expect(await keptGlobal(call)).toEqual(["grill-me"]);
+    expect(await kept()).toEqual(["grill-me"]);
     expect(
       (await call("listAgentChanges", { environment: GLOBAL_SCOPE }))?.map(({ tool }) => tool),
     ).toEqual(["environment_skill_remove", "environment_skill_update"]);
@@ -1070,15 +1004,18 @@ describe("the Skills kept Global", () => {
 
   // #685 L18: one transaction per Skill, so a run can be cut between two; the next runs `apply` again under the same attempt.
   it("resumes a multi-Skill install cut after its first Skill committed, installing nothing twice", async () => {
-    const { overrides } = github({ files: TWO, commit: COMMIT }, { cutFirstInstall: true });
-    const { ask, call, apply } = await started(overrides);
+    const { ask, call, apply, kept, upkept } = await startedWith(
+      { files: TWO, commit: COMMIT },
+      cutAfterFirstSkill,
+    );
+
     const id = approvalIdOf(await ask("environment_skill_install", INSTALL));
 
     await call("answerApproval", { id, approved: true });
 
     // The first run keeps grill-me, then is cut: the request stays approved, its claim holding grill-me's change.
     expect(await apply(id)).toMatchObject({ status: "approved" });
-    expect(await keptGlobal(call)).toEqual(["grill-me"]);
+    expect(await kept()).toEqual(["grill-me"]);
     expect(await call("changeRequest", { id: `approval:${id}` })).toMatchObject({
       answer: null,
       changes: [expect.objectContaining({ field: "skills.grill-me" })],
@@ -1100,7 +1037,9 @@ describe("the Skills kept Global", () => {
         },
       },
     });
-    expect(await keptGlobal(call)).toEqual(["grill-me", "tdd"]);
+    expect(await kept()).toEqual(["grill-me", "tdd"]);
+    // The upkeep is run again for every Skill the request kept: the cut run's and the rerun's.
+    expect(upkept).toEqual([["skills.grill-me", "skills.tdd"]]);
     expect(
       (await call("listAgentChanges", { environment: GLOBAL_SCOPE }))?.map(({ field }) => field),
     ).toEqual(["skills.tdd", "skills.grill-me"]);

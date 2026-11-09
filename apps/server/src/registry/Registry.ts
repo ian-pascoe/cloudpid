@@ -2,6 +2,7 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
@@ -82,7 +83,7 @@ import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-re
 import { mcpChangeCheck, mcpGuard } from "./mcp-change-check.ts";
 import { mcpChangeNotice } from "./mcp-change-notice.ts";
 import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
-import { githubSkillReader } from "./skill-reader.ts";
+import { githubSkillReader, SkillReaderOverride } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
   runDailySkillCheck,
@@ -1403,7 +1404,11 @@ export const registryMethods = Effect.suspend(() =>
         });
 
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
-        const skillReader = githubSkillReader(github);
+        // A test's Registry reads a fake repo in place of GitHub (`SkillReaderOverride`); a deploy provides none.
+        const skillReader = Option.getOrElse(yield* Effect.serviceOption(SkillReaderOverride), () =>
+          githubSkillReader(github),
+        );
+
         // The Repos' `.pi/mcp.json` are read through the same reader (one token), and kept in the Registry.
         const mcpLooks = openMcpRepoLooks(store, skillReader);
 
