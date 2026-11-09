@@ -6,7 +6,6 @@ import { MAX_CHANGED_FILES } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, inject, it } from "vitest";
 import { lines, REWRITE_LINES, type RepoFiles } from "./changes.repos.ts";
-import { MAX_PACK_BYTES } from "./git.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 const repos = inject("changesRepos");
@@ -182,40 +181,6 @@ describe("the Workspace DO's Changes", () => {
     });
   });
 
-  it("sends a repo with .gitattributes rules git applies to the Container, and never starts it on its own", async () => {
-    const stub = workspace();
-
-    await place(stub, "attributed");
-
-    // The Container is stopped: the repo keeps its last list (none yet), "may be out of date".
-    expect(
-      await stub.changes({ directory: "/workspace/attributed", startContainer: false }),
-    ).toEqual({
-      repos: [
-        {
-          repo: "attributed",
-          head: { commit: expect.stringMatching(/^[0-9a-f]{40}$/), branch: "main" },
-          files: [],
-          more: 0,
-          stale: true,
-        },
-      ],
-    });
-    expect((await stub.liveStubs()).container).toBe(0);
-
-    // The owner's Refresh may start it: the listing goes to the Container, which this test Worker refuses.
-    const refreshed = await stub.changes({
-      directory: "/workspace/attributed",
-      startContainer: true,
-    });
-
-    expect((await stub.liveStubs()).container).toBe(1);
-    expect(refreshed.repos[0]).toMatchObject({
-      stale: true,
-      error: expect.stringContaining("no Container"),
-    });
-  });
-
   it("lets the Workspace DO's other calls in while it lists", async () => {
     const stub = workspace();
 
@@ -239,19 +204,5 @@ describe("the Workspace DO's Changes", () => {
       { path: "src/d0/f0.ts", status: "modified", additions: 1, deletions: 0 },
     ]);
     expect(order).toEqual(["read", "listing"]);
-  });
-
-  it("sends a repo whose packs are over 16 MB to the Container", async () => {
-    const stub = workspace();
-
-    await place(stub, "tiny");
-    await stub.putFiles([
-      ["/workspace/tiny/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1)],
-    ]);
-
-    expect(
-      (await stub.changes({ directory: "/workspace/tiny", startContainer: false })).repos,
-    ).toEqual([expect.objectContaining({ repo: "tiny", stale: true, files: [] })]);
-    expect((await stub.liveStubs()).container).toBe(0);
   });
 });

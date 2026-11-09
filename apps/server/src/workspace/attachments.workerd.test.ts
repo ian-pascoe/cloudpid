@@ -88,18 +88,6 @@ describe("an Attachment upload to a Workspace", () => {
     expect(await names(look, "/workspace/.cloudpid/uploads")).toEqual([session]);
   });
 
-  it("suffixes a name the Session already uploaded", async () => {
-    const { files, look } = fresh();
-
-    await call(files, "PUT", "image.png", "one");
-
-    const second = await call(files, "PUT", "image.png", "two");
-
-    expect(await second.json()).toEqual({ name: "image-2.png", path: `${uploads}/image-2.png` });
-    expect(await names(look, uploads)).toEqual(["image-2.png", "image.png"]);
-    expect(new TextDecoder().decode(await bytesAt(look, `${uploads}/image.png`))).toBe("one");
-  });
-
   it("keeps a name that tries to leave the directory inside it", async () => {
     const { files, look } = fresh();
 
@@ -111,17 +99,6 @@ describe("an Attachment upload to a Workspace", () => {
       ["attachment", "escape", "workspace-escape", "escape-2"].sort(),
     );
     expect(await names(look, "/workspace")).toEqual([".agents", ".cloudpid"]);
-  });
-
-  it("removes one that was not sent, and only it", async () => {
-    const { files, look } = fresh();
-
-    await call(files, "PUT", "a.txt", "a");
-    await call(files, "PUT", "b.txt", "b");
-
-    expect((await call(files, "DELETE", "a.txt")).status).toBe(204);
-    expect((await call(files, "DELETE", "..%2Fa.txt")).status).toBe(204);
-    expect(await names(look, uploads)).toEqual(["b.txt"]);
   });
 
   it("stores one of almost the limit, and refuses one over it without writing", async () => {

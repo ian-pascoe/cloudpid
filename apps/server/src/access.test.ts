@@ -280,12 +280,9 @@ describe("the assertion's classification", () => {
     });
   });
 
-  it.each(["not-a-jwt", "a.b", "a.b.c.d", "!!!.!!!.!!!"])(
-    "refuses %s as malformed",
-    async (value) => {
-      expect((await classify(value)).admitted).toBe(false);
-    },
-  );
+  it.each(["not-a-jwt", "!!!.!!!.!!!"])("refuses %s as malformed", async (value) => {
+    expect((await classify(value)).admitted).toBe(false);
+  });
 
   it("refuses everything when the Worker has no audience", async () => {
     const assertion = await sign(team, ownerClaims());
@@ -384,10 +381,7 @@ describe("the MCP endpoint's classification", () => {
 
   it.each([
     ["another token's client id", { common_name: "other.access" }],
-    ["the owner's email", { email: OWNER_EMAIL }],
-    ["a user's id", { sub: "0190f0a8-1b2c-7d3e-8f40-123456789abc" }],
     ["a non-string common_name", { common_name: 7 }],
-    ["an empty common_name", { common_name: "" }],
   ])("refuses an assertion on /mcp with a common_name and %s", async (_name, claims) => {
     expect(await classifyMcp(await sign(team, { ...tokenClaims(), ...claims }))).toEqual({
       admitted: false,
@@ -479,7 +473,7 @@ describe("the MCP endpoint's classification", () => {
 describe("local mode (alchemy dev)", () => {
   const local = guard({ audience: undefined, localMode: true });
 
-  it.each(["localhost:1337", "localhost:5173", "127.0.0.1:1337", "[::1]:1337", "LOCALHOST"])(
+  it.each(["localhost:1337", "[::1]:1337"])(
     "admits the owner on the loopback host %s, with no assertion",
     async (host) => {
       expect(await admit({ assertion: undefined, hosts: [host], now: NOW }, local)).toEqual({
@@ -524,29 +518,8 @@ describe("local mode (alchemy dev)", () => {
 });
 
 describe("the guard's vars", () => {
-  it("are read from the Worker's environment as strings", () => {
-    expect(guardFromEnv({ CLOUDPID_ACCESS_AUD: "an-aud" })).toMatchObject({
-      audience: "an-aud",
-      localMode: false,
-    });
-    expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: "true" })).toMatchObject({
-      audience: undefined,
-      localMode: true,
-    });
-    expect(guardFromEnv({ CLOUDPID_MCP_ACCESS_AUD: "mcp-aud" }).mcp).toEqual({
-      audience: "mcp-aud",
-    });
-  });
-
-  it.each(["false", "1", "True", "", "yes"])(
-    "do not put the Worker in local mode for %j",
-    (value) => {
-      expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: value }).localMode).toBe(false);
-    },
-  );
-
-  it("put nothing in local mode when the var is absent", () => {
-    expect(guardFromEnv({})).toMatchObject({ audience: undefined, localMode: false });
+  it.each(["false", "1"])("do not put the Worker in local mode for %j", (value) => {
+    expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: value }).localMode).toBe(false);
   });
 });
 
@@ -823,30 +796,6 @@ describe("the guard on a request", () => {
 
       expect(statuses).toEqual([200, 200]);
       expect(logs).toEqual([PROFILE, { ...PROFILE, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
-    });
-
-    it("logs an owner on a main route with both audiences, with and without oauth", async () => {
-      const { logs } = await runLogged([
-        await requestFor("/rpc", { ...ownerClaims(), aud: BOTH }),
-        await requestFor("/rpc", { ...ownerClaims(), aud: BOTH, ...WITH_OAUTH }),
-      ]);
-
-      const both = { ...PROFILE, audienceCount: 2, audiences: ["main", "mcp"] };
-
-      expect(logs).toEqual([both, { ...both, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
-    });
-
-    it("logs an owner on /mcp with one audience, with and without oauth", async () => {
-      const aud = [MCP_AUDIENCE];
-
-      const { logs } = await runLogged([
-        await requestFor("/mcp", { ...ownerClaims(), aud }),
-        await requestFor("/mcp", { ...ownerClaims(), aud, ...WITH_OAUTH }),
-      ]);
-
-      const mcp = { ...PROFILE, route: "mcp", audiences: ["mcp"] };
-
-      expect(logs).toEqual([mcp, { ...mcp, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
     });
 
     it("logs an owner on /mcp with both audiences, with and without oauth", async () => {

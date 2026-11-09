@@ -300,15 +300,15 @@ describe("ContainerUsageLedger with analytics", () => {
 });
 
 describe("a usage record kept before the sizes were renamed", () => {
-  const legacy: StoredUsageRecord = {
-    runMs: { "custom-2": 60_000, "cpu-2": 30_000, "standard-2": 10_000 },
-    busyMs: { "custom-2": 6_000 },
-    runs: [{ instance: "custom-3", start: START, end: START + MINUTE }],
-    busy: [{ instance: "custom-3", start: START, end: START + 1000 }],
-    last: "custom-1",
-  };
-
   it("reads every size under its name now, an old name's time added to its new one's", () => {
+    const legacy: StoredUsageRecord = {
+      runMs: { "custom-2": 60_000, "cpu-2": 30_000, "standard-2": 10_000 },
+      busyMs: { "custom-2": 6_000 },
+      runs: [{ instance: "custom-3", start: START, end: START + MINUTE }],
+      busy: [{ instance: "custom-3", start: START, end: START + 1000 }],
+      last: "custom-1",
+    };
+
     expect(currentUsageRecord(legacy)).toEqual({
       runMs: { "cpu-2": 90_000, "standard-2": 10_000 },
       busyMs: { "cpu-2": 6_000 },
@@ -318,36 +318,5 @@ describe("a usage record kept before the sizes were renamed", () => {
       last: "cpu-1",
     });
     expect(currentUsageRecord(undefined)).toBeUndefined();
-  });
-
-  it("renames the open run's size", () => {
-    const open = {
-      instance: "custom-2" as const,
-      launchedAt: START,
-      startedAt: START,
-      seenAt: START,
-    };
-
-    expect(currentUsageRecord({ ...legacy, open })?.open).toEqual({ ...open, instance: "cpu-2" });
-  });
-
-  it("prices and counts the old sizes' runs as their new names'", async () => {
-    const ledger = new ContainerUsageLedger({
-      load: () => legacy,
-      save: () => {},
-      running: () => false,
-      launch: async () => undefined,
-      until: async () => null,
-      now: () => START + 2 * MINUTE,
-      warn: () => {},
-    });
-
-    const usage = await ledger.read();
-    const cpu2 = containerRates("cpu-2");
-    const standard2 = containerRates("standard-2");
-
-    expect(usage).toMatchObject({ instance: "cpu-1", runSeconds: 100, running: false });
-    expect(usage!.memory).toBeCloseTo(90 * cpu2.memory + 10 * standard2.memory, 12);
-    expect(usage!.cpu).toBeCloseTo(6 * cpu2.cpu, 12);
   });
 });

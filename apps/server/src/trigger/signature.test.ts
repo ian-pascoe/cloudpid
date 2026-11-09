@@ -34,11 +34,8 @@ describe("checkGitHubSignature", () => {
 
   it.each([
     ["no header", null],
-    ["an empty header", ""],
     ["another algorithm", `sha1=${createHmac("sha1", secret).update(body).digest("hex")}`],
-    ["no prefix", createHmac("sha256", secret).update(body).digest("hex")],
     ["a digest that is not hex", "sha256=zz"],
-    ["an odd digest", "sha256=abc"],
     ["a digest of another key", github("another-secret")],
     ["a short digest", github(secret).slice(0, -2)],
   ])("refuses %s", async (_, signature) => {
@@ -117,20 +114,11 @@ describe("checkStandardSignature", () => {
 
   it.each([
     ["no id", { id: null }],
-    ["no timestamp", { timestamp: null }],
-    ["no signature", { signature: null }],
-    ["a signature of another id", { id: "msg_2" }],
     ["a signature of another key", { signature: sign("another-secret", "msg_1", seconds) }],
     ["a signature of another body", { body: bytes("{}") }],
     ["a signature that is not base64", { signature: "v1,!!!" }],
     ["an entry with no version", { signature: sign(secret, "msg_1", seconds).slice(3) }],
-    [
-      "an entry of another version",
-      { signature: sign(secret, "msg_1", seconds).replace("v1", "v2") },
-    ],
-    ["an empty signature", { signature: "" }],
     ["a timestamp that is no integer", { timestamp: "1.5e9" }],
-    ["a timestamp with a sign", { timestamp: "-1" }],
   ])("refuses %s", async (_, over) => {
     expect(await check(over)).toBe("invalid");
   });

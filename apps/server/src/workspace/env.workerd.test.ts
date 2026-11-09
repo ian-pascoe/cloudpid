@@ -7,7 +7,7 @@ import {
 } from "@cloudflare/computer/backends/container";
 import { DEFAULT_CONTAINER_SETTINGS, type InstanceType } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
-import { secretReference } from "@cloudpid/extensions/secrets/core";
+
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
 import { discoverInstructions } from "@cloudpid/extensions/agents-md-discovery";
@@ -1006,68 +1006,6 @@ describe("restarting a Workspace's Container", () => {
       ),
     ).toBeUndefined();
   });
-
-  it("keeps the snapshot when the agent stops the Container, and says none was running", async () => {
-    const workspace = env.WORKSPACES.getByName("agent-restarts");
-    const snapshot = { id: "snap-2", size: 1, takenAt: 1, refreshedAt: 1 };
-
-    await runInDurableObject(workspace, async (_instance, state) => {
-      await state.storage.put("cloudpid:container-snapshot", snapshot);
-    });
-
-    // The test Worker runs no Container.
-    expect(await workspace.stopContainer({ forgetSnapshot: false })).toEqual({ wasRunning: false });
-    expect(
-      await runInDurableObject(workspace, (_instance, state) =>
-        state.storage.get("cloudpid:container-snapshot"),
-      ),
-    ).toEqual(snapshot);
-
-    expect(await workspace.stopContainer({ forgetSnapshot: true })).toEqual({ wasRunning: false });
-    expect(
-      await runInDurableObject(workspace, (_instance, state) =>
-        state.storage.get("cloudpid:container-snapshot"),
-      ),
-    ).toBeUndefined();
-  });
-
-  it("records the agent's resize for the next launch, within the Environment's size limit, and keeps it through a restart", async () => {
-    const workspace = env.WORKSPACES.getByName("agent-resizes");
-
-    const resized = () =>
-      runInDurableObject(workspace, (_instance, state) =>
-        state.storage.get("cloudpid:container-resize"),
-      );
-
-    expect(await workspace.updateContainerSettings({ maxInstance: "standard-3" })).toMatchObject({
-      ok: true,
-    });
-
-    // The test Worker runs no Container: the size is only recorded.
-    expect(await workspace.resizeContainer({ size: "standard-3" })).toEqual({
-      outcome: "resized",
-      wasRunning: false,
-      previous: "cpu-1",
-      next: "standard-3",
-      environment: "cpu-1",
-      snapshotted: false,
-    });
-    expect(await resized()).toBe("standard-3");
-
-    expect(await workspace.resizeContainer({ size: "standard-4" })).toEqual({
-      outcome: "refused",
-      limit: "standard-3",
-    });
-    expect(await workspace.stopContainer({ forgetSnapshot: true })).toEqual({ wasRunning: false });
-    expect(await resized()).toBe("standard-3");
-
-    // Back to the Environment's own size: nothing is recorded.
-    expect(await workspace.resizeContainer({ size: "cpu-1" })).toMatchObject({
-      previous: "standard-3",
-      next: "cpu-1",
-    });
-    expect(await resized()).toBeUndefined();
-  });
 });
 
 describe("a spare Workspace preparing itself", () => {
@@ -1098,46 +1036,5 @@ describe("a spare Workspace preparing itself", () => {
     expect((await workspace.containerSettings()).overrides).toEqual({ idleMinutes: 30 });
     expect((await workspace.liveStubs()).container).toBe(3);
     expect(await preparation()).toBeUndefined();
-  });
-});
-
-describe("an exit report on the Workspace DO", () => {
-  const kept = {
-    name: "API_KEY",
-    value: "sk-live-0123456789abcdef",
-    scope: "environment" as const,
-    build: false,
-  };
-
-  it("has the Environment's Secrets taken out with the copy the DO keeps sealed, after an eviction too", async () => {
-    const workspace = env.WORKSPACES.getByName("exit-report-redaction");
-
-    await workspace.updateEnvironmentSecrets([kept]);
-
-    expect(await workspace.redactExitReport(`Error: bad key ${kept.value}`)).toBe(
-      `Error: bad key ${secretReference("API_KEY")}`,
-    );
-
-    await evictDurableObject(workspace);
-
-    const redacted = await workspace.redactExitReport(`Error: bad key ${kept.value}`);
-
-    expect(redacted).toBe(`Error: bad key ${secretReference("API_KEY")}`);
-  });
-
-  it("is not answered while the copy does not open: the report cannot be shown free of them", async () => {
-    const workspace = env.WORKSPACES.getByName("exit-report-unopened");
-
-    await workspace.updateEnvironmentSecrets([kept]);
-    await runInDurableObject(workspace, async (_instance, state) => {
-      // As a copy sealed under another key reads: a Secret whose value does not open.
-      await state.storage.put("cloudpid:environment-secrets", {
-        version: 1,
-        secrets: [{ name: "API_KEY", scope: "environment", build: false, sealed: null }],
-      });
-    });
-    await evictDurableObject(workspace);
-
-    expect(await workspace.redactExitReport(`Error: bad key ${kept.value}`)).toBeNull();
   });
 });

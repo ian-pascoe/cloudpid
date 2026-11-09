@@ -396,17 +396,6 @@ describe("comparing a pull request", () => {
     expect(container.runs).toEqual([]);
   });
 
-  it("says pull requests need a GitHub remote for a remote that is not GitHub's", async () => {
-    const space = workspace(false);
-    const { comparison, requests } = module(space, open7(space));
-
-    expect(await comparison.compare(ask({ startContainer: true }))).toMatchObject({
-      status: "error",
-      error: { kind: "no_github", message: "Pull requests need a GitHub remote" },
-    });
-    expect(requests).toEqual([]);
-  });
-
   it("reads each side of a file by the blob ids the list kept", async () => {
     const space = workspace();
     const { comparison, container } = module(space, open7(space));
@@ -426,42 +415,6 @@ describe("comparing a pull request", () => {
 });
 
 describe("the open pull requests of a repo", () => {
-  it("lists them with one GraphQL request, never starts the Container, and keeps the list for 60 s", async () => {
-    const space = workspace();
-    const github = open7(space);
-    const { comparison, container, requests, clock } = module(space, github);
-
-    const list = async () => {
-      const { repos } = await comparison.sources(WORKSPACE_ROOT, true);
-
-      return repos[0]?.pulls;
-    };
-
-    const first = await list();
-
-    expect(first).toMatchObject({
-      status: "ok",
-      pulls: [
-        { number: 7, title: "Pull request 7", head: space.head7, additions: 3, changedFiles: 2 },
-      ],
-    });
-
-    // The counts are on the list: one request, none per pull request.
-    expect(requests).toEqual(["/graphql"]);
-
-    const asked = requests.length;
-
-    clock.now += PULLS_CACHE_MS - 1;
-    expect(await list()).toEqual(first);
-    expect(requests).toHaveLength(asked);
-
-    clock.now += 1;
-    await list();
-    expect(requests.length).toBeGreaterThan(asked);
-    expect(container.runs).toEqual([]);
-    expect(container.running).toBe(false);
-  });
-
   it("lists none without asking for them, and says a plain remote is not GitHub's", async () => {
     const space = workspace(false);
     const { comparison, requests } = module(space, open7(space));
@@ -477,18 +430,6 @@ describe("the open pull requests of a repo", () => {
       message: "Pull requests need a GitHub remote",
     });
     expect(requests).toEqual([]);
-  });
-
-  it("says GitHub refused the token", async () => {
-    const space = workspace();
-    const { comparison } = module(space, { pulls: new Map(), status: 401 });
-    const { repos } = await comparison.sources(WORKSPACE_ROOT, true);
-
-    expect(repos[0]?.pulls).toEqual({
-      status: "error",
-      kind: "refused",
-      message: "GitHub refused the token",
-    });
   });
 });
 

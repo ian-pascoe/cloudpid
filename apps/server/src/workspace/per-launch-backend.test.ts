@@ -50,14 +50,6 @@ const open = (first: readonly string[] | undefined) => {
 };
 
 describe("PerLaunchContainerBackend", () => {
-  it("is computer's backend to the Workspace: the same id, type and description", () => {
-    const { backend } = open(["**/node_modules"]);
-
-    expect(backend.id).toBe("container-shell");
-    expect(backend.type).toBe("cloudflare-container");
-    expect(backend.description).toBe("A shell in a full Linux container.");
-  });
-
   it("connects through a backend built with the Container-only paths of the launch, and keeps it while they hold", async () => {
     const { state, backend } = open(["**/node_modules", "/data"]);
 

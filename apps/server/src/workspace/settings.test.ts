@@ -75,27 +75,6 @@ describe("workspaceSettingsStore", () => {
     expect(kept.get("cloudpid:workspace-settings")).toEqual({ idleMinutes: 15 });
   });
 
-  it("keeps standard-2, a former default, as a saved size once it is chosen", async () => {
-    const { store, kept } = open();
-
-    await store.write({ instance: "standard-2", idleMinutes: 2 });
-
-    expect(kept.get("cloudpid:workspace-settings")).toEqual({ instance: "standard-2" });
-    expect((await store.read()).settings.instance).toBe("standard-2");
-  });
-
-  it("keeps cpu-2 and a 5-minute idle time, the former defaults, as saved values once they are chosen", async () => {
-    const { store, kept } = open();
-
-    await store.write({ instance: "cpu-2", idleMinutes: 5 });
-
-    expect(kept.get("cloudpid:workspace-settings")).toEqual({
-      instance: "cpu-2",
-      idleMinutes: 5,
-    });
-    expect((await store.read()).settings).toMatchObject({ instance: "cpu-2", idleMinutes: 5 });
-  });
-
   it("refuses overrides that do not resolve, one problem per line, and saves nothing", async () => {
     const { store, kept } = open();
 

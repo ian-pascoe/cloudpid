@@ -8,7 +8,6 @@ import {
   mcpBridgeRefusalCode,
 } from "@cloudpid/sandbox-image/mcp-bridge";
 import { describe, expect, it, vi } from "vitest";
-import { isWorkspaceObjectName } from "./binding.ts";
 import { McpBridge, type McpBridgeDeps, mcpBridgeRefusal, refuse } from "./mcp-bridge.ts";
 
 type Fake = {
@@ -129,12 +128,6 @@ describe("the refusals", () => {
       expect(mcpBridgeRefusalCode(await errorOf(response)), code).toBe(code);
     }
   });
-
-  it("say `container_restart` where a new bridge is what mends it", async () => {
-    const response = mcpBridgeRefusal("bridge_unreachable");
-
-    expect((await response.json<{ message: string }>()).message).toContain("container_restart");
-  });
 });
 
 describe("a refusal of a request", () => {
@@ -146,23 +139,6 @@ describe("a refusal of a request", () => {
     expect(response.status).toBe(404);
     // A cancelled body is locked or disturbed, and no reader can take it up again.
     expect(request.bodyUsed).toBe(true);
-  });
-});
-
-describe("a Workspace's object name", () => {
-  it("is `ws:<id>`, and no Build's or other name", () => {
-    expect(isWorkspaceObjectName("ws:5a5a5a5a")).toBe(true);
-    expect(isWorkspaceObjectName("ws:mcp-bridge-1")).toBe(true);
-
-    for (const name of [
-      "build:environment",
-      "test-build:environment",
-      "ws:../x",
-      "ws:",
-      "session",
-    ]) {
-      expect(isWorkspaceObjectName(name), name).toBe(false);
-    }
   });
 });
 

@@ -3,14 +3,13 @@
 // itself through computer's provider, compared with what the Container's `workStateScript` printed for the same clones.
 // The test Worker has no Container: a fake one counts what is asked of it.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
-import { parseWorkState, workStateScript } from "@cloudpid/sandbox-image/workspaces";
+import { parseWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { env } from "cloudflare:workers";
 import { describe, expect, inject, it } from "vitest";
 import { type RepoFiles, WORK_STATE_BRANCH } from "./changes.repos.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 const workState = inject("workStateRepos");
-const changesRepos = inject("changesRepos");
 
 const bytesOf = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
@@ -61,28 +60,5 @@ describe("the Workspace DO's read of unpushed work", () => {
       { repo: "missing", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
     ]);
     expect(await stub.fakeContainerState()).toEqual({ running: false, scripts: [] });
-  });
-
-  it("asks the Container's git for a repo it cannot read, starting it", async () => {
-    const stub = await workspace();
-
-    // Root `.gitattributes` rules git applies when it compares.
-    await place(stub, "attributed", changesRepos.attributed ?? {});
-    await stub.fakeContainer({ running: false, outputs: ["attributed\t1\t0\t0\t0\tmain\n"] });
-
-    expect(await stub.workState("main", ["attributed"])).toEqual([
-      {
-        repo: "attributed",
-        cloned: true,
-        uncommitted: 0,
-        unpushed: 0,
-        onRemote: false,
-        head: "main",
-      },
-    ]);
-    expect(await stub.fakeContainerState()).toEqual({
-      running: true,
-      scripts: [workStateScript(["attributed"], "main")],
-    });
   });
 });

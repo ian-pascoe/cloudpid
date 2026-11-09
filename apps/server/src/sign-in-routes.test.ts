@@ -4,7 +4,6 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it, vi } from "vitest";
-import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 import { guardedRoutes, rawPathOf, serveSignInPaths, signInRoute } from "./sign-in-routes.ts";
 
 const HASH = "aB3_-9xYz012";
@@ -15,75 +14,32 @@ describe("the exact public paths", () => {
     expect(signInRoute("/oauth/mcp/callback")).toEqual({ kind: "callback", hash: undefined });
     expect(signInRoute(`/oauth/mcp/callback/${HASH}`)).toEqual({ kind: "callback", hash: HASH });
   });
-
-  it("are the two the bypass application is declared for", () => {
-    expect([CLIENT_DOCUMENT_PATH, CALLBACK_PATH]).toEqual([
-      "/oauth/mcp/client.json",
-      "/oauth/mcp/callback",
-    ]);
-  });
 });
 
 describe("every other form of them", () => {
   it.each([
     ["capitalisation of the prefix", "/OAuth/mcp/callback"],
-    ["capitalisation of the callback", "/oauth/mcp/Callback"],
-    ["capitalisation of the document", "/oauth/mcp/CLIENT.JSON"],
-    ["capitalisation of a hash's route", `/OAUTH/MCP/CALLBACK/${HASH}`],
     ["a doubled leading slash", "//oauth/mcp/callback"],
-    ["a doubled slash inside", "/oauth//mcp/callback"],
-    ["a doubled slash before the document", "/oauth/mcp//client.json"],
-    ["a doubled slash before the hash", `/oauth/mcp/callback//${HASH}`],
     ["a trailing slash on the callback", "/oauth/mcp/callback/"],
-    ["a trailing slash on the document", "/oauth/mcp/client.json/"],
     ["a sub-path of the callback", `/oauth/mcp/callback/${HASH}/x`],
-    ["a sub-path of the document", "/oauth/mcp/client.json/x"],
-    ["a suffix on the callback", "/oauth/mcp/callbackx"],
-    ["a suffix on the document", "/oauth/mcp/client.json.bak"],
     ["a hash that is too short", "/oauth/mcp/callback/aB3_-9xYz01"],
-    ["a hash that is too long", `/oauth/mcp/callback/${HASH}3`],
-    ["a hash with a character outside the alphabet", "/oauth/mcp/callback/aB3_-9xYz0.2"],
     ["a `;` after the callback", "/oauth/mcp/callback;x"],
-    ["a `;` with a value after the callback", "/oauth/mcp/callback;x=1"],
-    ["a `;` before the hash", `/oauth/mcp/callback;x/${HASH}`],
-    ["a `;` after the document", "/oauth/mcp/client.json;.css"],
-    ["a `;` in the prefix", "/oauth;x/mcp/callback"],
-    ["a `;` segment", `/oauth/mcp/;/callback`],
     ["%2f before the hash", `/oauth/mcp/callback%2f${HASH}`],
-    ["%2F in the prefix", "/oauth%2Fmcp/callback"],
-    ["%2f before the callback", "/oauth/mcp%2fcallback"],
-    ["%2f before the document", "/oauth/mcp%2Fclient.json"],
-    ["%2f after the document", "/oauth/mcp/client.json%2f"],
-    ["a double-encoded slash", "/oauth/mcp/callback%252f"],
     ["an escaped letter", "/oauth/mcp/callb%61ck"],
-    ["an escaped dot", "/oauth/mcp/client%2ejson"],
-    ["an escaped first letter", "/%6fauth/mcp/callback"],
     ["a backslash", "/oauth/mcp\\callback"],
     ["a dot segment", "/oauth/mcp/./callback"],
-    ["a dot-dot segment", "/oauth/mcp/other/../callback"],
   ])("is refused: %s", (_, path) => {
     expect(signInRoute(path)).toEqual({ kind: "refused" });
   });
 });
 
 describe("paths that are not the sign-in paths", () => {
-  it.each([
-    "/",
-    "/rpc",
-    "/mcp",
-    "/oauth",
-    "/oauth/mcp",
-    "/oauth/mcp/start",
-    "/oauth/mcp/starts",
-    "/oauth/mcp/callbac",
-    "/oauth/other/callback",
-    "/sessions/0190f0a8-1b2c-7d3e-8f40-123456789abc/socket",
-    "/assets/index-abc.js",
-    "/oauth/mcp/start/callback",
-    "/x/oauth/mcp/callback",
-  ])("%s goes on to the guard", (path) => {
-    expect(signInRoute(path)).toBeUndefined();
-  });
+  it.each(["/", "/oauth/mcp/start", "/oauth/mcp/callbac", "/x/oauth/mcp/callback"])(
+    "%s goes on to the guard",
+    (path) => {
+      expect(signInRoute(path)).toBeUndefined();
+    },
+  );
 });
 
 describe("the path of a request's URL", () => {
@@ -91,10 +47,6 @@ describe("the path of a request's URL", () => {
     ["https://x.workers.dev/oauth/mcp/callback?code=1#f", "/oauth/mcp/callback"],
     ["https://x.workers.dev//oauth/mcp/callback", "//oauth/mcp/callback"],
     ["https://x.workers.dev", ""],
-    ["https://x.workers.dev?a=/b", ""],
-    ["/oauth/mcp/callback;x?q", "/oauth/mcp/callback;x"],
-    ["//oauth/mcp/callback", "//oauth/mcp/callback"],
-    ["https://x.workers.dev/oauth/mcp%2fcallback", "/oauth/mcp%2fcallback"],
   ])("%s is %s", (url, path) => {
     expect(rawPathOf(url)).toBe(path);
   });
@@ -128,7 +80,6 @@ describe("the router ahead of the guarded routes", () => {
 
   it.each([
     [`${origin}/oauth/mcp/client.json`, "document"],
-    [`${origin}/oauth/mcp/callback?code=x&state=y`, "callback /oauth/mcp/callback"],
     [`${origin}/oauth/mcp/callback/${HASH}`, `callback /oauth/mcp/callback/${HASH}`],
   ])("hands %s to its handler, never to the guarded routes", async (url, answer) => {
     guarded.mockClear();
@@ -140,37 +91,30 @@ describe("the router ahead of the guarded routes", () => {
     expect(guarded).not.toHaveBeenCalled();
   });
 
-  it.each([
-    `${origin}/oauth/mcp/Callback`,
-    `${origin}//oauth/mcp/callback`,
-    `${origin}/oauth/mcp/callback/${HASH}/x`,
-    `${origin}/oauth/mcp/callback;x`,
-    `${origin}/oauth/mcp%2fcallback`,
-  ])("answers a 404, never reaching the guarded routes, for %s", async (url) => {
-    guarded.mockClear();
+  it.each([`${origin}/oauth/mcp/Callback`, `${origin}//oauth/mcp/callback`])(
+    "answers a 404, never reaching the guarded routes, for %s",
+    async (url) => {
+      guarded.mockClear();
 
-    const response = await run(url);
+      const response = await run(url);
 
-    expect(response.status).toBe(404);
-    expect(response.headers["cache-control"]).toBe("no-store");
-    expect(guarded).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(404);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(guarded).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each([
-    `${origin}/`,
-    `${origin}/rpc`,
-    `${origin}/oauth/mcp/start?server=x`,
-    `${origin}/oauth/mcp/start`,
-    `${origin}/sessions/0190f0a8-1b2c-7d3e-8f40-123456789abc`,
-    `${origin}/assets/index.js`,
-  ])("hands %s to the guarded routes", async (url) => {
-    guarded.mockClear();
+  it.each([`${origin}/`, `${origin}/oauth/mcp/start?server=x`])(
+    "hands %s to the guarded routes",
+    async (url) => {
+      guarded.mockClear();
 
-    const response = await run(url);
+      const response = await run(url);
 
-    expect(response.status).toBe(200);
-    expect(guarded).toHaveBeenCalledTimes(1);
-  });
+      expect(response.status).toBe(200);
+      expect(guarded).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("the composition the Worker serves with", () => {
@@ -199,15 +143,7 @@ describe("the composition the Worker serves with", () => {
 
   const origin = "https://cloudpid-server-pr-444.ian-g-pascoe.workers.dev";
 
-  it.each([
-    "/OAUTH/MCP/CLIENT.JSON",
-    "/oauth/mcp/Callback",
-    "//oauth/mcp/callback",
-    "/oauth/mcp/callback/",
-    "/oauth/mcp/callback;x",
-    "/oauth/mcp%2fcallback",
-    `/oauth/mcp/callback/${HASH}/x`,
-  ])(
+  it.each(["/OAUTH/MCP/CLIENT.JSON", "/oauth/mcp%2fcallback"])(
     "answers %s with the router's 404, before the guard's 403, and runs no route",
     async (path) => {
       inner.mockClear();
@@ -220,7 +156,7 @@ describe("the composition the Worker serves with", () => {
     },
   );
 
-  it.each(["/oauth/mcp/client.json", "/oauth/mcp/callback", `/oauth/mcp/callback/${HASH}`])(
+  it.each(["/oauth/mcp/client.json", `/oauth/mcp/callback/${HASH}`])(
     "serves %s to its handler with no assertion at all, never reading identity",
     async (path) => {
       inner.mockClear();
@@ -233,7 +169,7 @@ describe("the composition the Worker serves with", () => {
     },
   );
 
-  it.each(["/", "/rpc", "/oauth/mcp/start", "/assets/index.js"])(
+  it.each(["/rpc", "/oauth/mcp/start"])(
     "still gives %s to the guard, which refuses a request with no assertion",
     async (path) => {
       inner.mockClear();

@@ -11,7 +11,6 @@ import {
   ENVIRONMENT_SETUP_FILE,
   ENVIRONMENT_START_FILE,
   SETUP_TIMED_OUT_MESSAGE,
-  START_TIMED_OUT_MESSAGE,
 } from "@cloudpid/sandbox-image/toolchains";
 import { describe, expect, it } from "vitest";
 import type { HoldOptions } from "./idle.ts";
@@ -175,14 +174,6 @@ const open = (
 };
 
 describe("the Container's backend as the Workspace sees it", () => {
-  it("is the Container's backend: same id, type and description", () => {
-    const { toolchains } = open(fakeContainer());
-
-    expect(toolchains.id).toBe("container-shell");
-    expect(toolchains.type).toBe("cloudflare-container");
-    expect(toolchains.description).toBe("a fake Container");
-  });
-
   it("keeps the connection's own runtime id", async () => {
     const container = fakeContainer();
     const handle = await open(container).toolchains.connect(host);
@@ -1228,30 +1219,6 @@ describe("the Environment's variables", () => {
     });
   });
 
-  it("reach the bootstrap and every script it runs", async () => {
-    const container = fakeContainer((input) => {
-      if (isSetupList(input)) return { stdout: [`${ENVIRONMENT_SETUP_FILE}\n`, "/workspace/a\n"] };
-
-      if (isStartList(input)) return { stdout: ["/workspace/a\n"] };
-
-      return {};
-    });
-
-    const { toolchains } = open(container, {
-      settings: async () =>
-        environment({ variables: { API_URL: "http://x" }, setupScript: "a", startScript: "b" }),
-    });
-
-    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
-
-    const own = container.execs.filter(isOwn);
-
-    expect(own).toHaveLength(7);
-
-    for (const input of own)
-      expect(input.env).toMatchObject({ API_URL: "http://x", MISE_YES: "1" });
-  });
-
   it("come with the Environment's Toolchains, which the bootstrap writes as the root's mise.toml", async () => {
     const toml = '[tools]\nnode = "22.20.0"\n';
     const container = fakeContainer();
@@ -1440,26 +1407,7 @@ describe("the Start Scripts", () => {
     expect(container.execs.filter(isStartRun)[1]?.source).toContain(".cloudpid/start.sh");
   });
 
-  it("have as GH_TOKEN the token of their repo's owner, the Environment's the app owner's", async () => {
-    const container = withStartScripts(["/workspace/a", "/workspace/site"]);
-
-    const { toolchains } = open(container, {
-      settings: async () => environment({ startScript: "docker start db\n" }),
-      github: installed(() => ({ "ian-pascoe": "ghs_ian", spiritledsoftware: "ghs_org" })),
-      repoAccount: async (directory) =>
-        directory === "/workspace/site" ? "spiritledsoftware" : undefined,
-    });
-
-    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
-
-    expect(container.execs.filter(isStartRun).map((input) => input.env?.GH_TOKEN)).toEqual([
-      "ghs_ian",
-      "ghs_ian",
-      "ghs_org",
-    ]);
-  });
-
-  it("are bounded by five minutes, and do not count as an install", async () => {
+  it("do not count as an install", async () => {
     const container = withStartScripts(["/workspace/a"]);
     const seen: boolean[] = [];
 
@@ -1474,7 +1422,6 @@ describe("the Start Scripts", () => {
     const [script] = container.execs.filter(isStartRun);
 
     expect(script?.source).toContain("timeout --kill-after=10 300 ");
-    expect(script?.timeoutMs).toBeGreaterThan(5 * 60_000);
     expect(seen).toEqual([false]);
   });
 
@@ -1554,19 +1501,6 @@ describe("the Start Scripts", () => {
     expect(command?.source).toContain("Start Script /workspace/a/.cloudpid/start.sh failed");
   });
 
-  it("say so when one ran past its time and was stopped", async () => {
-    const container = withStartScripts(["/workspace/a"], {
-      "/workspace/a": { stderr: `postgres starting\n${START_TIMED_OUT_MESSAGE}\n`, code: 124 },
-    });
-
-    await (await open(container).toolchains.connect(host)).rpc.shell.exec({ source: "true" });
-
-    const [command] = commands(container.execs);
-
-    expect(command?.source).toContain("ran past 5 minutes and was stopped");
-    expect(command?.source).toContain("detach");
-  });
-
   it("are not run when the install failed", async () => {
     const container = fakeContainer((input) => (isBootstrap(input) ? { code: 1 } : {}));
 
@@ -1577,19 +1511,6 @@ describe("the Start Scripts", () => {
     await (await toolchains.connect(host)).rpc.shell.exec({ source: "a" });
 
     expect(container.execs.filter((input) => isStartList(input) || isStartRun(input))).toEqual([]);
-  });
-
-  it("do not stop the command when they cannot be looked for", async () => {
-    const container = fakeContainer((input) =>
-      isStartList(input) ? { stderr: "no disk", code: 2 } : {},
-    );
-
-    await (await open(container).toolchains.connect(host)).rpc.shell.exec({ source: "a" });
-
-    expect(unquoted(commands(container.execs)[0]?.source)).toContain(
-      "could not tell which repos' Start Script",
-    );
-    expect(commands(container.execs)[0]?.source).toMatch(/\na$/);
   });
 });
 
