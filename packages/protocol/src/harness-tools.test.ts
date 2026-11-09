@@ -1,7 +1,8 @@
 // The declarations of the harness tools (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared
 // definitions, Names and surfaces): on both surfaces, every tool holds no definitions and its output schema has the shape
 // the endpoint needs on both MCP lanes (L12); a read is read-only and a write takes `request_id` on the endpoint only; the
-// names are snake_case and none is the endpoint's own; and the `field` paths a page can read.
+// names are snake_case and none is the endpoint's own; and the `field` paths a page can read. The endpoint-only
+// declarations (the tools that ask for the owner's Approval, and `approval_wait`/`approval_withdraw`) have no session part.
 // @effect-diagnostics preferEffectRecord:off preferEffectArray:off preferTypedSchemaDecoder:off schemaSync:off missedPipeableOpportunity:off
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
@@ -11,14 +12,29 @@ import {
   EnvironmentField,
   HARNESS_TOOL_NAMES,
   HARNESS_TOOLS,
+  isApprovalFollowTool,
   SettingsField,
 } from "./harness-tools/index.ts";
 
+/** A declaration's surfaces: the endpoint's, and the Session's where it has one. */
+const surfacesOf = (
+  name: (typeof HARNESS_TOOL_NAMES)[number],
+): ReadonlyArray<{
+  readonly surface: "session" | "endpoint";
+  readonly input: Schema.Top;
+  readonly output: Schema.Top;
+}> => {
+  const tool: (typeof HARNESS_TOOLS)[typeof name] = HARNESS_TOOLS[name];
+  const endpoint = { surface: "endpoint" as const, ...tool.endpoint };
+
+  return "session" in tool ? [{ surface: "session" as const, ...tool.session }, endpoint] : [endpoint];
+};
+
 /** Every declaration's schemas, by tool and surface: its input and its output. */
 const SCHEMAS = Arr.flatMap(HARNESS_TOOL_NAMES, (name) =>
-  Arr.flatMap(["session", "endpoint"] as const, (surface) => [
-    { name, surface, kind: "input", schema: HARNESS_TOOLS[name][surface].input },
-    { name, surface, kind: "output", schema: HARNESS_TOOLS[name][surface].output },
+  Arr.flatMap(surfacesOf(name), ({ surface, input, output }) => [
+    { name, surface, kind: "input", schema: input },
+    { name, surface, kind: "output", schema: output },
   ]),
 );
 
@@ -57,6 +73,19 @@ describe("the harness tools' declarations", () => {
     for (const name of HARNESS_TOOL_NAMES) {
       const tool = HARNESS_TOOLS[name];
       const endpoint = propertyNames(tool.endpoint.input);
+
+      // `approval_withdraw` changes no Agent change: it takes no `request_id` (a repeat is safe as it is).
+      if (isApprovalFollowTool(name)) {
+        expect(endpoint, name).not.toContain("request_id");
+        continue;
+      }
+
+      if (!("session" in tool)) {
+        // An asking tool: a write, with `request_id`, whose answer is a request, never a replayed change.
+        expect(endpoint, name).toContain("request_id");
+        continue;
+      }
+
       const session = propertyNames(tool.session.input);
 
       expect(session, name).not.toContain("request_id");
@@ -122,7 +151,9 @@ describe("the harness tools' declarations", () => {
   it("have an output schema whose root is an object, with no root anyOf or oneOf, on both surfaces (L12)", () => {
     const outputs = Arr.filter(SCHEMAS, ({ kind }) => kind === "output");
 
-    expect(outputs).toHaveLength(HARNESS_TOOL_NAMES.length * 2);
+    expect(outputs).toHaveLength(
+      Arr.reduce(HARNESS_TOOL_NAMES, 0, (n, name) => n + surfacesOf(name).length),
+    );
 
     for (const { name, surface, schema } of outputs) {
       const root = jsonSchemaOf(schema);

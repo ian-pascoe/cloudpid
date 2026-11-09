@@ -14,6 +14,9 @@ import {
   type ApiResult,
   apiFailure,
   apiOk,
+  type ApprovalState,
+  type ApprovalWaitRequest,
+  type ApprovalWithdrawRequest,
   branchProblem,
   type ConfigureRequest,
   decodeCursor,
@@ -77,7 +80,7 @@ import {
   whenBusyOf,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
-import type { HarnessToolName } from "@cloudpid/protocol/harness-tools";
+import type { DispatchedToolName } from "@cloudpid/protocol/harness-tools";
 import { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 import { importCarryRef } from "@cloudpid/sandbox-image/workspaces";
 import * as Arr from "effect/Array";
@@ -107,6 +110,8 @@ export const MCP_API_OPERATIONS_SERVED = [
   "importFinish",
   "importCancel",
   "harness",
+  "approvalWait",
+  "approvalWithdraw",
 ] as const;
 
 /**
@@ -152,7 +157,12 @@ export const HARNESS_TOOLS_SERVED = [
   "settings_mcp_exposure_set",
   "settings_mcp_tool_exposure_set",
   "settings_mcp_remove",
-] as const satisfies ReadonlyArray<HarnessToolName>;
+  "settings_spend_limit_set",
+  "settings_subagent_depth_set",
+  "settings_subagent_workspaces_set",
+  "settings_instructions_set",
+  "environment_container_size_limit_set",
+] as const satisfies ReadonlyArray<DispatchedToolName>;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
 export interface McpBackend {
@@ -227,6 +237,18 @@ export interface McpBackend {
     request: HarnessRequest,
     caller: AgentChangeVia,
   ) => Effect.Effect<ApiResult<HarnessAnswer>>;
+  /**
+   * `approval_wait` over the Registry's Approvals (`../harness/approvals.ts`), for `caller`, whose waits are capped by how
+   * it got in. Its failures are values; a defect is read as `unavailable`.
+   */
+  readonly approvalWait: (
+    request: ApprovalWaitRequest,
+    caller: AgentChangeVia,
+  ) => Effect.Effect<ApiResult<ApprovalState>>;
+  /** `approval_withdraw` over the Registry's Approvals. */
+  readonly approvalWithdraw: (
+    request: ApprovalWithdrawRequest,
+  ) => Effect.Effect<ApiResult<ApprovalState>>;
 }
 
 /** What one request adds: where the owner's pages are, who is calling, and the rate limit. */
@@ -271,6 +293,10 @@ export interface McpApiService {
     request: ImportCancelRequest,
   ) => Effect.Effect<ApiResult<ImportCancelResult>>;
   readonly harness: (request: HarnessRequest) => Effect.Effect<ApiResult<HarnessAnswer>>;
+  readonly approvalWait: (request: ApprovalWaitRequest) => Effect.Effect<ApiResult<ApprovalState>>;
+  readonly approvalWithdraw: (
+    request: ApprovalWithdrawRequest,
+  ) => Effect.Effect<ApiResult<ApprovalState>>;
   /** Counts a call; present when the caller is over its rate. */
   readonly limited: Effect.Effect<{ readonly retryAfterS: number } | undefined>;
   readonly auth: McpAuth;
@@ -1177,6 +1203,11 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
     harness: (request) =>
       guarded(backend.harness(request, changeViaOf(request.via, context.caller, identity.auth))),
+
+    // The caller's own `via` is not sent with these: the wait is capped by how it got in, which is the verified caller's.
+    approvalWait: (request) => guarded(backend.approvalWait(request, { auth: identity.auth })),
+
+    approvalWithdraw: (request) => guarded(backend.approvalWithdraw(request)),
 
     limited: context.withinRate(identity.rateKey).pipe(
       // A limiter that cannot answer counts as within the rate: the endpoint fails open, the owner's own calls first.

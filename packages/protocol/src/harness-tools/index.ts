@@ -9,6 +9,7 @@
 // Session registers none of the endpoint's tools that it has in-session twins of.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Record from "effect/Record";
+import { APPROVAL_ASK_TOOLS, APPROVAL_FOLLOW_TOOLS, type ApprovalFollowToolName } from "./approvals.ts";
 import { environmentGet, environmentList } from "./environment.ts";
 import { CONTAINER_SETTING_TOOLS, environmentSecretBuild } from "./environment-changes.ts";
 import {
@@ -28,6 +29,8 @@ import { settingsGet } from "./settings.ts";
 import { settingsReset, SETTINGS_CHANGE_TOOLS } from "./settings-changes.ts";
 import { settingsMcpGet, settingsMcpList } from "./settings-mcp.ts";
 import { SETTINGS_MCP_CHANGE_TOOLS, settingsMcpReload } from "./settings-mcp-changes.ts";
+
+export * from "./approvals.ts";
 
 export * from "./change-output.ts";
 
@@ -84,7 +87,8 @@ export * from "./surface.ts";
  * Every harness tool's declaration, by name: the five reads, the nine Container setting tools,
  * `environment_secret_build`, the five tools for an Environment's record and Build, `environment_setting_reset`, the
  * three that install, update and remove an Environment's Skills, the Settings' changing tools, `settings_mcp_reload` and
- * the MCP servers' narrowing tools.
+ * the MCP servers' narrowing tools, and the endpoint's own declarations of the tools that ask for the owner's Approval
+ * and of `approval_wait` and `approval_withdraw`, which have no `session` part.
  */
 export const HARNESS_TOOLS = {
   environment_list: environmentList,
@@ -107,9 +111,19 @@ export const HARNESS_TOOLS = {
   settings_reset: settingsReset,
   settings_mcp_reload: settingsMcpReload,
   ...SETTINGS_MCP_CHANGE_TOOLS,
+  ...APPROVAL_ASK_TOOLS,
+  ...APPROVAL_FOLLOW_TOOLS,
 } as const;
 
 export type HarnessToolName = keyof typeof HARNESS_TOOLS;
+
+/** The tools the `harness` operation serves: all but `approval_wait` and `approval_withdraw`, which have their own. */
+export type DispatchedToolName = Exclude<HarnessToolName, ApprovalFollowToolName>;
+
+/** Whether `name` is one of the endpoint-only tools with an operation of its own. */
+export const isApprovalFollowTool = (name: string): name is ApprovalFollowToolName =>
+  name === APPROVAL_FOLLOW_TOOLS.approval_wait.name ||
+  name === APPROVAL_FOLLOW_TOOLS.approval_withdraw.name;
 
 /** The names of `HARNESS_TOOLS`, in the order it declares them. */
 // SAFETY: the keys of the record are its tools' names.

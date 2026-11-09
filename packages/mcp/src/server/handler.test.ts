@@ -1676,6 +1676,15 @@ describe("the management tools", () => {
       return served === undefined ? description : { ...description, harness: served };
     };
 
+  /** `serving(served)`, with the operations of `approval_wait` and `approval_withdraw` too. */
+  const servingFollow =
+    (served: ReadonlyArray<string>): McpServerApi["describe"] =>
+    () => ({
+      operations: [...OPERATIONS, "harness", "approvalWait", "approvalWithdraw"],
+      limits: MCP_API_LIMITS,
+      harness: served,
+    });
+
   const listed = async (api: McpServerApi) => {
     const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
 
@@ -1692,7 +1701,7 @@ describe("the management tools", () => {
   };
 
   it("are offered when describe().harness lists them, each with its declared annotations and a flat object schema", async () => {
-    const tools = await listed(fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }));
+    const tools = await listed(fakeApi({ describe: servingFollow(HARNESS_TOOL_NAMES) }));
 
     expect(tools.map((tool) => tool.name)).toEqual([...OPERATIONS_TOOLS, ...HARNESS_TOOL_NAMES]);
 
@@ -1819,6 +1828,99 @@ describe("the management tools", () => {
     expect(unchanged.content[0]?.text).toBe("Set.");
   });
 
+  it("send an ask that waits for the owner to approval_wait as next, and one that asked nothing nowhere", async () => {
+    const answer = (structured: Schema.Json) =>
+      call(
+        "settings_spend_limit_set",
+        { scope: "*", per_session: 20, reason: "r" },
+        fakeApi({
+          describe: servingFollow(["settings_spend_limit_set", "approval_wait"]),
+          harness: () => Promise.resolve(apiOk({ text: "Asked.", structured })),
+        }),
+      );
+
+    const pending = await answer({ status: "pending", approval_id: "a-1", url: "u", expires_at: "t" });
+
+    expect(pending.structuredContent.next).toContain('approval_wait with approval_id="a-1"');
+    expect(pending.content[0]?.text).toBe(`Asked.\n\n${pending.structuredContent.next}`);
+
+    const unchanged = await answer({ status: "unchanged", unchanged: ["spendLimit.perSession"] });
+
+    expect(unchanged.structuredContent.next).toBeUndefined();
+  });
+
+  it("offer approval_wait and approval_withdraw by their own operations, not harness", async () => {
+    const names = async (describing: McpServerApi["describe"]) =>
+      (await listed(fakeApi({ describe: describing }))).map((tool) => tool.name);
+
+    expect(await names(serving(HARNESS_TOOL_NAMES))).not.toContain("approval_wait");
+    expect(await names(servingFollow([]))).toEqual(
+      expect.arrayContaining(["approval_wait", "approval_withdraw"]),
+    );
+  });
+
+  it("call approvalWait with the arguments, and say where the request stands, with a wait again while it may change", async () => {
+    const approvalWait = vi.fn(() =>
+      Promise.resolve(
+        apiOk({
+          approval_id: "a-1",
+          tool: "settings_spend_limit_set",
+          status: "pending",
+          finished: false,
+          expires_at: "2026-01-08T00:00:00.000Z",
+        }),
+      ),
+    );
+
+    const waited = await call(
+      "approval_wait",
+      { approval_id: "a-1", timeout_s: 0 },
+      fakeApi({ describe: servingFollow([]), approvalWait }),
+    );
+
+    expect(approvalWait).toHaveBeenCalledWith({ approval_id: "a-1", timeout_s: 0 });
+    expect(waited.isError).toBeUndefined();
+    expect(waited.structuredContent).toMatchObject({ status: "pending", finished: false });
+    expect(waited.structuredContent.next).toContain('approval_wait again with approval_id="a-1"');
+  });
+
+  it("refuse a wait over 300 seconds in the schema", async () => {
+    const approvalWait = vi.fn();
+
+    const refused = await call(
+      "approval_wait",
+      { approval_id: "a-1", timeout_s: 301 },
+      fakeApi({ describe: servingFollow([]), approvalWait }),
+    );
+
+    expect(refused.isError).toBe(true);
+    expect(approvalWait).not.toHaveBeenCalled();
+  });
+
+  it("say a finished request with what its change says, and send no wait after", async () => {
+    const approvalWithdraw = vi.fn(() =>
+      Promise.resolve(
+        apiOk({
+          approval_id: "a-1",
+          tool: "settings_spend_limit_set",
+          status: "withdrawn",
+          finished: true,
+          reason: "Withdrawn with approval_withdraw.",
+          expires_at: "2026-01-08T00:00:00.000Z",
+        }),
+      ),
+    );
+
+    const withdrawn = await call(
+      "approval_withdraw",
+      { approval_id: "a-1" },
+      fakeApi({ describe: servingFollow([]), approvalWithdraw }),
+    );
+
+    expect(withdrawn.structuredContent).toMatchObject({ status: "withdrawn", finished: true });
+    expect(withdrawn.structuredContent.next).toBeUndefined();
+  });
+
   it("are offered only as far as describe().harness lists them", async () => {
     const tools = await listed(fakeApi({ describe: serving(["settings_get", "unknown_tool"]) }));
     const names = tools.map((tool) => tool.name);
@@ -1863,7 +1965,7 @@ describe("the management tools", () => {
   it("are, with every tool the endpoint offers, each in exactly one of MCP_TOOL_NAMES and HARNESS_TOOL_NAMES", async () => {
     const api = fakeApi({
       describe: () => ({
-        operations: [...EVERY_OPERATION, "harness"],
+        operations: [...EVERY_OPERATION, "harness", "approvalWait", "approvalWithdraw"],
         limits: MCP_API_LIMITS,
         harness: HARNESS_TOOL_NAMES,
       }),
@@ -2333,6 +2435,18 @@ describe("the instructions with the management tools", () => {
       "To manage rather than start: environment_list shows what is set.",
     );
     expect(instructionsFor(new Set([...sessions, "settings_mcp_get"]))).not.toContain("To manage");
+  });
+
+  it("add the Approval line only when a tool that asks and approval_wait are both served", () => {
+    const asking = instructionsFor(new Set([...reads, "settings_spend_limit_set"]));
+    const following = instructionsFor(
+      new Set([...reads, "settings_spend_limit_set", "approval_wait"]),
+    );
+
+    expect(asking).not.toContain("approval_wait");
+    expect(following.split("\n").length).toBe(asking.split("\n").length + 2);
+    expect(following).toContain("approval_wait");
+    expect(following).toContain("never by you");
   });
 });
 

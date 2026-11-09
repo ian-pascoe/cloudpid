@@ -12,6 +12,7 @@ import type { SettingsChangeRevert } from "./settings-changes.ts";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import {
   type AgentChange,
+  ApprovalNotFound,
   asChangeJson,
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
@@ -87,6 +88,7 @@ import {
   readGlobal,
   workspaceOverridesOf,
 } from "./global.ts";
+import type { StoredApproval } from "./approvals.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
 import type { SkillRepos } from "./skill-repo.ts";
@@ -828,6 +830,23 @@ const fakeRegistries = () => {
       return remove(environments, (item) => item.id === id)
         ? ("deleted" as const)
         : ("missing" as const);
+    });
+
+  /** The Approvals asked over the MCP endpoint, by id: a test puts them here, as asks would. */
+  const approvalsHeld = new Map<string, StoredApproval>();
+
+  /** Approval `id` changed by `change`, when it is held. */
+  const changeApproval = (id: string, change: (held: StoredApproval) => StoredApproval) =>
+    Effect.sync(() => {
+      const held = approvalsHeld.get(id);
+
+      if (held === undefined) return null;
+
+      const changed = change(held);
+
+      approvalsHeld.set(id, changed);
+
+      return changed;
     });
 
   const registry = {
@@ -1709,6 +1728,59 @@ const fakeRegistries = () => {
     settleChangeRequest: () => Effect.succeed(false),
     agentChangeFeatures: () => Effect.succeed({ via: true }),
     notifyMcpChanges: () => Effect.succeed(null),
+    // The Approvals' own rules are `approvals.workerd.test.ts`'s: these keep what the endpoint's calls need.
+    requestApproval: () => Effect.die("The owner's endpoint asks for no Approval"),
+    approval: ({ id }) => Effect.sync(() => approvalsHeld.get(id) ?? null),
+    listApprovals: ({ scope }) =>
+      Effect.sync(() => {
+        calls.push("listApprovals");
+
+        return Arr.filter(
+          [...approvalsHeld.values()],
+          (held) => scope === undefined || held.scope === scope,
+        );
+      }),
+    answerApproval: ({ id, approved, reason }) =>
+      changeApproval(id, (held) =>
+        held.status !== "pending"
+          ? held
+          : approved
+            ? { ...held, status: "approved" }
+            : { ...held, status: "declined", reason: reason ?? null },
+      ),
+    withdrawApproval: () => Effect.die("The owner's endpoint withdraws no Approval"),
+    claimApproval: ({ id, token }) =>
+      Effect.map(
+        changeApproval(id, (held) =>
+          held.status === "approved" ? { ...held, leaseToken: token, leaseUntil: 1 } : held,
+        ),
+        (held) =>
+          held === null ? null : { approval: held, leased: held.leaseToken === token },
+      ),
+    finishApproval: ({ id, token, status, reason, result }) =>
+      changeApproval(id, (held) =>
+        held.leaseToken === token
+          ? {
+              ...held,
+              status,
+              reason: reason ?? null,
+              result: result ?? null,
+              leaseToken: null,
+              leaseUntil: null,
+            }
+          : held,
+      ),
+    staleApprovals: () =>
+      Effect.sync(() => {
+        calls.push("staleApprovals");
+
+        return Arr.filter(
+          [...approvalsHeld.values()],
+          (held) => held.status === "approved" && held.leaseToken === null,
+        );
+      }),
+    notifyApproval: () => Effect.succeed(null),
+    waitApproval: () => Effect.die("The owner's endpoint waits for no Approval"),
     listTriggers: ({ environment }) =>
       Effect.sync(() =>
         Arr.filter(
@@ -1876,6 +1948,7 @@ const fakeRegistries = () => {
     },
     /** The objects left from before Environments. */
     legacyObjects,
+    approvalsHeld,
     /** What `legacy` ran: the cleanup the endpoint starts after a Session list. */
     legacy: Effect.sync(() => {
       calls.push("legacy");
@@ -6585,5 +6658,129 @@ describe("the MCP status reads", () => {
     expect(idle).toEqual({ _tag: "Reconnecting", servers: [] });
     expect(refused._tag).toBe("Unavailable");
     expect(fake.mcpHostCalls).toHaveLength(1);
+  });
+});
+
+describe("the Approvals asked over the MCP endpoint", () => {
+  /** A request held by the fake Registry, asked by pi for the spend limit at Global. */
+  const asked = (fake: ReturnType<typeof fakeRegistries>, changed: Partial<StoredApproval> = {}) => {
+    const approval: StoredApproval = {
+      id: "a-1",
+      tool: "settings_spend_limit_set",
+      scope: GLOBAL_SCOPE,
+      section: "limits",
+      args: { scope: GLOBAL_SCOPE, per_session: 20, reason: "Runs cost more now" },
+      card: {
+        tool: "settings_spend_limit_set",
+        target: "Global",
+        change: "Spend limit",
+        before: "no limit",
+        after: "$20 per Session",
+        reason: "Runs cost more now",
+      },
+      expected: null,
+      digest: "d",
+      long: false,
+      via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+      requestId: null,
+      status: "pending",
+      createdAt: 1_000,
+      expiresAt: 2_000,
+      answeredAt: null,
+      settledAt: null,
+      leaseUntil: null,
+      leaseToken: null,
+      reason: null,
+      withdrawal: null,
+      result: null,
+      ...changed,
+    };
+
+    fake.approvalsHeld.set(approval.id, approval);
+
+    return approval;
+  };
+
+  it("lists the requests as the page shows them, never the client's id, and resumes the stale ones after", async () => {
+    const fake = fakeRegistries();
+
+    asked(fake);
+
+    const listed = await withClient(
+      Registry.pipe(Effect.flatMap((registry) => registry.listApprovals({}))),
+      fake,
+    );
+
+    expect(listed).toEqual([
+      expect.objectContaining({ id: "a-1", status: "pending", via: { auth: "oauth", client: { name: "pi" } } }),
+    ]);
+    expect(fake.calls).not.toContain("staleApprovals");
+
+    await fake.runBackground();
+
+    expect(fake.calls).toContain("staleApprovals");
+  });
+
+  it("declines with the owner's reason, applying nothing", async () => {
+    const fake = fakeRegistries();
+
+    asked(fake);
+
+    const answered = await withClient(
+      Registry.pipe(
+        Effect.flatMap((registry) =>
+          registry.answerApproval({ id: "a-1", approved: false, reason: "Too much" }),
+        ),
+      ),
+      fake,
+    );
+
+    expect(answered).toMatchObject({ status: "declined", reason: "Too much", applying: false });
+  });
+
+  it("applies an approved request inline, and settles it with how it went", async () => {
+    const fake = fakeRegistries();
+
+    // A tool this build does not apply: the apply ends it refused, with nothing written.
+    asked(fake, { tool: "settings_retired_set" });
+
+    const answered = await withClient(
+      Registry.pipe(Effect.flatMap((registry) => registry.answerApproval({ id: "a-1", approved: true }))),
+      fake,
+    );
+
+    expect(answered).toMatchObject({ status: "refused" });
+    expect(answered.reason).toContain("settings_retired_set");
+  });
+
+  it("tries an approved request whose apply was cut again, and answers any other as it is", async () => {
+    const fake = fakeRegistries();
+
+    asked(fake, { status: "approved", tool: "settings_retired_set" });
+
+    const retried = await withClient(
+      Registry.pipe(Effect.flatMap((registry) => registry.retryApproval({ id: "a-1" }))),
+      fake,
+    );
+
+    expect(retried.status).toBe("refused");
+
+    const again = await withClient(
+      Registry.pipe(Effect.flatMap((registry) => registry.retryApproval({ id: "a-1" }))),
+      fake,
+    );
+
+    expect(again.status).toBe("refused");
+  });
+
+  it("refuses an answer to a request it does not keep", async () => {
+    const error = await withClient(
+      Registry.pipe(
+        Effect.flatMap((registry) => registry.answerApproval({ id: "gone", approved: true })),
+        Effect.flip,
+      ),
+    );
+
+    expect(error).toBeInstanceOf(ApprovalNotFound);
   });
 });

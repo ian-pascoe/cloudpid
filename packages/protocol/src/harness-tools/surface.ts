@@ -50,6 +50,14 @@ export const WRITE_IDEMPOTENT: HarnessAnnotations = {
   openWorldHint: false,
 };
 
+/** W: a write that a repeat does not leave as it is (an ask for the owner's Approval: a repeat may ask again). */
+export const WRITE: HarnessAnnotations = {
+  readOnlyHint: false,
+  idempotentHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
+};
+
 /** D·idem: a write that narrows or takes something away (an unset), which a repeat leaves as it is. */
 export const DESTRUCTIVE_IDEMPOTENT: HarnessAnnotations = {
   readOnlyHint: false,

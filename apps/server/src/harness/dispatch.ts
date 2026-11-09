@@ -42,6 +42,8 @@ import {
 } from "@cloudpid/protocol/mcp-api";
 import {
   APPROVAL_REQUEST_PREFIX,
+  type ApprovalAskToolName,
+  type DispatchedToolName,
   GLOBAL_ID,
   HARNESS_TOOLS,
   type HarnessToolName,
@@ -55,6 +57,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ChangeClaim, ChangeRequest } from "../registry/change-requests.ts";
 import type { AuthorSource } from "../session/change-author.ts";
+import { askApproval } from "./approvals.ts";
 import type { HarnessChangeServices, HarnessServices } from "./services.ts";
 
 /** What a core's refusal carries that the dispatcher reads: the message the model sees, and the code that maps. */
@@ -172,6 +175,49 @@ export const requestDigest = (tool: string, args: { readonly request_id?: string
       sortedJson({ tool, args: Record.remove(args as Record<string, Schema.Json>, "request_id") }),
     ),
   );
+
+/** The refusal of a `request_id` the Registry keeps for the owner's Approvals' own claims. */
+const approvalPrefix = apiFailure(
+  "invalid_argument",
+  `A request_id may not begin "${APPROVAL_REQUEST_PREFIX}": cloudpid keeps those for the owner's Approvals.`,
+);
+
+/**
+ * An asking tool's served form (`./approvals.ts`): the input read again, a `request_id` beginning `approval:` refused,
+ * then the ask, which answers `pending` (or `unchanged`) and claims and settles the `request_id` itself.
+ */
+const serveAsk = <Name extends ApprovalAskToolName>(
+  services: HarnessServices,
+  tool: Name,
+  newAttempt: () => string,
+): Served => {
+  const decode = decoder(tool);
+  const ask = askApproval(services);
+
+  return ({ input, requestId: given }, caller) => {
+    const decoded = decode(input);
+
+    if (Result.isFailure(decoded)) return Effect.succeed(decoded.failure);
+
+    const args = decoded.success;
+    const requestId = given ?? args.request_id;
+
+    if (requestId?.startsWith(APPROVAL_REQUEST_PREFIX) === true) {
+      return Effect.succeed(approvalPrefix);
+    }
+
+    return ask({
+      tool,
+      args,
+      caller,
+      requestId,
+      requestDigest: requestDigest(tool, args),
+      // SAFETY: an endpoint input as its schema decoded it: JSON.
+      digest: requestDigest(tool, Record.remove(args as Record<string, Schema.Json>, "reason")),
+      attempt: newAttempt(),
+    });
+  };
+};
 
 /** The refusal of a `request_id` an earlier call holds with another tool or other arguments. */
 const otherArguments = (id: string) =>
@@ -376,12 +422,7 @@ const serveChange = <Name extends ChangeToolName, Cores>(
       // The dispatcher reads the `request_id` from the request (`McpServer` copies it there), else from the input.
       const requestId = given ?? args.request_id;
 
-      if (requestId?.startsWith(APPROVAL_REQUEST_PREFIX) === true) {
-        return apiFailure(
-          "invalid_argument",
-          `A request_id may not begin "${APPROVAL_REQUEST_PREFIX}": cloudpid keeps those for the owner's Approvals.`,
-        );
-      }
+      if (requestId?.startsWith(APPROVAL_REQUEST_PREFIX) === true) return approvalPrefix;
 
       const digest = requestDigest(tool, args);
       const lookedUp = yield* probeAndLookUp(requestId);
@@ -464,8 +505,12 @@ export const harnessDispatch = (
       ? `The Skills kept Global (id "${GLOBAL_ID}") wait for the owner's Approval, which is not offered yet: name an Environment's id.`
       : undefined;
 
+  const asking = <Name extends ApprovalAskToolName>(tool: Name) =>
+    serveAsk(services, tool, newAttempt);
+
   // The tools `harness` serves: the same names as `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which `dispatch.test.ts` checks.
-  const table: Record<HarnessToolName, Served> = {
+  // `approval_wait` and `approval_withdraw` have operations of their own.
+  const table: Record<DispatchedToolName, Served> = {
     environment_list: serveRead("environment_list", environmentListRead(services.environments)),
     environment_get: serveRead("environment_get", environmentGetRead(services.environments)),
     settings_get: serveRead("settings_get", settingsGetRead(services.settings)),
@@ -589,6 +634,12 @@ export const harnessDispatch = (
       (cores) => cores.environment_setting_reset,
       ({ setting }) => (setting === RESET_LIMIT_SETTING ? RESET_LIMIT_UNSUPPORTED : undefined),
     ),
+    // The tools that wait for the owner's Approval: they ask, and answer `pending` (`./approvals.ts`).
+    settings_spend_limit_set: asking("settings_spend_limit_set"),
+    settings_subagent_depth_set: asking("settings_subagent_depth_set"),
+    settings_subagent_workspaces_set: asking("settings_subagent_workspaces_set"),
+    settings_instructions_set: asking("settings_instructions_set"),
+    environment_container_size_limit_set: asking("environment_container_size_limit_set"),
   };
 
   // Looked up by a name the caller sent: only the table's own keys are tools.

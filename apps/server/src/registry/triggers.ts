@@ -954,14 +954,14 @@ export const openTriggers = (
      * Delete Environment `id` (`store.deleteEnvironment`, which deletes its Triggers in the same transaction) and answer
      * the ids of the Triggers that went with it (`docs/architecture/triggers.md` → Cascades).
      */
-    deleteEnvironment: (id: string): EnvironmentRemoval =>
+    deleteEnvironment: (id: string, now?: number): EnvironmentRemoval =>
       storage.transactionSync((): EnvironmentRemoval => {
         const held = Arr.map(
           sql.exec<{ id: string }>("SELECT id FROM triggers WHERE environment = ?", id).toArray(),
           (found) => found.id,
         );
 
-        const deletion = store.deleteEnvironment(id);
+        const deletion = store.deleteEnvironment(id, now);
 
         return { deletion, triggers: deletion === "deleted" ? held : [] };
       }),
