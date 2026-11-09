@@ -1,42 +1,19 @@
 // @effect-diagnostics missingPipeableSignature:off
 // What a Skill may hold (ADR-0026, docs/architecture/workspace.md → The Environment's own Skills): the checks a Skill's files pass before they
-// are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. Plain TypeScript with no
-// imports, which Node runs by type stripping.
+// are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. The limits are the
+// shared tool declarations' (`@cloudpid/protocol/harness-tools`), so the words the tools say them in are these numbers.
+import { MAX_FILE_BYTES } from "@cloudpid/protocol/harness-tools";
 
-/**
- * A Skill's file larger than this is refused: the Registry keeps each text in one SQLite row and each Workspace keeps it
- * as one storage value (as UTF-8 bytes), and a Durable Object's row or value may hold 8 MiB (workerd#7493; Cloudflare's
- * docs still say 2 MB: cloudflare-docs#34502).
- */
-export const MAX_FILE_BYTES = 1536 * 1024;
-
-/** A Skill, all its files together, may be this large: every Workspace holds a copy of its Skill set. */
-export const MAX_SKILL_BYTES = 4 * 1024 * 1024;
-
-/**
- * The most UTF-8 bytes an Environment's Skill set may hold: the whole set goes to a Workspace in one Durable Object
- * call, and each Workspace keeps a copy.
- */
-export const MAX_SKILL_SET_BYTES = 8 * 1024 * 1024;
-
-const inMiB = (bytes: number): string => `${bytes / (1024 * 1024)} MiB`;
-
-/** The size limits of a Skill's file, a Skill and a Skill set, as the tools' descriptions say them. */
-export const SKILL_SIZES = {
-  file: inMiB(MAX_FILE_BYTES),
-  skill: inMiB(MAX_SKILL_BYTES),
-  set: inMiB(MAX_SKILL_SET_BYTES),
-} as const;
+export {
+  MAX_APPROVED_SKILLS,
+  MAX_FILE_BYTES,
+  MAX_SKILL_BYTES,
+  MAX_SKILL_SET_BYTES,
+  SKILL_SIZE_WORDS as SKILL_SIZES,
+} from "@cloudpid/protocol/harness-tools";
 
 /** The most files a Skill's folder may hold, far above any real one. */
 export const MAX_SKILL_FILES = 500;
-
-/**
- * The most Skills one Approval of an install at Global shows. Each is shown with up to 16,000 characters of
- * its files, so the card stays a size the owner can read and a request a Durable Object keeps; more are installed in
- * batches, the agent naming them. The Registry refuses a preview of more before it reads their files.
- */
-export const MAX_APPROVED_SKILLS = 10;
 
 /** The longest name a Skill may have (Agent Skills). */
 export const MAX_SKILL_NAME_LENGTH = 64;

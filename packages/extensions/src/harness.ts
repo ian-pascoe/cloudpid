@@ -60,6 +60,8 @@ export const NOT_FOUND = "not_found" satisfies HarnessErrorCode;
 
 export const INVALID_ARGUMENT = "invalid_argument" satisfies HarnessErrorCode;
 
+export const UNSUPPORTED = "unsupported" satisfies HarnessErrorCode;
+
 /** An answer as an in-session tool returns it: its text, its structured output and its details. */
 export const toolResult = ({ text, structured, details }: HarnessAnswer) => ({
   output: [{ type: "text" as const, text }],

@@ -116,7 +116,7 @@ const shownValue = (value: Schema.Json | null): string =>
 const asJsonValue = (value: Schema.Json | null): JsonValue | null => value as JsonValue | null;
 
 /** The author of a change: the calling conversation in a Session; none on the endpoint, whose service knows the caller. */
-const authorOf = (
+export const authorOf = (
   tool: string,
   reason: string,
   conversation: number | undefined,
@@ -158,7 +158,7 @@ export const fittedChanges = <A extends { readonly changes: EndpointChange["chan
   ]);
 
 /** A Container setting's change on the endpoint: no Session, so nothing is its own, and it waits for no Approval. */
-const endpointChangeOutput = ({
+export const endpointChangeOutput = ({
   environment,
   change,
   unchanged = [],
@@ -180,11 +180,11 @@ const endpointChangeOutput = ({
   });
 
 /** The endpoint's text, cut to what its answers hold; `environment_get` shows the setting itself. */
-const endpointText = (text: string): string =>
+export const endpointText = (text: string): string =>
   cutText(text, cutNote("environment_get shows the setting as it is now"));
 
 /** The text of an answer on `surface`: a Session's as it is, the endpoint's cut. */
-const textOn = (surface: Surface, text: string): string =>
+export const textOn = (surface: Surface, text: string): string =>
   surface === "session" ? text : endpointText(text);
 
 /** One change of a Container setting, as a core describes it to `settingWrite`. */
@@ -224,8 +224,6 @@ export const environmentChangeCores = ({
   environments,
   holdsSecret,
 }: EnvironmentChangeServices) => {
-  const target = environmentTarget(environments);
-
   /** Make the change `spec` describes on `surface`, and say how it went. */
   const settingWrite = <Prepared>(
     surface: Surface,
@@ -256,7 +254,9 @@ export const environmentChangeCores = ({
       }
 
       const { environment, own } =
-        id === GLOBAL_ID ? { environment: GLOBAL_ID, own: false } : yield* target(id);
+        id === GLOBAL_ID
+          ? { environment: GLOBAL_ID, own: false }
+          : yield* environmentTarget(environments, surface)(id);
 
       const prepared = yield* prepare(environment);
 
@@ -626,7 +626,10 @@ export const environmentChangeCores = ({
         );
       }
 
-      const environment = id === GLOBAL_ID ? GLOBAL_ID : (yield* target(id)).environment;
+      const environment =
+        id === GLOBAL_ID
+          ? GLOBAL_ID
+          : (yield* environmentTarget(environments, surface)(id)).environment;
 
       const marked = yield* environments.markSecret({
         environment,
@@ -772,7 +775,7 @@ const replayedValue = (value: Schema.Json | null): string => {
  * The text of a replayed answer: the changes the first call recorded, each with its Scope, field, values and number,
  * and that the full answer was not kept.
  */
-const replayedText = (
+export const replayedText = (
   changes: ReadonlyArray<RecordedChange>,
   /** The read that shows the current state. */
   shows = "environment_get",
@@ -793,7 +796,7 @@ const replayedText = (
   );
 
 /** The changes of a replayed answer, as an answer gives Agent changes: what the record does not say is neutral. */
-const replayedChanges = (changes: ReadonlyArray<RecordedChange>) =>
+export const replayedChanges = (changes: ReadonlyArray<RecordedChange>) =>
   changesOutput(
     Arr.map(changes, (change): AgentChange => ({
       id: change.id,
@@ -813,7 +816,7 @@ const replayedChanges = (changes: ReadonlyArray<RecordedChange>) =>
   );
 
 /** The Scope of a replayed answer: the recorded changes' (or the call's `id`, when the Registry keeps none of them). */
-const replayedScope = (changes: ReadonlyArray<RecordedChange>, id: string) => {
+export const replayedScope = (changes: ReadonlyArray<RecordedChange>, id: string) => {
   const [first] = changes;
 
   if (first !== undefined) return { id: first.scope, name: first.scopeName };
@@ -821,11 +824,11 @@ const replayedScope = (changes: ReadonlyArray<RecordedChange>, id: string) => {
   return { id, name: id === GLOBAL_ID ? GLOBAL_NAME : id };
 };
 
-/** A replayed answer: built from `changes` for the call whose arguments name `id`. */
+/** A replayed answer: built from `changes` for the call whose arguments name `id` (empty for a tool that names none). */
 export type Replayed = (changes: ReadonlyArray<RecordedChange>, id: string) => HarnessAnswer;
 
 /** A Container setting's replayed answer: no Build state and no reach at Global is kept, so `environment_get` shows them. */
-const replayedSetting: Replayed = (changes, id) => ({
+export const replayedSetting: Replayed = (changes, id) => ({
   text: replayedText(changes),
   structured: asOutput(
     EnvironmentChangeEndpointOutput,

@@ -32,9 +32,9 @@ import {
   declinedWith,
   withApproval,
 } from "./approvals.ts";
-import { GLOBAL_ID, idOrGlobal } from "@cloudpid/protocol/harness-tools";
-import { type ChangedEnvironment, EnvironmentsError, Reason } from "./environment.ts";
-import { SkillUpdateOutput, skillUpdatedOutput } from "./environment-lifecycle-outputs.ts";
+import { GLOBAL_ID, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import { type ChangedEnvironment, EnvironmentsError } from "./environment.ts";
+import { skillUpdatedOutput } from "./environment-lifecycle-outputs.ts";
 import {
   asJsonValue,
   named,
@@ -43,9 +43,8 @@ import {
   type SkillToolDeps,
   type SkillsUpdated,
 } from "./environment-skill-results.ts";
-import { cardOf, MAX_CARD_CHARS, SKILL_APPROVAL } from "./environment-skills-global.ts";
+import { cardOf, MAX_CARD_CHARS } from "./environment-skills-global.ts";
 import { APPROVED, outputSchema } from "./outputs.ts";
-import { SKILL_SIZES } from "./skill-checks.ts";
 
 const TOOL = "environment_skill_update";
 
@@ -514,35 +513,10 @@ export const updateTool = ({
   const deps = { environments, approvals, log, notFound };
 
   return defineEffectTool({
-    name: TOOL,
-    description: Arr.join(
-      [
-        `Update installed Skills of an Environment (the one id names) to the latest commit of the ref each was installed from: cloudpid fetches them, not you (no Container, no \`npx skills\`). Each Skill moved is kept in place of itself with its new Skill source and recorded as an Agent change with the files before and after, so the user can revert it on the Skills page. Skills stay pinned until someone updates them; environment_get marks a Skill "update available" when the daily check found its folder changed at its Skill source, and "modified" when it was edited since it was installed.`,
-        `names are the Skills to update (as environment_get lists them); without names, every Skill marked update available is updated. A Skill whose folder is the same at the new commit records nothing. A modified Skill is refused, and named in the result, unless overwrite is true: that replaces the edits made to it (the user's revert brings them back); only set it when the user wants their edits replaced. A Skill that was not installed from GitHub has no source to update from, and one the checks refuse (the Agent Skills name rules, text only, ${SKILL_SIZES.file} a file, ${SKILL_SIZES.skill} a Skill, 100 Skills and ${SKILL_SIZES.set} in a set) is reported while the others are updated. After an update, this Session's Workspace serves the new files at ${SKILLS_ROOT}/<name> at once; the skills list in your system prompt changes at the next Context Window.`,
-        `With id "${GLOBAL_ID}" the Skills kept Global are updated, which the user must approve because they steer every future Session: they read the files each Skill would take on the card (the first ${MAX_CARD_CHARS} characters of each Skill's files, with a warning for what is cut), and the update is made at exactly those commits. ${SKILL_APPROVAL}`,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: idOrGlobal("the Skills kept Global"),
-      names: Schema.optionalKey(
-        Schema.Array(Schema.String.check(Schema.isMinLength(1))).annotate({
-          description:
-            "The Skills to update, by name. Left out: every Skill marked update available",
-        }),
-      ),
-      overwrite: Schema.optionalKey(
-        Schema.Boolean.annotate({
-          description:
-            "Replace the edits made to a modified Skill (default false: a modified Skill is refused and named)",
-        }),
-      ),
-      reason: Reason.annotate({
-        description:
-          "Why you update the Skills, for the user to read in the Environment's Agent changes, such as 'the user asked for the latest grill-me'",
-      }),
-    }),
-    structuredOutputSchema: outputSchema(SkillUpdateOutput),
+    name: HARNESS_TOOLS.environment_skill_update.name,
+    description: HARNESS_TOOLS.environment_skill_update.session.description,
+    parameters: HARNESS_TOOLS.environment_skill_update.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_skill_update.session.output),
     executionMode: "sequential",
     // A rerun after an eviction waits for the request an update at Global made, or takes its answer; one for
     // an Environment's own Skills finds the Skills already at the new commit (unchanged) and records nothing again.

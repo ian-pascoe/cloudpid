@@ -570,7 +570,7 @@ export const TriggerTools: Effect.Effect<
   const log = yield* AgentChangeLog;
 
   const plainText = yield* plainTextCheck;
-  const target = environmentTarget(environments);
+  const target = environmentTarget(environments, "session");
 
   /**
    * Where a Trigger of `kind` made by `owner` lives: its Environment's id, and the Workspace it keeps. A Workspace

@@ -50,9 +50,10 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { Approvals } from "./approvals.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
+import { lifecycleCores } from "./environment-lifecycle-changes.ts";
 import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import { environmentGetRead, environmentListRead } from "./environment-reads.ts";
-import { resetTool } from "./environment-reset.ts";
+import { resetCore, resetTool } from "./environment-reset.ts";
 import { type SecretMarks, secretMarkTools } from "./environment-secret-marks.ts";
 import { type EnvironmentSkills, skillTools } from "./environment-skills.ts";
 import { environmentChangeCores } from "./environment-changes.ts";
@@ -62,6 +63,7 @@ import {
   describeApplied,
   describeAppliedGlobal,
   environmentTarget,
+  refuseSecretsIn,
 } from "./environment-change-parts.ts";
 import { type HarnessWriteAnswer, loggedOf, toolResult } from "./harness.ts";
 import { outputSchema } from "./outputs.ts";
@@ -396,7 +398,7 @@ export const EnvironmentTools: Effect.Effect<
           () => secrets.redact(value) !== value || holdsCredential(value),
         );
 
-  const target = environmentTarget(environments);
+  const target = environmentTarget(environments, "session");
 
   // The cores the endpoint serves too (`./environment-changes.ts`), here on the session surface.
   const cores = environmentChangeCores({ environments, holdsSecret });
@@ -538,27 +540,24 @@ export const EnvironmentTools: Effect.Effect<
   const refuseSecrets = (
     texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
     outcome = "Nothing was saved",
-  ) =>
-    Effect.gen(function* () {
-      for (const { what, text } of texts) {
-        if (text !== "" && (yield* holdsSecret(text))) {
-          return yield* EnvironmentsError.make({
-            message: `${outcome}: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
-          });
-        }
-      }
-    });
+  ) => refuseSecretsIn(holdsSecret)("session", texts, outcome);
 
-  const lifecycle = yield* lifecycleTools({ environments, log, refuseSecrets, target, notFound });
+  const lifecycle = yield* lifecycleTools(
+    { environments, log, refuseSecrets, target, notFound },
+    lifecycleCores({ environments, holdsSecret }),
+  );
 
-  const settingReset = yield* resetTool({
-    environments,
-    approvals,
-    log,
-    refuseSecrets,
-    target,
-    notFound,
-  });
+  const settingReset = yield* resetTool(
+    {
+      environments,
+      approvals,
+      log,
+      refuseSecrets,
+      target,
+      notFound,
+    },
+    resetCore({ environments, holdsSecret }),
+  );
 
   const secretMarks = yield* secretMarkTools({ core: cores.environment_secret_build, log });
 

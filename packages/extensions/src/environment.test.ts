@@ -19,9 +19,9 @@ import {
   ENDPOINT_STRUCTURED_BYTES,
   EnvironmentGetOutput,
   EnvironmentListOutput,
-  HARNESS_TOOL_NAMES,
   HARNESS_TOOLS,
 } from "@cloudpid/protocol/harness-tools";
+import { expectEndpointWords } from "./endpoint-words.fixture.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type JsonObject,
@@ -1667,16 +1667,6 @@ describe("the setters' cores on the endpoint", () => {
     };
   };
 
-  /**
-   * The tool names a text holds. Each must be one the endpoint can serve: a sentence that names another
-   * (`container_restart`, `secret_ask`, a Limit tool) sends the caller to a tool it does not have (`mcp-endpoint.md` →
-   * Names and surfaces).
-   */
-  const namedTools = (said: string): ReadonlyArray<string> =>
-    said.match(/\b(?:container|secret|environment|settings)_[a-z_]+\b/g) ?? [];
-
-  const served: ReadonlyArray<string> = HARNESS_TOOL_NAMES;
-
   it.each([
     ["environment_variable_set", { id: "default", name: "A", value: "1", reason: "r" }],
     ["environment_variable_set", { id: "*", name: "A", value: "1", reason: "r" }],
@@ -1703,9 +1693,7 @@ describe("the setters' cores on the endpoint", () => {
       expect(output.changes).toHaveLength(1);
       expect(output).not.toHaveProperty("own");
       expect(output).not.toHaveProperty("approval");
-      expect(Arr.filter(namedTools(answer.text), (named) => !served.includes(named))).toEqual([]);
-      // The words are the contract here: the endpoint has no Session, so no answer of its may speak of one.
-      expect(answer.text).not.toContain("this Session");
+      expectEndpointWords(answer.text);
       expect(answer.logged).toMatchObject({ tool: name });
     },
   );
@@ -1740,11 +1728,7 @@ describe("the setters' cores on the endpoint", () => {
       const refused = await Effect.runPromise(Effect.flip(cores[name](args as never, "endpoint")));
 
       expect(refused.code).toBe("invalid_argument");
-      expect(Arr.filter(namedTools(refused.message), (named) => !served.includes(named))).toEqual(
-        [],
-      );
-      // The words are the contract here: the endpoint has no Session, so no refusal of its may speak of one.
-      expect(refused.message).not.toContain("this Session");
+      expectEndpointWords(refused.message);
       expect(environments.changes).toEqual([]);
     },
   );

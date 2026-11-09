@@ -36,6 +36,10 @@ import {
   EnvironmentTools,
   type RunChange,
 } from "./environment.ts";
+import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import { expectEndpointWords } from "./endpoint-words.fixture.ts";
+import { endpointTextCheck, replayedSetting } from "./environment-changes.ts";
+import { resetCore } from "./environment-reset.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
@@ -502,5 +506,141 @@ describe("environment_setting_reset from a program", () => {
       new_build: false,
       global: null,
     });
+  });
+});
+
+describe("environment_setting_reset's core on the endpoint", () => {
+  /** The core over Environments that reset `idleMinutes` once, as the endpoint runs it: no Session, a check that knows none. */
+  const endpointCore = async () => {
+    const calls: Changed[] = [];
+
+    const holdsSecret = await Effect.runPromise(
+      endpointTextCheck.pipe(Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] })),
+    );
+
+    const core = resetCore({
+      environments: {
+        current: Effect.succeed(null),
+        change: ({ environment, change: { field, value }, expected, author }) =>
+          Effect.sync(() => {
+            calls.push({ environment, field, value, expected: expected?.value, author });
+
+            if (environment !== "default") return { status: "missing" as const };
+
+            if (calls.length > 1) {
+              return {
+                status: "unchanged" as const,
+                environment: { id: "default", name: "Default" },
+                value: 2,
+              };
+            }
+
+            return {
+              status: "changed" as const,
+              environment: { id: "default", name: "Default" },
+              change: {
+                id: 1,
+                scope: environment,
+                at: 1_000,
+                actor: "agent" as const,
+                session: null,
+                conversation: null,
+                tool: author.tool,
+                reason: author.reason,
+                field,
+                before: 10,
+                after: 2,
+                reverts: null,
+                revertedBy: null,
+              },
+              newBuild: true,
+            };
+          }),
+      },
+      holdsSecret,
+    });
+
+    return { core, calls };
+  };
+
+  const decode = Schema.decodeUnknownSync(HARNESS_TOOLS.environment_setting_reset.endpoint.output);
+
+  it("resets a setting at once, answering the endpoint's shape with the Build asked for, in the owner's words", async () => {
+    const { core, calls } = await endpointCore();
+
+    const answer = await Effect.runPromise(
+      core({ id: "default", setting: "idleMinutes", reason: "r" }, "endpoint"),
+    );
+
+    expect(decode(answer.structured)).toMatchObject({
+      scope: { id: "default", name: "Default" },
+      changes: [{ field: "idleMinutes", before: 10, after: 2 }],
+      new_build: true,
+    });
+    expect(answer.structured).not.toHaveProperty("own");
+    expect(answer.structured).not.toHaveProperty("approval");
+    expectEndpointWords(answer.text);
+    expect(answer.logged).toEqual({
+      tool: "environment_setting_reset",
+      environmentName: "Default",
+      field: "idleMinutes",
+    });
+    expect(calls).toMatchObject([{ field: "idleMinutes", value: null, expected: undefined }]);
+  });
+
+  it("records nothing for a setting that is inherited already", async () => {
+    const { core } = await endpointCore();
+    const ask = () => core({ id: "default", setting: "idleMinutes", reason: "r" }, "endpoint");
+
+    await Effect.runPromise(ask());
+
+    const again = await Effect.runPromise(ask());
+
+    expect(decode(again.structured)).toMatchObject({ changes: [], unchanged: ["idleMinutes"] });
+    expect(again.logged).toBeUndefined();
+  });
+
+  it.each([
+    ["a Global id", { id: "*", setting: "idleMinutes", reason: "r" }, "invalid_argument"],
+    [
+      "a reason holding a GitHub token",
+      { id: "default", setting: "idleMinutes", reason: GITHUB_TOKEN },
+      "invalid_argument",
+    ],
+    [
+      "an Environment that is not there",
+      { id: "ghost", setting: "idleMinutes", reason: "r" },
+      "not_found",
+    ],
+    [
+      "the size limit, which waits for an Approval",
+      { id: "default", setting: "maxInstance", reason: "r" },
+      "unsupported",
+    ],
+  ] as const)("refuses %s as %s", async (_, args, code) => {
+    const { core } = await endpointCore();
+
+    const refused = await Effect.runPromise(core(args, "endpoint").pipe(Effect.flip));
+
+    expect(refused.code).toBe(code);
+    expectEndpointWords(refused.message);
+  });
+
+  it("is valid against the schema when replayed from its change", () => {
+    const answer = replayedSetting(
+      [
+        {
+          id: 3,
+          scope: "default",
+          scopeName: "Default",
+          field: "idleMinutes",
+          before: 10,
+          after: 2,
+        },
+      ],
+      "default",
+    );
+
+    expect(decode(answer.structured)).toMatchObject({ changes: [{ id: 3 }], replayed: true });
   });
 });

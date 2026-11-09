@@ -107,6 +107,39 @@ export const describeAppliedGlobal = (
     " ",
   );
 
+/**
+ * The refusal of a call whose text holds a credential, saying `outcome` (nothing was saved) and `what` holds it: on a
+ * Session's surface it names the Secrets the Session holds, on the endpoint it is `invalid_argument` and names the owner.
+ */
+export const holdsRefusal = (surface: Surface, outcome: string, what: string): EnvironmentsError =>
+  surface === "session"
+    ? EnvironmentsError.make({
+        message: `${outcome}: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
+      })
+    : EnvironmentsError.make({
+        message: `${outcome}: ${what} holds a GitHub token or the GitHub App's key. Say it without the value; a credential belongs in a Secret the owner keeps for the Environment on the Secrets page.`,
+        code: "invalid_argument",
+      });
+
+/**
+ * Fails, saving nothing (`outcome` says what was not done), when a text holds a credential `holdsSecret` knows: in the
+ * words of `surface` (`holdsRefusal`). The Session's tools and the cores share it.
+ */
+export const refuseSecretsIn =
+  (holdsSecret: (text: string) => Effect.Effect<boolean, EnvironmentsError>) =>
+  (
+    surface: Surface,
+    texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
+    outcome = "Nothing was saved",
+  ) =>
+    Effect.gen(function* () {
+      for (const { what, text } of texts) {
+        if (text !== "" && (yield* holdsSecret(text))) {
+          return yield* holdsRefusal(surface, outcome, what);
+        }
+      }
+    });
+
 /** US dollars, to two significant digits. */
 const money = (dollars: number): string => `$${dollars.toPrecision(2)}`;
 
@@ -140,24 +173,32 @@ export const pathsLine = (value: Schema.Json | null): string =>
  * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
  * Environment's own record, or (`environment_setting_reset`) make one Environment's field inherit Global's.
  */
-export const refuseGlobal = (id: string) =>
-  id === GLOBAL_ID
-    ? EnvironmentsError.make({
-        message: `The id "${GLOBAL_ID}" names what is kept Global (the Container settings, Secrets and Skills): only environment_get, the Container setting tools (environment_variable_set, environment_variable_unset, environment_container_resize, environment_container_size_limit_set, environment_idle_time_set, environment_ignore_set, environment_setup_script_set, environment_start_script_set, environment_toolchains_set, environment_spare_workspace_set), environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
-      })
-    : Effect.void;
+export const refuseGlobal = (id: string, surface: Surface) =>
+  id !== GLOBAL_ID
+    ? Effect.void
+    : surface === "endpoint"
+      ? EnvironmentsError.make({
+          message: `The id "${GLOBAL_ID}" names what is kept Global, which this tool does not change: it changes one Environment's own record or fields. Name one Environment with its id (environment_list shows them).`,
+          code: "invalid_argument",
+        })
+      : EnvironmentsError.make({
+          message: `The id "${GLOBAL_ID}" names what is kept Global (the Container settings, Secrets and Skills): only environment_get, the Container setting tools (environment_variable_set, environment_variable_unset, environment_container_resize, environment_container_size_limit_set, environment_idle_time_set, environment_ignore_set, environment_setup_script_set, environment_start_script_set, environment_toolchains_set, environment_spare_workspace_set), environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
+        });
 
 /** The Environment a tool's `id` names (never assumed: a call without one fails to decode), with whether it is the Session's. */
 export type EnvironmentTarget = (
   id: string,
 ) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
 
-/** The `EnvironmentTarget` over `environments`: it refuses `*`, and only compares the id with the Session's own. */
+/**
+ * The `EnvironmentTarget` over `environments`: it refuses `*` (on the endpoint, as `invalid_argument` in words that name
+ * no tool it does not serve), and only compares the id with the Session's own.
+ */
 export const environmentTarget =
-  (environments: Pick<EnvironmentsService, "current">): EnvironmentTarget =>
+  (environments: Pick<EnvironmentsService, "current">, surface: Surface): EnvironmentTarget =>
   (id) =>
     Effect.gen(function* () {
-      yield* refuseGlobal(id);
+      yield* refuseGlobal(id, surface);
 
       return { environment: id, own: id === (yield* environments.current) };
     });

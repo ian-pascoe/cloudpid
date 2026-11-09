@@ -37,6 +37,10 @@ import {
   SkillSaveOutput,
   SkillUpdateOutput,
 } from "./environment-lifecycle-outputs.ts";
+import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import { expectEndpointWords } from "./endpoint-words.fixture.ts";
+import { endpointTextCheck } from "./environment-changes.ts";
+import { SKILL_REPLAYED, skillCores } from "./environment-skill-changes.ts";
 import { answerRequests, runProgram, runSized } from "./program.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { fakeFolderEnv, fakeSkills } from "./environment-skills.fixture.ts";
@@ -2755,6 +2759,253 @@ describe("the Skill tools from a program", () => {
       changed: true,
       changes: [{ before: null, before_truncated: false, after: null, after_truncated: true }],
       changes_truncated: false,
+    });
+  });
+});
+
+describe("the Skill cores on the endpoint", () => {
+  /** The cores over fake Skills as the endpoint runs them: no Session, and a check that knows no Session's Secrets. */
+  const endpointCores = async () => {
+    const skills = fakeSkills();
+
+    const holdsSecret = await Effect.runPromise(
+      endpointTextCheck.pipe(Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] })),
+    );
+
+    return {
+      cores: skillCores({
+        environments: { ...skills.service, current: Effect.succeed(null) },
+        holdsSecret,
+      }),
+      ...skills,
+    };
+  };
+
+  const source = {
+    repo: "mattpocock/skills",
+    path: "skills/grill-me",
+    ref: null,
+    commit: GRILL_COMMIT,
+  };
+
+  const moved = {
+    name: "grill-me",
+    outcome: "updated" as const,
+    from: source,
+    to: { ...source, commit: "d".repeat(40) },
+    overwrote: false,
+    change: installChange(9, "grill-me"),
+  };
+
+  const decodeInstall = Schema.decodeUnknownSync(
+    HARNESS_TOOLS.environment_skill_install.endpoint.output,
+  );
+
+  it("reads each Skill of an install, so one whose Skills were all refused is an answer that kept nothing", async () => {
+    const { cores, answerInstall } = await endpointCores();
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "o/skills",
+      ref: null,
+      commit: GRILL_COMMIT,
+      results: [{ name: "c", path: "skills/c", outcome: "rejected", message: "a binary file" }],
+      handed: false,
+    });
+
+    const answer = await Effect.runPromise(
+      cores.environment_skill_install(
+        { id: "default", source: "o/skills", skills: ["c"], reason: "r" },
+        "endpoint",
+      ),
+    );
+
+    expect(decodeInstall(answer.structured)).toMatchObject({
+      changed: false,
+      changes: [],
+      installed: [],
+      refused: [{ name: "c", message: "a binary file" }],
+    });
+    expect(answer.text).toContain("Installed nothing");
+    expect(answer.logged).toBeUndefined();
+  });
+
+  it("answers an install's Skills one by one: installed, unchanged and refused, with the ones the repo lists", async () => {
+    const { cores, answerInstall } = await endpointCores();
+
+    answerInstall({
+      status: "installed",
+      environment: DEFAULT,
+      repo: "mattpocock/skills",
+      ref: "v2",
+      commit: GRILL_COMMIT,
+      results: [
+        { name: "a", path: "skills/a", outcome: "installed", change: installChange(1, "a") },
+        { name: "b", path: "skills/b", outcome: "unchanged" },
+        { name: "c", path: "skills/c", outcome: "rejected", message: "a binary file" },
+      ],
+      handed: true,
+    });
+
+    const answer = await Effect.runPromise(
+      cores.environment_skill_install(
+        { id: "default", source: "mattpocock/skills", skills: ["*"], reason: "r" },
+        "endpoint",
+      ),
+    );
+
+    const output = decodeInstall(answer.structured);
+
+    expect(output).toMatchObject({
+      changed: true,
+      source: { repo: "mattpocock/skills", ref: "v2", commit: GRILL_COMMIT },
+      installed: [{ name: "a", path: "skills/a" }],
+      unchanged: ["skills.b"],
+      refused: [{ name: "c" }],
+    });
+    // Nothing is a Session's: no Workspace was handed the change, and no Approval was asked.
+    expect(output).not.toHaveProperty("handed");
+    expect(output).not.toHaveProperty("approval");
+    expect(answer.logged).toMatchObject({ tool: "environment_skill_install", field: "skills.a" });
+    expectEndpointWords(answer.text);
+  });
+
+  it("answers an update with what moved and what was refused", async () => {
+    const { cores, answerUpdate } = await endpointCores();
+
+    answerUpdate({
+      status: "done",
+      environment: DEFAULT,
+      results: [moved, { name: "tdd", outcome: "modified", message: "edited since installed" }],
+      handed: true,
+    });
+
+    const updated = await Effect.runPromise(
+      cores.environment_skill_update({ id: "default", reason: "r" }, "endpoint"),
+    );
+
+    expect(
+      Schema.decodeUnknownSync(HARNESS_TOOLS.environment_skill_update.endpoint.output)(
+        updated.structured,
+      ),
+    ).toMatchObject({
+      changed: true,
+      updated: [{ name: "grill-me", to: { commit: "d".repeat(40) }, overwrote: false }],
+      refused: [{ name: "tdd", outcome: "modified" }],
+    });
+    expectEndpointWords(updated.text);
+  });
+
+  it("answers a removal with the Skill's name", async () => {
+    const { cores, keep } = await endpointCores();
+
+    keep("default", "pr", { "SKILL.md": "x" });
+
+    const removed = await Effect.runPromise(
+      cores.environment_skill_remove({ id: "default", name: "pr", reason: "r" }, "endpoint"),
+    );
+
+    expect(
+      Schema.decodeUnknownSync(HARNESS_TOOLS.environment_skill_remove.endpoint.output)(
+        removed.structured,
+      ),
+    ).toMatchObject({ changed: true, skill: "pr", global_served: false });
+  });
+
+  it.each([
+    [
+      "a Skill that is not kept",
+      "environment_skill_remove",
+      { id: "default", name: "pr", reason: "r" },
+      "not_found",
+    ],
+    [
+      "an Environment that is not there",
+      "environment_skill_remove",
+      { id: "0000beef", name: "pr", reason: "r" },
+      "not_found",
+    ],
+    [
+      "a source holding a GitHub token",
+      "environment_skill_install",
+      { id: "default", source: GITHUB_TOKEN, reason: "r" },
+      "invalid_argument",
+    ],
+    ["a Global id", "environment_skill_update", { id: "*", reason: "r" }, "invalid_argument"],
+    [
+      "a source the Registry refuses",
+      "environment_skill_install",
+      { id: "default", source: "o/skills", reason: "r" },
+      "invalid_argument",
+    ],
+  ] as const)("refuses %s as %s", async (_, name, args, code) => {
+    const { cores } = await endpointCores();
+
+    // SAFETY: each row's arguments are its tool's.
+    const refused = await Effect.runPromise(
+      cores[name](args as never, "endpoint").pipe(Effect.flip),
+    );
+
+    expect(refused.code).toBe(code);
+    expectEndpointWords(refused.message);
+  });
+
+  describe("replayed", () => {
+    const installed = (name: string, at: number) => ({
+      id: at,
+      scope: "default",
+      scopeName: "Default",
+      field: skillField(name),
+      before: null,
+      after: { files: { "SKILL.md": "h" }, source: { ...source, path: `skills/${name}` } },
+    });
+
+    it("gives one result per change of an install, from the Skill source each holds", () => {
+      const answer = SKILL_REPLAYED.environment_skill_install(
+        [installed("a", 1), installed("b", 2)],
+        "default",
+      );
+
+      expect(decodeInstall(answer.structured)).toMatchObject({
+        source: { repo: "mattpocock/skills", commit: GRILL_COMMIT },
+        installed: [
+          { name: "a", path: "skills/a" },
+          { name: "b", path: "skills/b" },
+        ],
+        changes: [{ id: 1 }, { id: 2 }],
+        replayed: true,
+      });
+    });
+
+    it("gives one result per Skill an update moved, and the removed Skill's name", () => {
+      const update = SKILL_REPLAYED.environment_skill_update(
+        [
+          {
+            ...installed("a", 3),
+            before: { files: {}, source },
+            after: { files: {}, source: { ...source, commit: "d".repeat(40) } },
+          },
+        ],
+        "default",
+      );
+
+      expect(
+        Schema.decodeUnknownSync(HARNESS_TOOLS.environment_skill_update.endpoint.output)(
+          update.structured,
+        ),
+      ).toMatchObject({ updated: [{ name: "a", to: { commit: "d".repeat(40) } }], replayed: true });
+
+      const removed = SKILL_REPLAYED.environment_skill_remove(
+        [{ ...installed("a", 4), before: { files: {} }, after: null }],
+        "default",
+      );
+
+      expect(
+        Schema.decodeUnknownSync(HARNESS_TOOLS.environment_skill_remove.endpoint.output)(
+          removed.structured,
+        ),
+      ).toMatchObject({ skill: "a", changed: true, replayed: true });
     });
   });
 });
