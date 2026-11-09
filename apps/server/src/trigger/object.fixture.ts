@@ -324,10 +324,10 @@ export class TestTrigger extends DurableObject {
   }
 
   /**
-   * Every read of the definition answers the one the Registry holds now without a webhook's `repo` and `events`, as a
-   * Registry older than them answers (after a rollback).
+   * Every read of the definition answers the one the Registry holds now with its webhook's hook on `repo`, or, for
+   * undefined, without a webhook's `repo` and `events`, as a Registry older than them answers (after a rollback).
    */
-  async freezeReadsWithoutHook(): Promise<void> {
+  async freezeReadsWithRepo(repo: string | undefined): Promise<void> {
     await this.freezeReads();
 
     const frozen = this.#frozen;
@@ -336,7 +336,12 @@ export class TestTrigger extends DurableObject {
 
     const { repo: _repo, events: _events, ...source } = frozen.source;
 
-    this.#frozen = { ...frozen, source };
+    this.#frozen = { ...frozen, source: repo === undefined ? source : { ...frozen.source, repo } };
+  }
+
+  /** Every read of the definition asks the Registry again, as before `freezeReads`. */
+  unfreezeReads(): void {
+    this.#frozen = undefined;
   }
 
   /**

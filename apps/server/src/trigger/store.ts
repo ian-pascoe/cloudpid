@@ -114,16 +114,8 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   },
 ];
 
-/** Every table a wipe that keeps the hooks still to delete empties: all of them but `trigger_github_deletes`. */
-const WIPED_TABLES = [
-  "trigger_meta",
-  "trigger_pending",
-  "trigger_fires",
-  "trigger_secrets",
-  "trigger_counts",
-  "trigger_hook",
-  "trigger_github_hook",
-] as const;
+/** The table a wipe keeps: the hooks still to delete at GitHub. */
+const KEPT_BY_WIPE = "trigger_github_deletes";
 
 /** How long a delivery's Fire is held against a repeat once it is in the fire log: the Registry's memory of its key. */
 export const DEDUPE_MS = 24 * 60 * 60_000;
@@ -638,7 +630,15 @@ export const openTriggerStore = (storage: MigrationStorage) => {
      */
     wipeKeepingDeletes: (): void => {
       storage.transactionSync(() => {
-        for (const table of WIPED_TABLES) sql.exec(`DELETE FROM ${table}`);
+        // Every table of the object's, read from its schema, so a table a later migration adds is wiped too.
+        const tables = sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'trigger\\_%' ESCAPE '\\' AND name != ?",
+            KEPT_BY_WIPE,
+          )
+          .toArray();
+
+        for (const { name } of tables) sql.exec(`DELETE FROM ${name}`);
       });
     },
 

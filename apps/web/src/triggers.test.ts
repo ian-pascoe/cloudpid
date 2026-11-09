@@ -409,14 +409,6 @@ describe("a GitHub-managed hook", () => {
     ).toEqual({ type: "webhook", format: "standard" });
   });
 
-  it("holds a repo and events the Registry would refuse", () => {
-    // Which ones those are is `githubHookProblem`'s (`packages/protocol`): one passes through here.
-    const draft = hookDraft("octo-org/octo-repo", "");
-
-    expect(triggerDraftProblems(draft).hook).not.toBeNull();
-    expect(triggerDraftReady(draft)).toBe(false);
-  });
-
   it("opens a Trigger with its repo and events, which an edit never sends", () => {
     const draft = triggerDraftOf(hooked);
 

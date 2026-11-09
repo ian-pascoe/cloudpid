@@ -233,7 +233,14 @@ const TriggerSecretsPanel = ({ id, managed }: { id: string; managed: boolean }) 
           />
           <CopyValue key={shown.secret} label="Signing secret" value={shown.secret} />
           {shown.github !== undefined && shown.github.state !== "ready" && (
-            <p data-github-hook={shown.github.state} className="text-xs text-destructive">
+            <p
+              data-github-hook={shown.github.state}
+              className={
+                shown.github.state === "failed"
+                  ? "text-xs text-destructive"
+                  : "text-xs text-muted-foreground"
+              }
+            >
               {githubHookWords(shown.github)}
             </p>
           )}

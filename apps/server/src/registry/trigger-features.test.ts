@@ -3,6 +3,7 @@
 // as whether the hook can be made now. Its callers (`rpc.ts`, `session/triggers.ts`) each pass it through once.
 import type { TriggerSourceInput } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import { describe, expect, it } from "vitest";
 import { triggerGitHubHooksUnavailable, triggerGitHubHooksUnknown } from "./messages.ts";
 import type { RegistryMethods } from "./Registry.ts";
@@ -31,8 +32,22 @@ const registryAnswering = (answer: Effect.Effect<{ readonly githubHooks: boolean
   return { registry, calls: () => calls };
 };
 
+/** The levels the check logged at, in order. */
+const levels: Array<string> = [];
+
 const refusal = (answer: Effect.Effect<{ readonly githubHooks: boolean }>, source = HOOKED) =>
-  Effect.runPromise(githubHookRefusal(registryAnswering(answer).registry, source));
+  Effect.runPromise(
+    githubHookRefusal(registryAnswering(answer).registry, source).pipe(
+      Effect.provideService(
+        Logger.CurrentLoggers,
+        new Set([
+          Logger.make(({ logLevel }) => {
+            levels.push(logLevel);
+          }),
+        ]),
+      ),
+    ),
+  );
 
 describe("githubHookRefusal", () => {
   it("lets a hook be made once the Registry lists githubHooks, and asks nothing of a source that names none", async () => {
@@ -60,9 +75,12 @@ describe("githubHookRefusal", () => {
     ).toBe(triggerGitHubHooksUnavailable);
   });
 
-  it("refuses as unknown, not as an update, when the call fails otherwise", async () => {
+  it("refuses as unknown, not as an update, when the call fails otherwise, and logs it as a warning", async () => {
+    levels.length = 0;
+
     expect(await refusal(Effect.die(new Error("Network connection lost.")))).toBe(
       triggerGitHubHooksUnknown,
     );
+    expect(levels).toEqual(["Warn"]);
   });
 });

@@ -1033,14 +1033,12 @@ describe("a GitHub-managed hook", () => {
 
   it("says why GitHub has no hook yet, which cloudpid keeps trying", async () => {
     const { call, triggers } = await setUp();
+    const problem = "The GitHub App can't make hooks: accept Webhooks: write on its installation";
 
     triggers.hookAnswers.set("0190-a", {
       repo: "octo-org/octo-repo",
       state: "failed",
-      problem: {
-        code: "permission",
-        message: "The GitHub App can't make hooks: accept Webhooks: write on its installation",
-      },
+      problem: { code: "permission", message: problem },
     });
 
     const { result, text, error } = await call("trigger_create", HOOKED);
@@ -1050,12 +1048,10 @@ describe("a GitHub-managed hook", () => {
     expect(decodeChange(result.structuredOutput).github_hook).toEqual({
       repo: "octo-org/octo-repo",
       state: "failed",
-      problem: "The GitHub App can't make hooks: accept Webhooks: write on its installation",
+      problem,
     });
     // GitHub's reason reaches the agent, who tells the user what to do.
-    expect(text).toContain(
-      "The GitHub App can't make hooks: accept Webhooks: write on its installation",
-    );
+    expect(text).toContain(problem);
   });
 
   it("refuses a repo or events it can't make a hook of, without asking", async () => {

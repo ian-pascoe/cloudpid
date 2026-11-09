@@ -1,13 +1,14 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off
 // A Trigger's GitHub-managed hook, made by its object over real storage and alarms (`docs/architecture/triggers.md` →
 // GitHub-managed hooks, `hook-sync.ts`): made on the repo at its first sync; updated in the same call as New URL and New
 // signing secret; deleted when the Trigger goes, a failed delete tried again for up to a day; made again on a reverted
 // removal; the orphan sweep before it is made; a failure kept, shown and tried again, at once on a sync; kept when a
-// definition read from an older Registry names none; and made by the alarm when an older object left none. GitHub is a
-// fake (`github.fixture.ts`) behind the real hooks client; the token's permissions, how each of GitHub's refusals reads
-// and which hooks the sweep picks are `github-hook.test.ts`'s.
+// definition read from an older Registry names none, moved when one names another repo; and made by the alarm when an
+// older object left none. GitHub is a fake (`github.fixture.ts`) behind the real hooks client; the token's permissions,
+// how each of GitHub's refusals reads and which hooks the sweep picks are `github-hook.test.ts`'s.
 import { DEFAULT_ENVIRONMENT, type EnvironmentTriggerInput } from "@cloudpid/protocol";
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
@@ -99,6 +100,23 @@ const secrets = async (trigger: DurableObjectStub<TestTrigger>) => {
 const hooksOf = async (trigger: DurableObjectStub<TestTrigger>, repo = "o/r") =>
   (await trigger.githubState()).hooks[repo] ?? [];
 
+/** How many rows each of the object's tables that has any holds, by name. */
+const filledTables = (trigger: DurableObjectStub<TestTrigger>) =>
+  runInDurableObject(trigger, (_instance, state) =>
+    Object.fromEntries(
+      state.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'trigger\\_%' ESCAPE '\\'",
+        )
+        .toArray()
+        .map(({ name }) => [
+          name,
+          state.storage.sql.exec<{ n: number }>(`SELECT count(*) AS n FROM ${name}`).one().n,
+        ])
+        .filter(([, rows]) => rows !== 0),
+    ),
+  );
+
 const hook = (id: number, url: string): FakeHook => ({
   id,
   url,
@@ -167,8 +185,9 @@ describe("a GitHub-managed hook", () => {
     await trigger.setGitHub({ down: true });
     await trigger.remove();
 
-    // The wipe kept the delete, and its alarm.
+    // The wipe kept the delete, and its alarm, and nothing else.
     expect(await trigger.state()).toMatchObject({ definition: null });
+    expect(await filledTables(trigger)).toEqual({ trigger_github_deletes: 1 });
     expect(await trigger.alarmAt()).toBe(start + RETRY_MS);
 
     await trigger.setNow(start + RETRY_MS);
@@ -288,7 +307,15 @@ describe("a GitHub-managed hook", () => {
   it("is kept when a definition from an older Registry names no repo, and still in place once it does again", async () => {
     const { trigger } = await made();
 
-    await trigger.freezeReadsWithoutHook();
+    // The hooks GitHub was asked to make.
+    const posts = async () =>
+      (await trigger.githubState()).seen.filter(
+        ({ method, path }) => method === "POST" && path.endsWith("/hooks"),
+      ).length;
+
+    const before = await posts();
+
+    await trigger.freezeReadsWithRepo(undefined);
     await trigger.sync();
     await trigger.runAlarm();
 
@@ -296,10 +323,29 @@ describe("a GitHub-managed hook", () => {
     expect((await trigger.githubState()).seen.filter(({ method }) => method === "DELETE")).toEqual(
       [],
     );
-    expect(await trigger.logged()).toContainEqual({
-      level: "Warn",
-      message: expect.stringContaining("names no GitHub hook"),
-    });
+    expect(await trigger.logged()).toContainEqual(expect.objectContaining({ level: "Warn" }));
+
+    // The Registry names the repo again: the kept hook is the one, neither made again nor moved.
+    await trigger.unfreezeReads();
+
+    expect(await trigger.sync()).toMatchObject({ github: { state: "ready" } });
+    expect(await hooksOf(trigger)).toHaveLength(1);
+    expect(await posts()).toBe(before);
+  });
+
+  it("moves to the repo a definition names when it names another, deleting the old one", async () => {
+    const { trigger } = await made();
+
+    await trigger.freezeReadsWithRepo("o/s");
+
+    expect(await trigger.sync()).toMatchObject({ github: { repo: "o/s", state: "ready" } });
+    expect(await hooksOf(trigger, "o/s")).toHaveLength(1);
+
+    // The old hook's delete is the alarm's, due at once.
+    await trigger.runAlarm();
+
+    expect(await hooksOf(trigger, "o/r")).toEqual([]);
+    expect(await hooksOf(trigger, "o/s")).toHaveLength(1);
   });
 
   it("is made by the alarm when an older object left the hook it names untried", async () => {
