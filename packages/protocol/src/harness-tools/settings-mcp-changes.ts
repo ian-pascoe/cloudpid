@@ -11,18 +11,19 @@ import { MCP_EXPOSURES } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
 import { ChangeEndpointOutput, ChangeOutput } from "./change-output.ts";
 import { NextField } from "./field-page.ts";
-import { MAX_CHANGE_REASON, RequestIdField } from "./reason.ts";
+import { RequestIdField, settingsReason } from "./reason.ts";
 import { ScopeRef, SettingsScope } from "./scope.ts";
-import { DESTRUCTIVE, WRITE, WRITE_IDEMPOTENT, WRITE_IDEMPOTENT_OPEN } from "./surface.ts";
+import {
+  DESTRUCTIVE,
+  type Who,
+  WRITE,
+  WRITE_IDEMPOTENT,
+  WRITE_IDEMPOTENT_OPEN,
+} from "./surface.ts";
 
-const reasonFor = (who: "user" | "owner") =>
-  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHANGE_REASON)).annotate({
-    description: `Why you make the change, for the ${who} to read in the Settings' Agent changes, such as 'the server is not used by this project'`,
-  });
+const Reason = settingsReason("user", "the server is not used by this project");
 
-const Reason = reasonFor("user");
-
-const ReasonEndpoint = reasonFor("owner");
+const ReasonEndpoint = settingsReason("owner", "the server is not used by this project");
 
 /** The `name` of a server, as `settings_mcp_list` shows it. */
 export const ServerName = Schema.String.check(Schema.isMinLength(1)).annotate({
@@ -160,7 +161,7 @@ export const settingsMcpRemove = {
 // ─── settings_mcp_reload ─────────────────────────────────────────────────────
 
 /** What a reload found of one Repo's file; `who` is whoever drops a kept copy on the Settings page. */
-const reloadRepoOutput = (who: "user" | "owner") =>
+const reloadRepoOutput = (who: Who) =>
   Schema.Struct({
     directory: Schema.String,
     slug: Schema.NullOr(Schema.String),
@@ -180,7 +181,7 @@ const reloadRepoOutput = (who: "user" | "owner") =>
   });
 
 /** What a reload's value holds, whoever reads it: the Scope, each Repo's file, the set, the push and the host. */
-const reloadFields = (who: "user" | "owner") => ({
+const reloadFields = (who: Who) => ({
   scope: ScopeRef,
   repos: Schema.Array(reloadRepoOutput(who)),
   repos_truncated: Schema.Boolean.annotate({ description: "repos was cut" }),
@@ -224,7 +225,7 @@ export const SettingsMcpReloadEndpointOutput = Schema.Struct({
   ...reloadFields("owner"),
 });
 
-const reloadLine = (who: "user" | "owner") =>
+const reloadLine = (who: Who) =>
   `Read an Environment's Repos' .pi/mcp.json again (at most once per Repo each 30 seconds, a Repo looked at since being reported as recent), and have the Environment's MCP host drop its eras and Legacy sessions and rediscover its HTTP servers at once: for a server that is stuck, or a file that was just merged. It reports per Repo its directory, slug, path, outcome (changed, unchanged, absent, unreadable, invalid, not_github or recent), blob, read time and error; and for the set the servers added, removed and changed and the problems that appeared and cleared. A Repo that cannot be read keeps its last good copy: only the ${who}'s Reload on the Settings page drops it. scope is an Environment's id only ("*" is refused: Global has no Repos and no host). The set is sent to that Environment's MCP host and the host reloaded, whichever Environment it is (a host is not woken for an Environment whose set is and was empty). It is not an Agent change: no reason, no record, no Approval. A Repo's file is read on its default branch only, so a change on a branch shows once it is merged.`;
 
 export const settingsMcpReload = {

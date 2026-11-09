@@ -21,6 +21,7 @@
 // Session's after-steps.
 import {
   InstanceType,
+  isMcpField,
   MAX_INSTRUCTIONS_BYTES,
   OVERRIDE_FIELD_NAMES,
   overrideFieldPath,
@@ -411,7 +412,7 @@ export const ApprovalTools: Effect.Effect<
         }
 
         // An MCP server's adjustment: only at an Environment; one that falls back to something reachable waits for the user's Approval.
-        if (field.startsWith("mcp.")) {
+        if (isMcpField(field)) {
           return yield* mcp.resetField({ scope, field, reason, api });
         }
 

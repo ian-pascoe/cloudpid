@@ -23,6 +23,7 @@ import {
   GLOBAL_NAME,
   type HARNESS_TOOLS,
   type Surface,
+  whoWords,
 } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
@@ -105,9 +106,6 @@ const holdsWords = (surface: Surface): string =>
   surface === "session"
     ? "holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key"
     : "holds a GitHub token or the GitHub App's key";
-
-/** Who sees and reverts a change on the Environments page: the user in a Session, the owner on the endpoint. */
-const whoWords = (surface: Surface): string => (surface === "session" ? "user" : "owner");
 
 /** A variable's value as the result shows it: plain, in full. */
 const shownValue = (value: Schema.Json | null): string =>

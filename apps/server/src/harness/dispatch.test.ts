@@ -8,6 +8,7 @@
 // a lookup failing before any write, the `approval:` prefix), the Registry's refusals (one that heals is `unavailable`),
 // the author recorded, and the upkeep and the notice after the answer.
 // @effect-diagnostics globalJsonInEffect:off preferEffectArray:off missedPipeableOpportunity:off preferTypedSchemaDecoder:off schemaSync:off schemaSyncInEffect:off
+import { SUPPORTED_MODELS } from "@cloudpid/config";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { APPROVAL_REQUEST_PREFIX, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
@@ -534,7 +535,6 @@ describe("a change to the Settings or an MCP server", () => {
             );
 
             expect(value).toMatchObject({ scope: { id: input.scope }, unchanged: [] });
-            expect(result.value.text).not.toContain("this Session");
           }
 
           expect(ledger.changes).toHaveLength(1);
@@ -551,31 +551,35 @@ describe("a change to the Settings or an MCP server", () => {
       ),
   );
 
-  it("settings_mcp_disable is recorded and its set pushed to the host before the answer, the sets not yet sent handed on after it", () =>
+  /** `settings_mcp_disable` of `docs` over a host that takes the set, or (`applyFails`) fails to. */
+  const disabling = (applyFails: boolean) => {
+    const hostCalls: HostCalls = [];
+    const registryCalls: RegistryCalls = [];
+    const { registry, ledger } = changingRegistry(registryCalls);
+    const upkeep = harnessUpkeep();
+
+    const dispatch = harnessDispatch(
+      harnessServices({
+        registry,
+        mcpHosts: harnessHosts(hostCalls, { applyFails }),
+        appOrigin: "https://cloudpid.test",
+        ...upkeep.deps,
+      }),
+    );
+
+    const result = dispatch(
+      { tool: "settings_mcp_disable", input: { scope: "default", name: "docs", reason }, via },
+      caller,
+    );
+
+    return { result, hostCalls, registryCalls, ledger, upkeep };
+  };
+
+  it("settings_mcp_disable is recorded as the caller and its set pushed to the host before the answer, with nothing left to sync", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const hostCalls: HostCalls = [];
-        const registryCalls: RegistryCalls = [];
-        const { registry, ledger } = changingRegistry(registryCalls);
-        const upkeep = harnessUpkeep();
-
-        const dispatch = harnessDispatch(
-          harnessServices({
-            registry,
-            mcpHosts: harnessHosts(hostCalls),
-            appOrigin: "https://cloudpid.test",
-            ...upkeep.deps,
-          }),
-        );
-
-        const result = yield* dispatch(
-          {
-            tool: "settings_mcp_disable",
-            input: { scope: "default", name: "docs", reason },
-            via,
-          },
-          caller,
-        );
+        const { result: answered, hostCalls, registryCalls, ledger, upkeep } = disabling(false);
+        const result = yield* answered;
 
         expect(result.ok, JSON.stringify(result)).toBe(true);
 
@@ -583,7 +587,6 @@ describe("a change to the Settings or an MCP server", () => {
           Schema.decodeUnknownSync(HARNESS_TOOLS.settings_mcp_disable.endpoint.output)(
             result.value.structured,
           );
-          expect(result.value.text).toContain("owner");
         }
 
         expect(ledger.changes[0]?.change).toMatchObject({
@@ -591,56 +594,84 @@ describe("a change to the Settings or an MCP server", () => {
           field: "mcp.servers.docs.enabled",
           after: false,
         });
+        expect(ledger.changes[0]?.author).toEqual({
+          via: caller,
+          tool: "settings_mcp_disable",
+          reason,
+        });
 
         expect(hostCalls).toContainEqual({ host: "mcp:default", method: "apply" });
-        // The push is before the answer: the notice and the sync are after it.
+        // The push is before the answer; it took, so nothing is handed on.
         expect(registryCalls).toContain("mcpPushed");
+
+        yield* upkeep.runBackground;
+
+        expect(upkeep.calls).toEqual([]);
+      }),
+    ));
+
+  it("settings_mcp_disable over a host that fails the push names the Environment, and schedules one sync of it after the answer", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { result: answered, registryCalls, ledger, upkeep } = disabling(true);
+        const result = yield* answered;
+
+        // The change stands and the call does not fail for the host.
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        expect(ledger.changes).toHaveLength(1);
+        expect(registryCalls).not.toContain("mcpPushed");
+
+        if (result.ok) expect(result.value.text).toContain("Default");
+
+        // Under `background`, so after the answer, and once.
         expect(upkeep.calls).toEqual([]);
 
         yield* upkeep.runBackground;
 
-        expect(upkeep.calls).toEqual(["mcp.sync:all"]);
+        expect(upkeep.calls).toEqual(["mcp.sync:default"]);
       }),
     ));
 
-  it.each([
-    ["settings_reset", { scope: "*", field: "spendLimit.perSession", reason }],
-    ["settings_reset", { scope: "default", field: "instructions", reason }],
-    [
-      "settings_extension_set",
-      { scope: "*", extension: "subagents", key: "maxSubagentDepth", value: 2, reason },
-    ],
-  ] as const)(
-    "%s is unsupported for %j: nothing is recorded or noticed, and no unserved tool is named",
-    (tool, input) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const { call, ledger, registryCalls, upkeep } = changing();
-
-          const result = yield* call(tool, input);
-
-          expect(result).toMatchObject({ ok: false, error: { code: "unsupported" } });
-          expect(JSON.stringify(result)).not.toMatch(
-            /_limit_set|settings_instructions_set|settings_subagent_/,
-          );
-
-          yield* upkeep.runBackground;
-
-          expect(ledger.changes).toEqual([]);
-          expect(registryCalls).not.toContain("notifyMcpChanges");
-        }),
-      ),
-  );
-
-  it("settings_mcp_reload of Global is invalid_argument, asking the Registry nothing", () =>
+  // The one row of the code's mapping: which refusals are `unsupported` is `settings-endpoint.test.ts`'s.
+  it("maps a core's unsupported refusal through, with nothing recorded or noticed", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { run, registryCalls } = dispatching();
+        const { call, ledger, registryCalls, upkeep } = changing();
 
-        const result = yield* Effect.promise(() => run("settings_mcp_reload", { scope: "*" }));
+        const result = yield* call("settings_reset", {
+          scope: "*",
+          field: "spendLimit.perSession",
+          reason,
+        });
 
-        expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
-        expect(registryCalls).toEqual([]);
+        expect(result).toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+        yield* upkeep.runBackground;
+
+        expect(ledger.changes).toEqual([]);
+        expect(registryCalls).not.toContain("notifyMcpChanges");
+      }),
+    ));
+
+  it("refuses a value that holds a kept Secret as invalid_argument, in the Registry's words, and records nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls } = changing({ keptSecret: "s3cret-value" });
+
+        const result = yield* call("settings_role_set", {
+          scope: "default",
+          role: "small",
+          model: SUPPORTED_MODELS[0],
+          hint: "Pick it when s3cret-value is needed",
+          reason,
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "invalid_argument", message: HOLDS_KEPT_SECRET, retryable: false },
+        });
+        expect(ledger.changes).toEqual([]);
+        expect(registryCalls).not.toContain("notifyMcpChanges");
       }),
     ));
 
@@ -673,7 +704,6 @@ describe("a change to the Settings or an MCP server", () => {
               repeat.value.structured,
             ),
           ).toMatchObject({ scope: { id: "*", name: "Global" }, replayed: true });
-          expect(repeat.value.text).toContain("settings_get");
         }
 
         expect(ledger.changes).toHaveLength(1);

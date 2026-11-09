@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { DEFAULT_MAX_SUBAGENT_DEPTH, DEFAULT_MAX_SUBAGENT_WORKSPACES } from "@cloudpid/config";
+import { SUBAGENT_TOOLSET_OPTION_NAMES } from "@cloudpid/protocol/harness-tools";
 
 /** A model role: its model, and the hint that tells an agent when to pick it. */
 export type SubagentRole = { readonly model: ModelRef; readonly hint: string };
@@ -53,12 +54,8 @@ export class SubagentSettings extends Context.Service<
 
 const Patterns = Schema.Array(Schema.String);
 
-/** The options of `extensions.subagents` that are lists of tool name patterns. */
-export const SUBAGENT_TOOLSET_OPTIONS: ReadonlyArray<string> = [
-  "baseToolset",
-  "readToolset",
-  "modifyToolset",
-];
+/** The options of `extensions.subagents` that are lists of tool name patterns (the declarations' list, which their descriptions name). */
+export const SUBAGENT_TOOLSET_OPTIONS: ReadonlyArray<string> = SUBAGENT_TOOLSET_OPTION_NAMES;
 
 /** The extension's own options in the settings' `extensions.subagents`, each optional. */
 const ExtensionOptions = Schema.Struct({

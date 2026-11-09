@@ -9,6 +9,12 @@
  */
 export type Surface = "session" | "endpoint";
 
+/** Whom a tool's words call whoever reads and reverts its changes on the owner's pages. */
+export type Who = "user" | "owner";
+
+/** The user in a Session's words, the owner in the endpoint's (which never says "user"). */
+export const whoWords = (surface: Surface): Who => (surface === "session" ? "user" : "owner");
+
 /**
  * Why a core refused a call, which the endpoint's dispatcher maps to its error codes (`mcp-endpoint.md` → The
  * dispatcher): `not_found` (an id or name that names nothing), `invalid_argument` (an argument that cannot be

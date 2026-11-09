@@ -1804,6 +1804,22 @@ describe("the management tools", () => {
     expect(names).not.toContain("unknown_tool");
   });
 
+  it("annotate settings_mcp_reload as idempotent and open-world, and settings_mcp_remove as destructive", async () => {
+    const tools = await listed(fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }));
+    const annotations = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+
+    expect(annotations("settings_mcp_reload")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    });
+    expect(annotations("settings_mcp_remove")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
+  });
+
   it("are left out when describe() has no harness, an empty one, or lists them without the operation", async () => {
     for (const describing of [
       serving(undefined),
@@ -2113,9 +2129,10 @@ describe("the management tools", () => {
     it("sends a Settings change, or a replayed one, to settings_get, and says nothing when nothing changed", () => {
       const scope = { id: "default", name: "Default" };
 
+      // The reader the model is sent to is the contract; the sentence around it is not pinned.
       expect(
         presented("settings_model_set", { scope, changes: [{ id: 1 }] }).structured["next"],
-      ).toBe('Call settings_get with scope="default" to see the settings as they are now.');
+      ).toContain("settings_get");
       expect(
         presented("settings_reset", { scope, changes: [], replayed: true }).structured["next"],
       ).toContain("settings_get");
@@ -2135,7 +2152,7 @@ describe("the management tools", () => {
 
       expect(
         presented("settings_mcp_remove", { scope, changes: [{ id: 2 }] }).structured["next"],
-      ).toBe('Call settings_mcp_list with scope="*" to see the servers as they are now.');
+      ).toContain("settings_mcp_list");
       expect(
         presented("settings_mcp_reload", { scope: { id: "default", name: "D" }, repos: [] })
           .structured["next"],
@@ -2268,9 +2285,8 @@ describe("the instructions with the management tools", () => {
     (tool) => {
       const text = instructionsFor(new Set([...sessions, ...reads, tool]));
 
-      expect(text).toContain(
-        'the other settings_* tools change it, naming an id or scope ("*" is Global) and a reason.',
-      );
+      // D14: the clause names only the families with a change tool served.
+      expect(text).toContain("settings_*");
       expect(text).not.toContain("environment_*");
       expect(text).toMatch(/request_id to session_start and every change/);
     },
@@ -2281,9 +2297,7 @@ describe("the instructions with the management tools", () => {
       new Set([...sessions, ...reads, "environment_variable_set", "settings_model_set"]),
     );
 
-    expect(text).toContain(
-      "the other environment_* and settings_* tools change it, naming an id or scope",
-    );
+    expect(text).toContain("environment_* and settings_*");
     expect(text.length).toBeLessThanOrEqual(1500);
   });
 

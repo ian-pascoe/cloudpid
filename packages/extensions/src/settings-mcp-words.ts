@@ -12,6 +12,7 @@ import {
   type SettingsMcpGetOutput,
   type SettingsMcpListOutput,
   type Surface,
+  whoWords,
 } from "@cloudpid/protocol/harness-tools";
 import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
@@ -340,7 +341,7 @@ export const describeReload = (
   out: typeof SettingsMcpReloadOutput.Type,
   surface: Surface = "session",
 ): string => {
-  const owner = surface === "session" ? "user" : "owner";
+  const owner = whoWords(surface);
   const lines = [`Reloaded the MCP servers of ${scopeWords(out.scope)}.`];
 
   if (out.repos.length === 0) lines.push("The Environment has no Repos, so no file was read.");

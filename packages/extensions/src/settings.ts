@@ -29,6 +29,7 @@ import {
   OFFER_NOTE_ENDPOINT,
   SCOPE_NOTE,
   type Surface,
+  whoWords,
 } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
@@ -336,9 +337,7 @@ export const NOT_PICKED: SettingsApplied = { picked: { model: false, thinkingLev
 
 /** The Settings' recorded-change sentence, as `who` reads it. */
 export const recordedFor = (surface: Surface): string =>
-  surface === "session"
-    ? RECORDED
-    : "The change is recorded with your reason; the owner can see and revert it on the Settings page.";
+  `The change is recorded with your reason; the ${whoWords(surface)} can see and revert it on the Settings page.`;
 
 /**
  * How the settings tools change the Settings, over `services`: refusing text that holds a Secret or a deploy-time credential,
@@ -352,12 +351,12 @@ export const settingsChanges = ({
   log,
   holdsSecret,
 }: SettingsChangeServices) => {
-  /** What a change at `view`'s Scope reaches on the endpoint: no Session is its own, and each takes it when it next admits input. */
+  /** What a change at `view`'s Scope reaches on the endpoint: no Session is its own, and each picks it up at its next admitted input. */
   const endpointReach = (view: SettingsView): SettingsReach => ({
     reaches: () => true,
     text: isGlobalView(view)
-      ? `Sessions whose Environment does not override the field get it when they next admit input (settings_get with scope "${GLOBAL_SETTINGS_SCOPE}" names those Environments).`
-      : `${scopeName(view)}'s Sessions get it when they next admit input.`,
+      ? `Sessions whose Environment does not override the field pick it up at their next admitted input (settings_get with scope "${GLOBAL_SETTINGS_SCOPE}" names those Environments).`
+      : `${scopeName(view)}'s Sessions pick it up at their next admitted input.`,
   });
 
   /**
@@ -576,6 +575,15 @@ export const settingsChanges = ({
   return { apply, reach, plain };
 };
 
+/** The Session's check of a text: its Secrets are fresh, and it holds no deploy-time credential. */
+const sessionHoldsSecret = Effect.gen(function* () {
+  const secrets = yield* Secrets;
+  const holdsCredential = yield* credentialCheck;
+
+  return (value: string) =>
+    Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value));
+});
+
 /**
  * The settings tools' engine in a Session: over the Session's `SettingsAccess`, refusing text that holds a Secret
  * (`Secrets`) or a deploy-time credential (`DeployCredentials`), reading the Settings again after each change
@@ -585,23 +593,15 @@ export const SettingsChanges = Effect.gen(function* () {
   const access = yield* SettingsAccess;
   const reload = yield* SettingsReload;
   const log = yield* AgentChangeLog;
-  const secrets = yield* Secrets;
-
-  const holdsCredential = yield* credentialCheck;
 
   return settingsChanges({
     surface: "session",
     access,
     reload: reload.apply,
     log,
-    // Whether `value` holds a Secret's value or a credential, once the Session's Secrets are fresh.
-    holdsSecret: (value) =>
-      Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value)),
+    holdsSecret: yield* sessionHoldsSecret,
   });
 });
-
-export const RECORDED =
-  "The change is recorded with your reason; the user can see and revert it on the Settings page.";
 
 /** What an engine's `apply` answers: the text, the value for programs and the details of the card. */
 type SettingsToolResult = Effect.Success<ReturnType<ReturnType<typeof settingsChanges>["apply"]>>;
@@ -1051,15 +1051,6 @@ export type SettingsChangeCores = ReturnType<typeof settingsChangeCores>;
 
 /** The tools these cores serve, by name. */
 export type SettingsChangeToolName = keyof SettingsChangeCores;
-
-/** The Session's check of a text: its Secrets are fresh, and it holds no deploy-time credential. */
-const sessionHoldsSecret = Effect.gen(function* () {
-  const secrets = yield* Secrets;
-  const holdsCredential = yield* credentialCheck;
-
-  return (value: string) =>
-    Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value));
-});
 
 /**
  * The `settings` extension: its tools over the Session's `SettingsAccess`, refusing text that holds a Secret

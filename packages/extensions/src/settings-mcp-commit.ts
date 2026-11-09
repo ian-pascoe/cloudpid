@@ -19,7 +19,7 @@ import {
 } from "@cloudpid/config";
 import { callDurable } from "@cloudpid/effect-durable";
 import { decodeMcpServerValue } from "@cloudpid/config";
-import { GLOBAL_SETTINGS_SCOPE, type Surface } from "@cloudpid/protocol/harness-tools";
+import { GLOBAL_SETTINGS_SCOPE, type Surface, whoWords } from "@cloudpid/protocol/harness-tools";
 import { entryReferences, entryTexts } from "./settings-mcp-entry.ts";
 import type {
   AgentChange,
@@ -60,6 +60,7 @@ import { settingsChangeOutput } from "./settings-outputs.ts";
 import {
   agentChangeDetails,
   isGlobalView,
+  recordedFor,
   SettingsAccess,
   SettingsAccessError,
   type SettingsAccessService,
@@ -258,10 +259,6 @@ export const wideningNote = (
   }${affected.length > 8 ? `, and ${affected.length - 8} more` : ""}.`;
 };
 
-/** What the result says of the user's record of the change, once made. */
-const RECORDED =
-  "The change is recorded with your reason; the user can see and revert it on the Settings page.";
-
 /** The status the call waited for, kept for its result. */
 type HeldStatus = { status: McpStatus | null };
 
@@ -317,6 +314,11 @@ export type McpCommitServices = {
   readonly changes: Pick<ReturnType<typeof settingsChanges>, "apply" | "plain">;
   /** The owner's Approvals: none on the endpoint, which makes only the changes that ask nobody. */
   readonly approvals: ApprovalsService | undefined;
+  /**
+   * Told of an Environment whose host the push of the new set failed for, so the set is sent again after the answer (the
+   * endpoint's dispatcher schedules one sync of it). None in a Session, whose words say the host takes it at its next pull.
+   */
+  readonly pushFailed?: ((environment: string) => Effect.Effect<void>) | undefined;
 };
 
 /**
@@ -330,10 +332,8 @@ export const mcpCommit = ({
   settings,
   changes: { apply, plain },
   approvals,
+  pushFailed,
 }: McpCommitServices) => {
-  /** Whom the words call the one who reads the Settings page. */
-  const owner = surface === "session" ? "user" : "owner";
-
   /** Send each Environment the change reaches its new set; the names of those it could not be sent to. */
   const push = (reached: ReadonlyArray<{ readonly id: string; readonly name: string }>) =>
     Effect.gen(function* () {
@@ -342,7 +342,10 @@ export const mcpCommit = ({
       for (const environment of reached) {
         const made = yield* pushMcpSet(access, environment.id);
 
-        if (made === "failed") unsent.push(environment.name);
+        if (made === "failed") {
+          unsent.push(environment.name);
+          yield* pushFailed?.(environment.id) ?? Effect.void;
+        }
       }
 
       return unsent;
@@ -430,29 +433,36 @@ export const mcpCommit = ({
         }
       }
 
+      const sessions =
+        surface === "endpoint"
+          ? "The Sessions of the Environments it reaches pick it up at their next admitted input."
+          : reachesOwn
+            ? "This Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request."
+            : "This Session's Environment is not one of them, so the change does not reach this Session; the Sessions of the Environments it reaches get it at their next request.";
+
+      const unsentWords =
+        pushFailed === undefined
+          ? "it takes it at its next pull."
+          : "it is being sent again, after this answer.";
+
+      const handed =
+        unsent.length > 0
+          ? `The new set could not be handed to the MCP host of ${Arr.join(unsent, ", ")} now: ${unsentWords}`
+          : reached.length === 0
+            ? "No MCP host was sent anything."
+            : "The new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).";
+
       const words = Arr.join(
         [
           ...input.wording(now, recorded),
           reach,
-          ...(surface === "endpoint"
-            ? ["The Sessions of the Environments it reaches get it at their next request."]
-            : [
-                reachesOwn
-                  ? "This Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request."
-                  : "This Session's Environment is not one of them, so the change does not reach this Session; the Sessions of the Environments it reaches get it at their next request.",
-              ]),
-          unsent.length === 0
-            ? reached.length === 0
-              ? "No MCP host was sent anything."
-              : "The new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken)."
-            : `The new set could not be handed to the MCP host of ${Arr.join(unsent, ", ")} now: it takes it at its next pull.`,
+          sessions,
+          handed,
           ...(status === null ? [] : [status.note]),
           ...input.extra,
           made.approved
             ? "The change is recorded as approved, with your reason; the user can see and revert it on the Settings page."
-            : surface === "session"
-              ? RECORDED
-              : `The change is recorded with your reason; the ${owner} can see and revert it on the Settings page.`,
+            : recordedFor(surface),
         ],
         "\n",
       );
@@ -849,7 +859,7 @@ export const mcpCommit = ({
 
   return {
     surface,
-    owner,
+    owner: whoWords(surface),
     access,
     settings,
     plain: plainBeforeAsking,

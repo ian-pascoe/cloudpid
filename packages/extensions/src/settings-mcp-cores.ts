@@ -53,6 +53,8 @@ export type McpChangeCoreServices = {
   readonly settings: SettingsAccessService;
   /** Whether `value` holds a Secret's value or a credential (the endpoint's: the deploy-time credentials only). */
   readonly holdsSecret: (value: string) => Effect.Effect<boolean>;
+  /** Told of an Environment whose host a push failed for (`McpCommitServices.pushFailed`). */
+  readonly pushFailed?: ((environment: string) => Effect.Effect<void>) | undefined;
 };
 
 /** What `settings_reset` of an MCP server's key takes. */
@@ -93,6 +95,7 @@ export const mcpChangeCores = (services: McpChangeCoreServices) => {
         settings: services.settings,
         changes,
         approvals: undefined,
+        pushFailed: services.pushFailed,
       });
 
       return make({ keys: mcpChanges(engine), definitions: mcpDefinitions(engine) }).pipe(

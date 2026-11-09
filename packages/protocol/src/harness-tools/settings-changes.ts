@@ -19,7 +19,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { ChangeEndpointOutput, ChangeOutput } from "./change-output.ts";
-import { MAX_CHANGE_REASON, RequestIdField } from "./reason.ts";
+import { RequestIdField, settingsReason } from "./reason.ts";
 import { GLOBAL_SETTINGS_SCOPE, SettingsScope } from "./scope.ts";
 import { WRITE, WRITE_IDEMPOTENT } from "./surface.ts";
 
@@ -33,11 +33,16 @@ export const SUBAGENT_TOOLSET_OPTION_NAMES: ReadonlyArray<string> = [
 /** The tools every conversation is offered whatever `tools.offered` says (`tool-search.ts`' own list). */
 export const ALWAYS_OFFERED_TOOL_NAMES: ReadonlyArray<string> = ["tool_search", "context_rollover"];
 
+/** The Limits' fields (`approval-cores.ts` builds its Limits over them). */
+export const SPEND_LIMIT_FIELD = "spendLimit.perSession";
+export const DEPTH_LIMIT_FIELD = extensionField("subagents", "maxSubagentDepth");
+export const WORKSPACES_LIMIT_FIELD = extensionField("subagents", "maxSubagentWorkspaces");
+
 /** The fields that are Limits: their tools, and a reset of one, wait for the owner's Approval. */
 export const SETTINGS_LIMIT_FIELDS: ReadonlyArray<string> = [
-  "spendLimit.perSession",
-  extensionField("subagents", "maxSubagentDepth"),
-  extensionField("subagents", "maxSubagentWorkspaces"),
+  SPEND_LIMIT_FIELD,
+  DEPTH_LIMIT_FIELD,
+  WORKSPACES_LIMIT_FIELD,
 ];
 
 /** What the tools that wait for the owner's Approval say of the card. */
@@ -57,15 +62,9 @@ export const CHANGE_NOTE_ENDPOINT =
 
 const MODEL_LIST = Arr.join(SUPPORTED_MODELS, ", ");
 
-/** A changing Settings tool's required `reason`, for `who` to read. */
-const reasonFor = (who: "user" | "owner") =>
-  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHANGE_REASON)).annotate({
-    description: `Why you make the change, for the ${who} to read in the Settings' Agent changes, such as 'this task is small and cheap'`,
-  });
+const Reason = settingsReason("user", "this task is small and cheap");
 
-const Reason = reasonFor("user");
-
-const ReasonEndpoint = reasonFor("owner");
+const ReasonEndpoint = settingsReason("owner", "this task is small and cheap");
 
 const paragraphs = (lines: ReadonlyArray<string>): string => Arr.join(lines, "\n\n");
 

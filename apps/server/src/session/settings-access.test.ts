@@ -219,8 +219,27 @@ describe("the Registry's refusal of a Settings change", () => {
     expect(failure.message).toBe(SECRETS_CHANGED);
   });
 
+  it("that holds a kept Secret is invalid_argument on the endpoint, in the Registry's own words", async () => {
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        refusing(HOLDS_SECRET, { kind: "endpoint", via }).change({
+          scope: "*",
+          changes: [],
+          author: by,
+        }),
+      ),
+    );
+
+    expect(failure.code).toBe("invalid_argument");
+    expect(failure.message).toBe(HOLDS_SECRET);
+  });
+
   it.each([
-    ["another refusal on the endpoint", HOLDS_SECRET, { kind: "endpoint", via } as const],
+    [
+      "the owner's own validation on the endpoint",
+      "model: not supported",
+      { kind: "endpoint", via } as const,
+    ],
     ["the same refusal in a Session", SECRETS_CHANGED, sessionSource("s-1")],
   ])("is left as the Registry's answer for %s", async (_, message, source) => {
     const answer = await Effect.runPromise(

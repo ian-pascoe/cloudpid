@@ -80,6 +80,7 @@ describe("the upkeep after a recorded change", () => {
       ["mcp.sync:all"],
     ],
     ["a setting at Global's Settings", SETTINGS_SCOPE, "roles.small", []],
+    ["a setting an Environment overrides", "default", "roles.small", []],
     ["a Skill", "default", "skills.release", []],
     ["a Trigger", "default", "triggers.nightly", []],
   ] as const)("of %s runs its steps in the background only", (_, scope, field, steps) => {

@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type { AgentChangeAuthor } from "../registry/agent-changes.ts";
 import type { ChangeAnswer } from "../registry/change-requests.ts";
+import { HOLDS_SECRET } from "../registry/via-secrets.ts";
 import type { HarnessDeps, HarnessRegistry } from "./services.ts";
 
 /** The Environment the stand-in Registry lists. */
@@ -199,8 +200,7 @@ export type ChangeOptions = {
 };
 
 /** The Registry's refusal of a write whose text holds a kept Secret, as `via-secrets.ts` words it. */
-export const HOLDS_KEPT_SECRET =
-  "Nothing was saved: a text of the change holds a kept Secret's value.";
+export const HOLDS_KEPT_SECRET = HOLDS_SECRET;
 
 /**
  * The stand-in Registry with the writes the change tools make: it records each change with its author, claims its
@@ -553,17 +553,22 @@ export type HostCalls = Array<{ readonly host: string; readonly method: string }
 
 /**
  * The McpHost namespace's stand-in: each Environment's host answers `servers` with `docs` and one tool, takes any set it is
- * handed, and notes the call.
+ * handed (or, with `applyFails`, fails to), and notes the call.
  */
-export const harnessHosts = (calls: HostCalls = []): HarnessDeps["mcpHosts"] => ({
+export const harnessHosts = (
+  calls: HostCalls = [],
+  { applyFails = false }: { readonly applyFails?: boolean } = {},
+): HarnessDeps["mcpHosts"] => ({
   getByName: (host: string) =>
     // SAFETY: the reads ask a host for `servers` only; the answer is what a host holding one connected server gives.
     ({
       apply: () =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           calls.push({ host, method: "apply" });
 
-          return McpApplied.make({ hash: "hash-1", changed: true });
+          return applyFails
+            ? Effect.die("the host is down")
+            : Effect.succeed(McpApplied.make({ hash: "hash-1", changed: true }));
         }),
       servers: () =>
         Effect.sync(() => {

@@ -645,6 +645,9 @@ export const parseMcpField = (
   return Option.isSome(found) ? { name, key: found.value } : null;
 };
 
+/** Whether a settings field is an MCP server's (or one of its adjustment's keys): its change is the McpHosts' upkeep too. */
+export const isMcpField = (field: string): boolean => parseMcpField(field) !== null;
+
 /** The `mcp.servers` of a document of settings or of Overrides, as written; none where it has none. */
 export const mcpServersOf = (document: Schema.Json): Schema.Json | undefined => {
   const mcp = isJsonObject(document) ? document[MCP_ROOT] : undefined;

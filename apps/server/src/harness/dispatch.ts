@@ -23,7 +23,7 @@ import {
   type SettingsEndpointCores,
   type SettingsEndpointToolName,
   settingsEndpointCores,
-  settingsMcpReloadRead,
+  mcpReloadCore,
 } from "@cloudpid/extensions/settings-endpoint";
 import { settingsGetRead } from "@cloudpid/extensions/settings-reads";
 import { settingsMcpGetRead, settingsMcpListRead } from "@cloudpid/extensions/settings-mcp-reads";
@@ -157,8 +157,6 @@ type ChangeFamily<Cores, Args> = {
   readonly replay: Replayed;
   /** The Scope a call's arguments name (an Environment's id, or `*`). */
   readonly scope: (args: Args) => string;
-  /** What runs after the answer of a call that recorded a change, besides the notice. */
-  readonly after?: ((args: Args) => Effect.Effect<void>) | undefined;
 };
 
 /**
@@ -325,8 +323,6 @@ const serveChange = <Name extends ChangeToolName, Cores>(
 
       yield* notice(caller);
 
-      if (family.after !== undefined) yield* family.after(args);
-
       return reply;
     }).pipe(Effect.catchCause(() => Effect.succeed(unfinished)));
 
@@ -401,12 +397,11 @@ export const harnessDispatch = (
       newAttempt,
     );
 
-  // The Settings' and the MCP servers' tools: their scope is `scope`, and one that touches an MCP server's key hands the sets
-  // not yet sent to their hosts once the answer is out.
+  // The Settings' and the MCP servers' tools: their scope is `scope`. A push of a server set that fails is handed on to
+  // `background` by the services (`settingsChanges`' `pushFailed`), once per host.
   const settingsChange = <Name extends SettingsEndpointToolName>(
     tool: Name,
     coreOf: (cores: SettingsEndpointCores) => HarnessWrite<InputOf<Name>, CoreError>,
-    touchesServers: (args: InputOf<Name>) => boolean = () => false,
   ) =>
     serveChange(
       services,
@@ -415,8 +410,6 @@ export const harnessDispatch = (
         cores: (source) => settingsEndpointCores(services.settingsChanges(source)),
         replay: SETTINGS_REPLAYED[tool],
         scope: (args) => args.scope,
-        after: (args) =>
-          touchesServers(args) ? services.background(services.syncMcp) : Effect.void,
       },
       coreOf,
       newAttempt,
@@ -491,34 +484,26 @@ export const harnessDispatch = (
       "settings_extension_set",
       (cores) => cores.settings_extension_set,
     ),
-    settings_reset: settingsChange(
-      "settings_reset",
-      (cores) => cores.settings_reset,
-      ({ field }) => field.startsWith("mcp."),
-    ),
+    settings_reset: settingsChange("settings_reset", (cores) => cores.settings_reset),
     settings_mcp_reload: serveRead(
       "settings_mcp_reload",
-      settingsMcpReloadRead(services.settingsMcpReload),
+      mcpReloadCore(services.settingsMcpReload),
     ),
     settings_mcp_disable: settingsChange(
       "settings_mcp_disable",
       (cores) => cores.settings_mcp_disable,
-      () => true,
     ),
     settings_mcp_exposure_set: settingsChange(
       "settings_mcp_exposure_set",
       (cores) => cores.settings_mcp_exposure_set,
-      () => true,
     ),
     settings_mcp_tool_exposure_set: settingsChange(
       "settings_mcp_tool_exposure_set",
       (cores) => cores.settings_mcp_tool_exposure_set,
-      () => true,
     ),
     settings_mcp_remove: settingsChange(
       "settings_mcp_remove",
       (cores) => cores.settings_mcp_remove,
-      () => true,
     ),
   };
 

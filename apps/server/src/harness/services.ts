@@ -94,13 +94,11 @@ export type HarnessServices = {
   /**
    * What the Settings' and the MCP servers' cores run over for a call made by `source`: the Settings and the servers written
    * as the Session writes them, with the endpoint's check of a kept text and no `SettingsReload`; the sets a change reaches are
-   * pushed to their hosts before the answer.
+   * pushed to their hosts before the answer, and one that fails is sent again with one `mcp.sync(environment)` in `background`.
    */
   readonly settingsChanges: (source: AuthorSource) => SettingsEndpointServices;
   /** The MCP servers' access for `settings_mcp_reload`, which makes no Agent change and so has no author. */
   readonly settingsMcpReload: SettingsMcpAccessService;
-  /** Hand every Environment's host the server set it was not handed, in `background` (what a push that failed leaves). */
-  readonly syncMcp: Effect.Effect<void>;
   /** The probe, the claims of `request_id` and the notice. */
   readonly registry: HarnessChangeRegistry;
   /** The upkeep recorded `changes` call for, in `background`: what an answer built from an earlier call's records runs. */
@@ -158,6 +156,8 @@ export const harnessServices = ({
     settingsChanges: (source) => ({
       settings: sessionSettingsAccess({ registry, author: source }),
       settingsMcp: sessionSettingsMcpAccess({ registry, author: source, host, appOrigin }),
+      // A set that could not be handed to a host is sent again once, after the answer, as after the owner's save.
+      pushFailed: (environment) => background(Effect.suspend(() => mcp.sync(environment))),
       // The Registry checks the kept Secrets in the write itself: a text that cannot be checked is refused, as holding one.
       holdsSecret: (text) => holdsSecret(text).pipe(Effect.orElseSucceed(() => true)),
     }),
@@ -168,7 +168,6 @@ export const harnessServices = ({
       host,
       appOrigin,
     }),
-    syncMcp: Effect.suspend(() => mcp.sync(undefined)),
     registry,
     upkeep: (changes) => upkeepFor({ registry, builds, spares, mcp, background }, changes),
     background,

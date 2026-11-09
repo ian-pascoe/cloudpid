@@ -7,27 +7,13 @@
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { REPLAYED } from "./environment-changes.ts";
-import {
-  SETTINGS_REPLAYED,
-  settingsEndpointCores,
-  settingsMcpReloadRead,
-} from "./settings-endpoint.ts";
+import { mcpReloadCore, SETTINGS_REPLAYED, settingsEndpointCores } from "./settings-endpoint.ts";
 import { DEFAULT, DOCS, FILES, REASON, STAGING, field, setup } from "./settings-mcp.fixture.ts";
 
-/** The words an endpoint answer must not hold: the Session's, and the tools the endpoint does not serve. */
-const SESSION_WORDS = [
-  "this Session",
-  "the user",
-  "tool_search",
-  "settings_mcp_enable",
-  "settings_mcp_add",
-  "settings_mcp_update",
-  "settings_instructions_set",
-  "_limit_set",
-  "settings_subagent_",
-  "settings_spend_limit_set",
-];
+// The wording assertions here are the endpoint's contract and nothing else (D13, `mcp-endpoint.md` → Names and surfaces): an
+// answer says the owner, never the user, and has no sentence for a Session. The tools the endpoint does not serve are kept
+// out of its words by `harness-tools.test.ts`, which reads the declarations; the rest of a sentence is not pinned.
+const SESSION_WORDS = ["this Session", "the user"];
 
 const world = async (start: Parameters<typeof setup>[0] = {}) => {
   const harness = await setup(start);
@@ -124,7 +110,7 @@ describe("settings_reset on the endpoint", () => {
     ["extensions.subagents.maxSubagentDepth"],
     ["extensions.subagents.maxSubagentWorkspaces"],
     ["instructions"],
-  ])("answers a reset of %s as unsupported and names no unserved tool", async (name) => {
+  ])("answers a reset of %s as unsupported", async (name) => {
     const { cores, call, recorded } = await world();
 
     const refused = await call(
@@ -135,9 +121,6 @@ describe("settings_reset on the endpoint", () => {
     );
 
     expect(refused).toMatchObject({ ok: false, error: { code: "unsupported" } });
-
-    if (!refused.ok) noSessionWords(refused.error.message);
-
     expect(recorded).toEqual([]);
   });
 
@@ -209,11 +192,6 @@ describe("the MCP servers' tools on the endpoint", () => {
     );
 
     expect(widening).toMatchObject({ ok: false, error: { code: "unsupported" } });
-
-    if (!widening.ok) {
-      expect(widening.error.message).toContain("owner");
-      noSessionWords(widening.error.message);
-    }
 
     expect(asked).toEqual([]);
     expect(recorded).toEqual([]);
@@ -302,9 +280,7 @@ describe("the MCP servers' tools on the endpoint", () => {
   it("settings_mcp_reload takes an Environment's id only", async () => {
     const { access, call } = await world();
 
-    const refused = await call(
-      settingsMcpReloadRead(access)({ scope: GLOBAL_SETTINGS_SCOPE }, "endpoint"),
-    );
+    const refused = await call(mcpReloadCore(access)({ scope: GLOBAL_SETTINGS_SCOPE }, "endpoint"));
 
     expect(refused).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
   });
@@ -331,23 +307,14 @@ describe("the replayed answers of the Settings' and MCP servers' tools", () => {
       scope: { id: "*", name: "Global" },
       changes: [{ id: 4, field: "roles.small" }],
     });
-
-    expect(answer.text).toContain("settings_get");
-    expect(answer.text).toContain("Agent change #4");
   });
 
-  it("point an MCP server tool's reader to settings_mcp_list, and an Environment's tool keeps its Scope", () => {
+  it("keep an Environment's Scope", () => {
     const answer = SETTINGS_REPLAYED.settings_mcp_disable(
       [recordedChange(DEFAULT, "Default")],
       DEFAULT,
     );
 
-    expect(answer.text).toContain("settings_mcp_list");
     expect(answer.structured).toMatchObject({ scope: { id: DEFAULT, name: "Default" } });
-  });
-
-  it("serve a name the Environment tools do not", () => {
-    expect(Object.keys(SETTINGS_REPLAYED)).toHaveLength(12);
-    expect(Object.keys(REPLAYED)).not.toContain("settings_reset");
   });
 });

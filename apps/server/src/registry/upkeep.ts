@@ -1,12 +1,18 @@
 // The upkeep that follows an Agent change once it is recorded (`docs/architecture/mcp-endpoint.md` → Environment and
 // Settings tools → After a change, and Notifications; `docs/architecture/agent-changes.md` → Reverting), as after the
 // owner's save: the Builds' (a Build is made with the Container settings, the variables and the Secrets marked for it),
-// the spares' (the Spare Workspace setting and the Repos) and the McpHosts' (an MCP server's key). `upkeepFor` reads it
+// the spares' (the Spare Workspace setting and the Repos) and the McpHosts' (an MCP server's key; any other Settings field,
+// at Global or at an Environment, runs nothing). `upkeepFor` reads it
 // off the changes' Scope and field, so the owner's revert (`rpc.ts`), the endpoint's dispatch (`harness/dispatch.ts`)
 // and a `request_id` replayed from its records all run the same steps. Every step runs under `background` and never
 // fails: what goes wrong is logged, and heals as after the owner's save.
 // @effect-diagnostics missingPipeableSignature:off
-import { isContainerField, parseMcpField, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
+import {
+  isContainerField,
+  isMcpField,
+  overrideFieldPath,
+  SPARE_WORKSPACE_FIELD,
+} from "@cloudpid/config";
 import {
   fieldRepo,
   fieldSecret,
@@ -80,7 +86,7 @@ const upkeepOf = <R>(
   // A Settings field at Global (the owner's save of the Settings page): no Environment's Build or spare is made of it, and an
   // MCP server's key changes every Environment's set, as `updateSettings` pushes it.
   if (scope === SETTINGS_SCOPE) {
-    return parseMcpField(field) === null ? Effect.void : deps.background(deps.mcp.sync(undefined));
+    return isMcpField(field) ? deps.background(deps.mcp.sync(undefined)) : Effect.void;
   }
 
   // A Container setting at Global: as after the owner's save, each Environment's Build is looked at again (and its
@@ -96,7 +102,11 @@ const upkeepOf = <R>(
   }
 
   // An MCP server's key changes the Environment's set: its host is handed it, as after the owner's save.
-  if (parseMcpField(field) !== null) return deps.background(deps.mcp.sync(scope));
+  if (isMcpField(field)) return deps.background(deps.mcp.sync(scope));
+
+  // Any other setting an Environment overrides (the model, a Role, the tools offered, the compaction) is in no Build and no
+  // spare: the Session reads it again at its next admitted input. Only Container settings, variables and Repos are.
+  if (overrideFieldPath(field) !== undefined) return Effect.void;
 
   // As after the owner's save: the variables are among what a Build is made with. A Repo added or taken out also makes
   // the spare stale, as the owner's `addRepo` and `removeRepo` do, and the Spare Workspace setting keeps or removes it.

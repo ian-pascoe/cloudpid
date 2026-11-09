@@ -2,11 +2,11 @@
 // Approvals with no Session, The tools; `docs/architecture/agent-changes.md`): at Global the field goes back to its default,
 // at an Environment its Override is removed, so it inherits Global again. The Session's tool (`./approval-tools.ts`) asks the
 // owner for a Limit and for a reset that makes an MCP server reachable again, and makes every other reset with `resetPlain`.
-// The endpoint's core (`settingsResetCore`) answers a Limit, the Instructions and a widening reset as `unsupported`, with
-// nothing asked, changed or recorded (those wait for the owner's Approval, which the endpoint has no card for), and makes
-// the rest as the Session does, in the endpoint's words.
+// The endpoint's core (`settingsResetCore`, which the Session does not run) answers a Limit, the Instructions and a widening
+// reset as `unsupported`, with nothing asked, changed or recorded (those wait for the owner's Approval, which the endpoint
+// has no card for), and makes the rest with `resetPlain` in the endpoint's words.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-import { overrideFieldPath } from "@cloudpid/config";
+import { isMcpField, overrideFieldPath } from "@cloudpid/config";
 import {
   RESET_FIELDS_ENDPOINT,
   SETTINGS_LIMIT_FIELDS,
@@ -85,9 +85,9 @@ export type SettingsResetServices = SettingsChangeCoreServices & {
 };
 
 /**
- * The endpoint's `settings_reset` (and the Session's, with `surface: "session"`, for what needs no Approval): a Limit, the
- * Instructions and a reset that would widen an MCP server's reach are `unsupported` with nothing changed; any other field is
- * reset at once.
+ * The endpoint's `settings_reset`: a Limit, the Instructions and a reset that would widen an MCP server's reach are
+ * `unsupported` with nothing changed; any other field is reset at once. (The Session's tool asks the owner instead, and
+ * shares `resetPlain` and the MCP key core.)
  */
 export const settingsResetCore = (
   services: SettingsResetServices,
@@ -111,7 +111,7 @@ export const settingsResetCore = (
         });
       }
 
-      if (field.startsWith("mcp.")) {
+      if (isMcpField(field)) {
         return yield* services.mcp.resetField({ scope, field, reason }, surface, conversation);
       }
 

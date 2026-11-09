@@ -22,6 +22,12 @@ export const ReasonEndpoint = Reason.annotate({
     "Why you make the change, for the owner to read in the Environment's Agent changes, such as 'the tests read the API address from API_URL'",
 });
 
+/** The `reason` of a tool that changes the Settings, for `who` to read, with its own `example`. */
+export const settingsReason = (who: "user" | "owner", example: string) =>
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHANGE_REASON)).annotate({
+    description: `Why you make the change, for the ${who} to read in the Settings' Agent changes, such as '${example}'`,
+  });
+
 /** The longest `request_id` the endpoint takes. */
 export const MAX_REQUEST_ID_LENGTH = 200;
 
