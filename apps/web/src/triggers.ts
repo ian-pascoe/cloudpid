@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off -- plain functions over a Trigger and its form, not combinators.
+// @effect-diagnostics missingPipeableSignature:off preferEffectRecord:off preferEffectArray:off -- plain functions over a Trigger and its form, not combinators; a match's paths are the sender's own keys.
 
 // The Settings page's Triggers section, as values (`docs/architecture/triggers.md` → The owner's UI): the form that makes
 // or edits an Environment trigger, or a Workspace trigger (its name, message, Schedule with the next Fires it gives,
@@ -18,6 +18,12 @@ import {
   scheduleProblem,
   type TriggerDefinition,
   type OwnerTriggerInput,
+  type TriggerDeliveries,
+  type TriggerHook,
+  matchProblem,
+  type TriggerMatch,
+  type TriggerSourceInput,
+  type WebhookFormat,
   type TriggerKind,
   triggerMessageProblem,
   triggerNameProblem,
@@ -30,6 +36,7 @@ import {
 import { ThinkingLevel } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 
@@ -37,10 +44,17 @@ import type * as Types from "effect/Types";
 export const PREVIEWED_FIRES = 5;
 
 /**
+ * One row of a webhook Trigger's `match` as typed: a path of the delivery's body and the values it may have there, one
+ * to a line.
+ */
+export type MatchRow = { readonly path: string; readonly values: string };
+
+/**
  * What is typed in the Trigger form. An option left empty is the Environment's own (`base`: each Repo's default).
- * `scheduled` says the Trigger fires on a Schedule (a new one does), so the form asks for `cron` and `zone`; a webhook
- * Trigger has none, and its source is fixed at creation, so editing it never sends one. A Workspace trigger's form names
- * its Workspace (`workspace`, by id) and has no `base`.
+ * `scheduled` says the Trigger fires on a Schedule (a new one does), so the form asks for `cron` and `zone`; else it
+ * fires on a webhook, signed in `format`, whose deliveries must pass the `match` rows. A Trigger's source type and format
+ * are fixed at creation, so editing a webhook Trigger sends only its `match`. A Workspace trigger's form names its
+ * Workspace (`workspace`, by id) and has no `base`.
  */
 export type TriggerDraft = {
   /**
@@ -56,6 +70,8 @@ export type TriggerDraft = {
   readonly message: string;
   readonly cron: string;
   readonly zone: string;
+  readonly format: WebhookFormat;
+  readonly match: ReadonlyArray<MatchRow>;
   readonly whenBusy: TriggerWhenBusy;
   readonly base: string;
   readonly model: string;
@@ -67,6 +83,9 @@ export type TriggerDraft = {
  * `when_busy` choice) before any cron is typed.
  */
 const SCHEDULE_DEFAULT: ScheduleSource = { type: "schedule", cron: "", zone: "" };
+
+/** The source a new draft switched to a webhook has, to pick `defaultWhenBusy`. */
+const WEBHOOK_DEFAULT: TriggerSourceInput = { type: "webhook", format: "github" };
 
 /**
  * An empty form for a Trigger of `environment`, its zone `zone` (the browser's): a Workspace trigger's when `workspace`
@@ -85,6 +104,8 @@ export const emptyTriggerDraft = (
   message: "",
   cron: "",
   zone,
+  format: "github",
+  match: [],
   whenBusy: defaultWhenBusy(workspace === null ? "environment" : "workspace", SCHEDULE_DEFAULT),
   base: "",
   model: "",
@@ -104,6 +125,8 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
     message: definition.message,
     cron: schedule?.cron ?? "",
     zone: schedule?.zone ?? "",
+    format: webhookOf(definition)?.format ?? "github",
+    match: rowsOfMatch(webhookOf(definition)?.match),
     whenBusy: definition.whenBusy,
     base: definition.base ?? "",
     model: definition.model ?? "",
@@ -111,11 +134,93 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
   };
 };
 
+/** The rows that hold `match`, in its order; none for no match. */
+export const rowsOfMatch = (match: TriggerMatch | undefined): ReadonlyArray<MatchRow> =>
+  Arr.map(Object.entries(match ?? {}), ([path, values]) => ({
+    path,
+    values: Arr.join(values, "\n"),
+  }));
+
+/** The values typed in a row: one to a line, a line's trailing carriage return and empty lines left out. */
+const valuesOfRow = (row: MatchRow): ReadonlyArray<string> =>
+  Arr.filter(
+    Arr.map(row.values.split("\n"), (line) => line.replace(/\r$/u, "")),
+    (line) => line !== "",
+  );
+
+/** Whether a row holds nothing: a blank row is the form's spare one, and means no filter. */
+const blankRow = (row: MatchRow): boolean =>
+  row.path.trim() === "" && valuesOfRow(row).length === 0;
+
+/** The `match` the rows make, in their order; a path typed twice keeps its first row's values. */
+export const matchOfRows = (rows: ReadonlyArray<MatchRow>): TriggerMatch => {
+  const match: Types.Mutable<TriggerMatch> = {};
+
+  for (const row of rows) {
+    const path = row.path.trim();
+
+    if (blankRow(row) || Object.hasOwn(match, path)) continue;
+
+    match[path] = valuesOfRow(row);
+  }
+
+  return match;
+};
+
+/** Why the rows can't make a `match` the Registry keeps (a path typed twice, a path with no values, a value with no path), or null. */
+export const matchRowsProblem = (rows: ReadonlyArray<MatchRow>): string | null => {
+  const paths = Arr.map(
+    Arr.filter(rows, (row) => !blankRow(row)),
+    (row) => row.path.trim(),
+  );
+
+  const twice = Arr.findFirst(paths, (path, at) => paths.indexOf(path) !== at);
+
+  if (Option.isSome(twice))
+    return `The path "${twice.value}" is typed twice: list its values in one row`;
+
+  return problemOf(matchProblem(matchOfRows(rows)));
+};
+
+/** Whether two matches filter the same: the same paths, each with the same values in order (the paths' order is free). */
+const sameMatch = (a: TriggerMatch | undefined, b: TriggerMatch | undefined): boolean => {
+  const left = Object.entries(a ?? {});
+  const right = b ?? {};
+
+  return (
+    left.length === Object.keys(right).length &&
+    left.every(([path, values]) => {
+      const other = Object.hasOwn(right, path) ? right[path] : undefined;
+
+      return (
+        other !== undefined &&
+        other.length === values.length &&
+        values.every((value, at) => value === other[at])
+      );
+    })
+  );
+};
+
+/**
+ * `draft` with its source switched to a Schedule (`scheduled`) or a webhook: `when_busy` follows to the new source's
+ * default while it still is the old one's (a webhook Trigger starts a Session for each delivery, a Schedule's skips).
+ */
+export const withSource = (draft: TriggerDraft, scheduled: boolean): TriggerDraft => {
+  if (draft.scheduled === scheduled) return draft;
+
+  const kind = draft.workspace === null ? "environment" : "workspace";
+  const was = defaultWhenBusy(kind, draft.scheduled ? SCHEDULE_DEFAULT : WEBHOOK_DEFAULT);
+  const now = defaultWhenBusy(kind, scheduled ? SCHEDULE_DEFAULT : WEBHOOK_DEFAULT);
+
+  return { ...draft, scheduled, whenBusy: draft.whenBusy === was ? now : draft.whenBusy };
+};
+
 /** Why each field of the form can't be saved, or null. */
 export type TriggerDraftProblems = {
   readonly name: string | null;
   readonly message: string | null;
   readonly schedule: string | null;
+  readonly match: string | null;
 };
 
 const problemOf = (problem: string | undefined): string | null => problem ?? null;
@@ -127,13 +232,19 @@ export const triggerDraftProblems = (draft: TriggerDraft): TriggerDraftProblems 
   schedule: draft.scheduled
     ? problemOf(scheduleProblem({ cron: draft.cron, zone: draft.zone }))
     : null,
+  match: draft.scheduled ? null : matchRowsProblem(draft.match),
 });
 
 /** Whether `draft` can be saved. */
 export const triggerDraftReady = (draft: TriggerDraft): boolean => {
   const problems = triggerDraftProblems(draft);
 
-  return problems.name === null && problems.message === null && problems.schedule === null;
+  return (
+    problems.name === null &&
+    problems.message === null &&
+    problems.schedule === null &&
+    problems.match === null
+  );
 };
 
 /** The next Fires the form's Schedule gives after `now`, or none while it can't be saved. */
@@ -150,16 +261,27 @@ const isThinkingLevel = Schema.is(ThinkingLevel);
 const thinkingOf = (text: string): ThinkingLevel | undefined =>
   isThinkingLevel(text) ? text : undefined;
 
+/** The source `draft` makes: its Schedule, or its webhook with the `match` its rows make (none for no row). */
+const sourceOf = (draft: TriggerDraft): TriggerSourceInput => {
+  if (draft.scheduled) {
+    return { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() };
+  }
+
+  const match = matchOfRows(draft.match);
+
+  return Object.keys(match).length === 0
+    ? { type: "webhook", format: draft.format }
+    : { type: "webhook", format: draft.format, match };
+};
+
 /** The new Trigger `draft` makes: the owner's own, active. */
-export const triggerInput = (
-  draft: TriggerDraft,
-): OwnerTriggerInput & { readonly source: ScheduleSource } => {
+export const triggerInput = (draft: TriggerDraft): OwnerTriggerInput => {
   const model = optional(draft.model);
   const thinking = thinkingOf(draft.thinking);
-  const source = { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() } as const;
+  const source = sourceOf(draft);
 
   if (draft.kind === "workspace" && draft.workspace !== null) {
-    const input: Types.Mutable<WorkspaceTriggerInput & { source: ScheduleSource }> = {
+    const input: Types.Mutable<WorkspaceTriggerInput> = {
       kind: "workspace",
       workspace: draft.workspace,
       name: draft.name.trim(),
@@ -175,7 +297,7 @@ export const triggerInput = (
     return input;
   }
 
-  const input: Types.Mutable<EnvironmentTriggerInput & { source: ScheduleSource }> = {
+  const input: Types.Mutable<EnvironmentTriggerInput> = {
     kind: "environment",
     environment: draft.environment,
     name: draft.name.trim(),
@@ -202,6 +324,7 @@ export const triggerInput = (
 export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft): TriggerPatch => {
   const input = triggerInput(draft);
   const schedule = scheduleOf(definition);
+  const webhook = webhookOf(definition);
   const patch: Types.Mutable<TriggerPatch> = {};
   const base = optional(draft.base);
 
@@ -209,12 +332,18 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
 
   if (input.message !== definition.message) patch.message = input.message;
 
-  // A webhook Trigger's source is fixed at creation: only a Schedule's is ever sent.
-  if (
-    draft.scheduled &&
-    (schedule?.cron !== input.source.cron || schedule.zone !== input.source.zone)
-  ) {
-    patch.source = input.source;
+  // A source's type and format are fixed at creation: a Schedule's source is sent when it changed, a webhook's `match`
+  // alone, null once its rows are all gone.
+  if (draft.scheduled && input.source.type === "schedule") {
+    if (schedule?.cron !== input.source.cron || schedule.zone !== input.source.zone) {
+      patch.source = input.source;
+    }
+  } else if (!draft.scheduled && webhook !== undefined) {
+    const match = matchOfRows(draft.match);
+
+    if (!sameMatch(webhook.match, match)) {
+      patch.match = Object.keys(match).length === 0 ? null : match;
+    }
   }
 
   if (input.whenBusy !== definition.whenBusy) patch.whenBusy = input.whenBusy;
@@ -363,9 +492,9 @@ export const sourceWords = (fire: FireRecord, zone: string): string => {
     case "schedule":
       return `Scheduled for ${fireTimeWords(fire.source.scheduledAt, zone)}`;
     case "webhook":
-      return `Webhook delivery ${fire.source.delivery}`;
+      return `Webhook delivery ${fire.source.delivery}${fire.source.event === undefined ? "" : ` (${fire.source.event})`}`;
     case "manual":
-      return "Fire now";
+      return "Fired by hand";
     case "unknown":
       return "A source this version can't read";
   }
@@ -405,3 +534,72 @@ export const workspaceTriggersOf = (
     Arr.map(triggers ?? [], (overview) => overview.definition),
     (definition) => definition.workspace?.id === workspace,
   );
+
+/** What a webhook Trigger's `match` says on its row: each path with the values it may have, or that there is none. */
+export const matchWords = (match: TriggerMatch | undefined): string => {
+  const entries = Object.entries(match ?? {});
+
+  return entries.length === 0
+    ? "No match: every signed delivery starts a session"
+    : `Match: ${Arr.join(
+        Arr.map(entries, ([path, values]) => `${path} is ${Arr.join(values, " or ")}`),
+        "; ",
+      )}`;
+};
+
+/** What a delivery counter's outcome says: the answer the sender got, and why; an outcome a later version names says itself. */
+const outcomeWordsOf = (outcome: string): string => {
+  switch (outcome) {
+    case "filtered":
+      return "filtered out by the match";
+    case "bot_unverified":
+      return "dropped as a bot's, the App's own not being known";
+    case "unauthorized":
+      return "unauthorized (401)";
+    case "not_found":
+      return "wrong URL (404)";
+    case "too_large":
+      return "too large (413)";
+    case "unsupported":
+      return "unsupported content type (415)";
+    default:
+      return outcome;
+  }
+};
+
+/** The words for the deliveries refused or filtered on one day: "3 filtered out by the match, 1 unauthorized (401)". */
+const dayWords = (
+  counts: ReadonlyArray<{ readonly outcome: string; readonly n: number }>,
+): string =>
+  Arr.join(
+    Arr.map(counts, ({ outcome, n }) => `${String(n)} ${outcomeWordsOf(outcome)}`),
+    ", ",
+  );
+
+/**
+ * The per-day counts of the deliveries a Trigger refused or filtered, newest day first, each day as one line of words
+ * ("2026-11-08": "3 filtered out by the match, 1 unauthorized (401)"): the days are UTC's, as they are counted.
+ */
+export const deliveryDays = (
+  counts: TriggerDeliveries["counts"],
+): ReadonlyArray<{ readonly day: string; readonly words: string }> =>
+  Arr.map(
+    Arr.sort(Arr.dedupe(Arr.map(counts, (count) => count.day)), Order.flip(Order.String)),
+    (day) => ({ day, words: dayWords(Arr.filter(counts, (count) => count.day === day)) }),
+  );
+
+/** What a webhook row says of its last authentic delivery, in `zone`. */
+export const lastDeliveryWords = (deliveries: TriggerDeliveries, zone: string): string =>
+  deliveries.lastDeliveryAt === null
+    ? "No delivery yet"
+    : `Last delivery: ${fireTimeWords(deliveries.lastDeliveryAt, zone)}`;
+
+/** What a GitHub ping says on the row: when GitHub last reached the Trigger, or nothing. */
+export const pingWords = (deliveries: TriggerDeliveries, zone: string): string | null =>
+  deliveries.pingAt === null
+    ? null
+    : `GitHub reached this trigger (${fireTimeWords(deliveries.pingAt, zone)})`;
+
+/** A Trigger URL as the sender is given it: the stage's origin before the path, or just the path where the page's own is the one. */
+export const hookUrl = (hook: TriggerHook, pageOrigin: string): string =>
+  `${hook.origin ?? pageOrigin}${hook.path}`;

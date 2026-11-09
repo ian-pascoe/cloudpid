@@ -2,8 +2,16 @@
 import { fireTimeWords, type TriggerDefinition } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  deliveryDays,
   emptyTriggerDraft,
+  hookUrl,
+  lastDeliveryWords,
+  matchOfRows,
+  matchWords,
+  pingWords,
+  matchRowsProblem,
   nextFireOf,
+  rowsOfMatch,
   outcomeWords,
   previewFires,
   triggerSourceWords,
@@ -15,6 +23,7 @@ import {
   triggerNames,
   triggerPatch,
   waitingWords,
+  withSource,
   whenBusyChoices,
   whenBusyOfText,
   workspaceTriggersOf,
@@ -47,6 +56,7 @@ describe("the Trigger form", () => {
     expect(triggerDraftProblems(draft)).toEqual({
       name: "A Trigger needs a name",
       message: "A Trigger needs a message to send",
+      match: null,
       schedule: expect.any(String),
     });
   });
@@ -154,7 +164,7 @@ describe("a Trigger's row and fire log", () => {
         { key: "t1:m", at: MONDAY, source: { type: "manual" }, outcome: { type: "unknown" } },
         "UTC",
       ),
-    ).toBe("Fire now");
+    ).toBe("Fired by hand");
     expect(
       sourceWords(
         {
@@ -165,7 +175,7 @@ describe("a Trigger's row and fire log", () => {
         },
         "UTC",
       ),
-    ).toBe("Webhook delivery d-1");
+    ).toBe("Webhook delivery d-1 (push)");
   });
 
   it("names a webhook Trigger's format where a Schedule's cron goes, and gives it no next Fire", () => {
@@ -208,6 +218,200 @@ describe("editing a webhook Trigger", () => {
       type: "schedule",
       cron: "@daily",
       zone: "America/Chicago",
+    });
+  });
+});
+
+describe("a webhook Trigger's row", () => {
+  it("says its match, or that there is none", () => {
+    expect(matchWords({ event: ["push", "pull_request"], "sender.login": ["octocat"] })).toBe(
+      "Match: event is push or pull_request; sender.login is octocat",
+    );
+    expect(matchWords(undefined)).toBe("No match: every signed delivery starts a session");
+    expect(matchWords({})).toBe("No match: every signed delivery starts a session");
+  });
+
+  it("totals the refused and filtered deliveries by day, newest first", () => {
+    expect(
+      deliveryDays([
+        { day: "2026-11-07", outcome: "filtered", n: 4 },
+        { day: "2026-11-08", outcome: "unauthorized", n: 1 },
+        { day: "2026-11-08", outcome: "filtered", n: 3 },
+        { day: "2026-11-06", outcome: "later_outcome", n: 2 },
+      ]),
+    ).toEqual([
+      { day: "2026-11-08", words: "1 unauthorized (401), 3 filtered out by the match" },
+      { day: "2026-11-07", words: "4 filtered out by the match" },
+      { day: "2026-11-06", words: "2 later_outcome" },
+    ]);
+    expect(deliveryDays([])).toEqual([]);
+  });
+
+  it("says when the last delivery came and GitHub last reached it", () => {
+    const at = Date.parse("2026-11-08T15:00:00Z");
+
+    expect(lastDeliveryWords({ counts: [], lastDeliveryAt: null, pingAt: null }, "UTC")).toBe(
+      "No delivery yet",
+    );
+    expect(lastDeliveryWords({ counts: [], lastDeliveryAt: at, pingAt: null }, "UTC")).toContain(
+      "Last delivery: ",
+    );
+    expect(pingWords({ counts: [], lastDeliveryAt: null, pingAt: null }, "UTC")).toBeNull();
+    expect(pingWords({ counts: [], lastDeliveryAt: null, pingAt: at }, "UTC")).toContain(
+      "GitHub reached this trigger (",
+    );
+  });
+
+  it("gives the URL the stage's origin, or the page's own where the stage has none", () => {
+    expect(
+      hookUrl({ origin: "https://c.example", path: "/hooks/a/b", secret: "s" }, "http://x"),
+    ).toBe("https://c.example/hooks/a/b");
+    expect(hookUrl({ path: "/hooks/a/b", secret: "s" }, "http://localhost:5173")).toBe(
+      "http://localhost:5173/hooks/a/b",
+    );
+  });
+});
+
+describe("a webhook Trigger's form", () => {
+  const MATCH = { event: ["workflow_run"], "workflow_run.conclusion": ["failure", "timed_out"] };
+
+  const webhookTrigger: TriggerDefinition = {
+    ...DEFINITION,
+    name: "CI failed",
+    source: { type: "webhook", format: "github", match: MATCH },
+    whenBusy: "start",
+  };
+
+  it("makes a webhook Trigger of the format and rows typed, which starts a Session for each delivery", () => {
+    const draft = withSource(
+      {
+        ...emptyTriggerDraft("default", "UTC"),
+        name: "CI failed",
+        message: "Look into it.",
+        format: "standard",
+        match: [
+          { path: "event", values: "workflow_run" },
+          { path: "workflow_run.conclusion", values: "failure\ntimed_out\n" },
+          { path: "", values: "" },
+        ],
+      },
+      false,
+    );
+
+    expect(draft.whenBusy).toBe("start");
+    expect(triggerDraftReady(draft)).toBe(true);
+    expect(previewFires(draft, MONDAY)).toEqual([]);
+    expect(triggerInput(draft)).toEqual({
+      kind: "environment",
+      environment: "default",
+      name: "CI failed",
+      message: "Look into it.",
+      source: { type: "webhook", format: "standard", match: MATCH },
+      whenBusy: "start",
+    });
+  });
+
+  it("makes a webhook with no match when no row holds anything", () => {
+    const draft = withSource(
+      {
+        ...emptyTriggerDraft("default", "UTC"),
+        name: "All",
+        message: "Go.",
+        match: [{ path: " ", values: "" }],
+      },
+      false,
+    );
+
+    expect(triggerDraftReady(draft)).toBe(true);
+    expect(triggerInput(draft).source).toEqual({ type: "webhook", format: "github" });
+  });
+
+  it("moves when_busy with the source only while it is the old source's default", () => {
+    const draft = emptyTriggerDraft("default", "UTC");
+
+    expect(withSource(draft, false).whenBusy).toBe("start");
+    expect(withSource(withSource(draft, false), true).whenBusy).toBe("skip");
+    // Chosen on purpose, it stays; a Workspace trigger waits either way.
+    expect(withSource({ ...draft, whenBusy: "start" }, false).whenBusy).toBe("start");
+    expect(withSource(emptyTriggerDraft("default", "UTC", "ab12"), false).whenBusy).toBe("wait");
+  });
+
+  it("refuses the rows the Registry would refuse, naming why", () => {
+    expect(matchRowsProblem([{ path: "a", values: "" }])).toContain("lists no values");
+    expect(matchRowsProblem([{ path: "", values: "x" }])).toContain("is not a path");
+    expect(matchRowsProblem([{ path: "a..b", values: "x" }])).toContain("is not a path");
+    expect(
+      matchRowsProblem([
+        { path: "a", values: "x" },
+        { path: " a", values: "y" },
+      ]),
+    ).toContain("typed twice");
+    expect(
+      matchRowsProblem([
+        { path: "a", values: "x" },
+        { path: "", values: "" },
+      ]),
+    ).toBeNull();
+
+    const draft = withSource(
+      {
+        ...emptyTriggerDraft("default", "UTC"),
+        name: "n",
+        message: "m",
+        match: [{ path: "a", values: "" }],
+      },
+      false,
+    );
+
+    expect(triggerDraftProblems(draft).match).toContain("lists no values");
+    expect(triggerDraftReady(draft)).toBe(false);
+  });
+
+  it("holds an existing Trigger's match as rows, and back", () => {
+    const draft = triggerDraftOf(webhookTrigger);
+
+    expect(draft.format).toBe("github");
+    expect(draft.match).toEqual([
+      { path: "event", values: "workflow_run" },
+      { path: "workflow_run.conclusion", values: "failure\ntimed_out" },
+    ]);
+    expect(matchOfRows(draft.match)).toEqual(MATCH);
+    expect(rowsOfMatch(undefined)).toEqual([]);
+  });
+
+  it("sends only the match, once its rows changed, and null once none is left", () => {
+    const draft = triggerDraftOf(webhookTrigger);
+
+    // Unchanged rows, or the same match in another order of paths, change nothing.
+    expect(triggerPatch(webhookTrigger, draft)).toEqual({});
+    expect(triggerPatch(webhookTrigger, { ...draft, match: [...draft.match].reverse() })).toEqual(
+      {},
+    );
+
+    expect(
+      triggerPatch(webhookTrigger, {
+        ...draft,
+        match: [{ path: "event", values: "push" }],
+      }),
+    ).toEqual({ match: { event: ["push"] } });
+    expect(triggerPatch(webhookTrigger, { ...draft, match: [] })).toEqual({ match: null });
+    expect(
+      triggerPatch(
+        { ...webhookTrigger, source: { type: "webhook", format: "github" } },
+        { ...triggerDraftOf(webhookTrigger), match: [{ path: "event", values: "push" }] },
+      ),
+    ).toEqual({ match: { event: ["push"] } });
+    // The values' order is the Trigger's: reordered values are a change.
+    expect(
+      triggerPatch(webhookTrigger, {
+        ...draft,
+        match: [
+          { path: "event", values: "workflow_run" },
+          { path: "workflow_run.conclusion", values: "timed_out\nfailure" },
+        ],
+      }),
+    ).toEqual({
+      match: { event: ["workflow_run"], "workflow_run.conclusion": ["timed_out", "failure"] },
     });
   });
 });
