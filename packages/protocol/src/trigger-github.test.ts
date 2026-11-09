@@ -69,6 +69,15 @@ describe("trimGitHubBody", () => {
     expect(trim.pull_request.user).not.toHaveProperty("avatar_url");
   });
 
+  it("shows a named object with no name as null, and keeps a __proto__ key as a field", () => {
+    const body =
+      '{"sender":{"url":"u"},"repository":{"id":1},"__proto__":{"login":"x","hooks_url":"y"}}';
+
+    expect(trimGitHubBody(body)).toBe(
+      '{"sender":null,"repository":null,"__proto__":{"login":"x"}}',
+    );
+  });
+
   it("trims the JSON in a form-encoded body's payload field, and leaves a body with no JSON alone", () => {
     const form = `payload=${encodeURIComponent(JSON.stringify({ sender: { login: "a", url: "u" }, hooks_url: "x" }))}`;
 
