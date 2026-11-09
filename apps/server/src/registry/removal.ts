@@ -1,7 +1,10 @@
 // Deleting Sessions, Workspaces and Environments with what they hold (`docs/architecture/workspace.md` → Environments): the Registry's
 // records and the objects behind them, in the order that leaves nothing behind a record. The main Worker's endpoint
 // runs it for the owner (`rpc.ts`), and a Session runs the Environment's delete for the agent's `environment_delete`
-// once the owner approved it (`docs/architecture/agent-changes.md` → Approval), so the two delete the same way.
+// once the owner approved it (`docs/architecture/agent-changes.md` → Approval), so the two delete the same way; so does
+// the main Worker for an `environment_delete` asked over the MCP endpoint (`docs/architecture/mcp-endpoint.md` →
+// Approvals with no Session), whose run renews its lease after each step (`onStep`). Every step is safe to repeat: a
+// wiped object still listed is wiped again, then forgotten, so a delete cut anywhere finishes when it runs again.
 // @effect-diagnostics missingPipeableSignature:off
 import { DEFAULT_ENVIRONMENT, EnvironmentError, SessionActionError } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -42,6 +45,15 @@ export type RemovalObjects = {
   readonly workspaces: Pick<WorkspaceObjects, "destroy">;
   readonly sessions: Pick<SessionObjects, "destroy">;
   readonly triggers: Pick<TriggerObjects, "remove">;
+};
+
+/**
+ * What a caller of a long delete is told as it goes: `onStep` runs after each Workspace is removed, and after the spare
+ * and the Build objects, before the next step. Its failure stops the delete there (a run that lost its lease), leaving
+ * what is left to the next run.
+ */
+export type RemovalProgress = {
+  readonly onStep?: Effect.Effect<void, EnvironmentError> | undefined;
 };
 
 /** Why the default Environment is not deleted. */
@@ -287,9 +299,9 @@ export const removals = (
    * too), its spare Workspace and its Build object, then its record, which takes its kept Secrets, Agent changes and
    * Triggers (`docs/architecture/triggers.md` → Cascades), whose objects are wiped after it. A Workspace made
    * meanwhile is removed the same way, a few rounds; a failure says what is left. The default
-   * Environment is never deleted.
+   * Environment is never deleted. `onStep` runs after each Workspace, and after the spare and the Build (`RemovalProgress`).
    */
-  const deleteEnvironment = (environment: string) =>
+  const deleteEnvironment = (environment: string, { onStep = Effect.void }: RemovalProgress = {}) =>
     Effect.gen(function* () {
       // A new Session always has an Environment to start in.
       if (environment === DEFAULT_ENVIRONMENT) return yield* failed(DEFAULT_KEPT);
@@ -306,10 +318,12 @@ export const removals = (
 
         for (const workspace of made) {
           yield* removeWorkspace(workspace).pipe(Effect.mapError(environmentKept));
+          yield* onStep;
         }
 
         yield* removeSpare(environment).pipe(Effect.mapError(environmentKept));
         yield* removeBuild(environment).pipe(Effect.mapError(environmentKept));
+        yield* onStep;
 
         // The record goes only once no Workspace is made from it.
         const removal = yield* registry.deleteEnvironmentWithTriggers({ id: environment });
