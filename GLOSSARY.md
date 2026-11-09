@@ -367,7 +367,7 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; making a Trigger, or widening one (its message, Schedule, match or options changed, or resuming it); or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; making a Trigger, or widening one (its message, Schedule, match or options changed, or resuming it); or one no revert can undo (deleting an Environment or a kept Secret). A Session's agent waits for it on a card in the Session. An agent through the MCP endpoint does not wait: the Registry keeps its request, which the owner answers in the "Waiting for you" area of the Settings page section the change is in, and the agent follows it with `approval_wait`; on Approve the main Worker applies the change.
 _Avoid_: Confirmation, permission, consent
 
 ## Triggers
