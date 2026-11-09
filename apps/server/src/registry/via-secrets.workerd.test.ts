@@ -24,9 +24,10 @@ import { keepSecret, type SecretWrite } from "./environment-secrets.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { GLOBAL_SCOPE, openRegistryStore } from "./store.ts";
 import {
-  checkedViaWrite,
   guardedViaWrite,
   HOLDS_SECRET,
+  keptOf,
+  openViaCheck,
   reachOf,
   SECRETS_CHANGED,
   SECRETS_UNCHECKABLE,
@@ -386,24 +387,61 @@ describe("a Session's write", () => {
   });
 });
 
-describe("the check before a write that fetches first", () => {
-  it("answers the refusal, or none when the texts hold no kept Secret", async () => {
+describe("the check a write that fetches first opens", () => {
+  it("answers the refusal of a text that holds a kept Secret, or none, and none for a Session's", async () => {
     const [held, clear, unchecked] = await inRegistry(async ({ keep, storage, store, keys }) => {
       await keep("API_KEY", DEFAULT_ENVIRONMENT);
 
-      const check = checkedViaWrite({ storage, store, vault: Effect.succeed(keys) });
+      const open = openViaCheck({ storage, store, vault: Effect.succeed(keys) });
       const reach = reachOf(DEFAULT_ENVIRONMENT);
+      const check = await Effect.runPromise(open({ author: endpoint, reach }));
 
       return [
-        await Effect.runPromise(check({ author: endpoint, input: { source: VALUE }, reach })),
-        await Effect.runPromise(check({ author: endpoint, input: { source: "o/r" }, reach })),
-        await Effect.runPromise(check({ author: session, input: { source: VALUE }, reach })),
+        check?.({ source: VALUE }),
+        check?.({ source: "o/r" }),
+        await Effect.runPromise(open({ author: session, reach })),
       ];
     });
 
     expect(held).toBe(HOLDS_SECRET);
     expect(clear).toBeUndefined();
     expect(unchecked).toBeUndefined();
+  });
+
+  it("refuses, saying to try again, once a Secret is kept after it opened", async () => {
+    const [before, after] = await inRegistry(async ({ keep, storage, store, keys }) => {
+      await keep("API_KEY", DEFAULT_ENVIRONMENT);
+
+      const check = await Effect.runPromise(
+        openViaCheck({ storage, store, vault: Effect.succeed(keys) })({
+          author: endpoint,
+          reach: reachOf(DEFAULT_ENVIRONMENT),
+        }),
+      );
+
+      const first = check?.({ source: "o/r" });
+
+      await keep("NEW_KEY", DEFAULT_ENVIRONMENT, "another-value-1234", 1_500);
+
+      return [first, check?.({ source: "o/r" })];
+    });
+
+    expect(before).toBeUndefined();
+    expect(after).toBe(SECRETS_CHANGED);
+  });
+});
+
+describe("what a write keeps", () => {
+  it("leaves out the arguments that only name what to change or what it was expected to be", () => {
+    expect(
+      keptOf({
+        environment: "0000abcd",
+        change: { field: "variables.A", value: "1" },
+        expected: { value: VALUE },
+        guard: { hash: VALUE },
+        author: { tool: "t", reason: "r" },
+      }),
+    ).toEqual({ change: { field: "variables.A", value: "1" }, author: { tool: "t", reason: "r" } });
   });
 });
 

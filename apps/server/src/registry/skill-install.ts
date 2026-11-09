@@ -28,6 +28,7 @@ import {
   saveSkillAs,
   type SkillChangeContext,
 } from "./skills.ts";
+import type { ViaCheck } from "./via-secrets.ts";
 
 /** A digest of a Skill's files by their content hashes: what an Approval pins of a Skill. */
 const digestOf = (files: HashedFiles): Promise<string> =>
@@ -124,6 +125,8 @@ export const installSkills = async (
   input: InstallRequest & {
     readonly author: AgentChangeAuthor | null;
     readonly pin?: SkillInstallPin | undefined;
+    /** An endpoint's install: opens the check of what each Skill keeps, once the files are fetched (`via-secrets.ts`). */
+    readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
   },
 ): Promise<SkillInstallation> => {
   const { environment, author, pin } = input;
@@ -135,6 +138,9 @@ export const installSkills = async (
   // Hashing is not synchronous, so every Skill's files are hashed before any is kept.
   const hashed = await Promise.all(fetched.skills.map(async (skill) => hashFiles(skill.files)));
   const digests = await Promise.all(hashed.map(async ({ files }) => digestOf(files)));
+  // The Secrets are opened now, with the files in hand, and each save checks what it keeps inside its own transaction.
+  const check = await input.openCheck?.();
+  const checked = check === undefined ? context : { ...context, check };
 
   /** The result of keeping fetched Skill `at`, if it may be kept. `savedAt`: what an Approval was asked against. */
   const keep = (at: number, expected: { readonly savedAt: number | null } | undefined) => {
@@ -155,7 +161,7 @@ export const installSkills = async (
     const kept =
       author === null
         ? keepSkillAsOwner(context, toKeep)
-        : saveSkillAs(context, { ...toKeep, author, expected });
+        : saveSkillAs(checked, { ...toKeep, author, expected });
 
     const named = { name: skill.name, path: skill.path };
 

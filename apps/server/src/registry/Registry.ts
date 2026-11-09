@@ -145,7 +145,14 @@ import {
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 import { type BuildWork, buildView } from "./builds.ts";
 import { type ChangeAnswer, type ChangeRequest, openChangeRequests } from "./change-requests.ts";
-import { checkedViaWrite, guardedViaWrite, reachOf } from "./via-secrets.ts";
+import {
+  guardedViaWrite,
+  keptOf,
+  type KeptTexts,
+  openViaCheck,
+  reachOf,
+  type ViaCheck,
+} from "./via-secrets.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier, pushToAll } from "../push/notify.ts";
@@ -200,6 +207,7 @@ import {
   type LegacyObject,
   openRegistryStore,
   type RepoChange,
+  type SecretReach,
   STARTING_MS,
   type SessionAgent,
   type SessionRecord,
@@ -1228,7 +1236,11 @@ export const LEGACY_LEASE_MS = 5 * 60_000;
  */
 export class Registry extends Cloudflare.DurableObject<Registry, RegistryMethods>()("Registry") {}
 
-export const RegistryLive = Registry.make(
+/**
+ * The Registry's methods over its services: what `RegistryLive` makes the object of, and what a test's Durable Object runs
+ * (`registry.fixture.ts`) to call them through the real wiring.
+ */
+export const registryMethods = Effect.suspend(() =>
   Effect.all({
     state: Cloudflare.DurableObjectState,
     push: PushConfig,
@@ -1269,6 +1281,7 @@ export const RegistryLive = Registry.make(
           readonly folders?: ReadonlyArray<string> | undefined;
           readonly author: AgentChangeAuthor | null;
           readonly pin?: SkillInstallPin | undefined;
+          readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
         }) =>
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
@@ -1284,7 +1297,10 @@ export const RegistryLive = Registry.make(
 
         /** Update `environment`'s Skills: as Agent changes by `author`, or as the owner's save with none. */
         const updateFromGithub = (
-          input: UpdateRequest & { readonly author: AgentChangeAuthor | null },
+          input: UpdateRequest & {
+            readonly author: AgentChangeAuthor | null;
+            readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
+          },
         ) =>
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
@@ -1342,8 +1358,33 @@ export const RegistryLive = Registry.make(
         // A write made over the MCP endpoint keeps no kept Secret's value (`via-secrets.ts`): a Session's is never checked.
         const viaDeps = { storage: state.raw.storage, store, vault };
         const viaGuarded = guardedViaWrite(viaDeps);
-        const viaChecked = checkedViaWrite(viaDeps);
+        const viaCheck = openViaCheck(viaDeps);
+
+        /**
+         * The check an endpoint's install or update opens once it has fetched (`via-secrets.ts`): each save then checks the
+         * files it keeps, inside its own transaction. Undefined for a Session's, which is never checked.
+         */
+        const viaCheckOf = (author: AgentChangeAuthor, reach: SecretReach) => () =>
+          // @effect-diagnostics-next-line runEffectInsideEffect:off
+          Effect.runPromise(viaCheck({ author, reach }));
+
         const changeRequests = openChangeRequests(state.raw.storage, store, changes);
+
+        /**
+         * Run `write(now)` for the endpoint's or a Session's `args`, which are the call's own arguments: checked against the
+         * kept Secrets `reach` names when their author has a `via`, on what they keep (`keptOf`).
+         */
+        const viaWrite = <A>(
+          args: { readonly author: AgentChangeAuthor; readonly [key: string]: KeptTexts },
+          reach: SecretReach,
+          refuse: (message: string) => A,
+          write: (now: number) => A,
+        ): Effect.Effect<A> =>
+          Effect.flatMap(Clock.currentTimeMillis, (now) =>
+            viaGuarded({ author: args.author, input: keptOf(args), reach }, refuse, () =>
+              write(now),
+            ),
+          );
 
         /** The refusal most answers have: a write not made, with why. */
         const rejected = (message: string) => ({ status: "rejected" as const, message });
@@ -1351,7 +1392,6 @@ export const RegistryLive = Registry.make(
         /** The refusal of a Trigger's change, which says it as the owner's form does. */
         const invalid = (problem: string) => ({ status: "invalid" as const, problem });
 
-        /** The Scopes a change of Trigger `id` reaches: its Environment's and Global's (every one's for a Trigger gone). */
         /**
          * What a new Trigger's write reaches: its Environment's Scopes, or for a Workspace trigger its Workspace's
          * Environment's. A Workspace that is not kept reaches every Scope, since the write is refused before it keeps anything.
@@ -1361,6 +1401,7 @@ export const RegistryLive = Registry.make(
             ? reachOf(trigger.environment)
             : reachOf(store.getWorkspace(trigger.workspace)?.environment ?? GLOBAL_SCOPE);
 
+        /** The Scopes a change of Trigger `id` reaches: its Environment's and Global's (every one's for a Trigger gone). */
         const triggerReach = (id: string) => reachOf(triggers.get(id)?.environment ?? GLOBAL_SCOPE);
 
         let handedWarned = false;
@@ -1622,25 +1663,13 @@ export const RegistryLive = Registry.make(
               ),
             ),
           workspaceOverrides: ({ environment }) => workspaceOverrides(environment),
-          changeEnvironment: ({ environment, change, expected, author }) =>
+          changeEnvironment: (args) =>
             Effect.gen(function* () {
-              const now = yield* Clock.currentTimeMillis;
-
-              const outcome = yield* viaGuarded<EnvironmentChange>(
-                {
-                  author,
-                  input: { environment, change, expected, author },
-                  reach: reachOf(environment),
-                },
+              const outcome = yield* viaWrite<EnvironmentChange>(
+                args,
+                reachOf(args.environment),
                 rejected,
-                () =>
-                  changeEnvironment(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { environment, change, expected, author },
-                    now,
-                  ),
+                (now) => changeEnvironment(state.raw.storage, store, changes, args, now),
               );
 
               if (outcome.status !== "changed") return outcome;
@@ -1653,21 +1682,12 @@ export const RegistryLive = Registry.make(
 
               return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
             }),
-          changeGlobal: ({ change, expected, author, environment }) =>
+          changeGlobal: (args) =>
             Effect.gen(function* () {
-              const now = yield* Clock.currentTimeMillis;
+              const { change, environment } = args;
 
-              const outcome = yield* viaGuarded<GlobalChange>(
-                { author, input: { change, expected, author, environment }, reach: "every" },
-                rejected,
-                () =>
-                  changeGlobal(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { change, expected, author },
-                    now,
-                  ),
+              const outcome = yield* viaWrite<GlobalChange>(args, "every", rejected, (now) =>
+                changeGlobal(state.raw.storage, store, changes, args, now),
               );
 
               if (outcome.status !== "changed") return outcome;
@@ -1692,112 +1712,46 @@ export const RegistryLive = Registry.make(
                 ...reach,
               } satisfies GlobalChangeAnswer;
             }),
-          agentCreateEnvironment: ({ name, repos, author }) =>
+          agentCreateEnvironment: (args) =>
             Effect.gen(function* () {
-              const now = yield* Clock.currentTimeMillis;
               let id = yield* newEnvironmentId;
 
               while (store.getEnvironment(id) !== null) id = yield* newEnvironmentId;
 
               // A new Environment has no Secrets of its own: only Global's are reached.
-              return yield* viaGuarded<EnvironmentCreation>(
-                { author, input: { name, repos, author }, reach: [GLOBAL_SCOPE] },
-                rejected,
-                () =>
-                  createEnvironmentAs(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { id, name, repos, author },
-                    now,
-                  ),
+              return yield* viaWrite<EnvironmentCreation>(args, [GLOBAL_SCOPE], rejected, (now) =>
+                createEnvironmentAs(state.raw.storage, store, changes, { ...args, id }, now),
               );
             }),
-          agentRenameEnvironment: ({ environment, name, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<LifecycleChange>(
-                { author, input: { environment, name, author }, reach: reachOf(environment) },
-                rejected,
-                () =>
-                  renameEnvironmentAs(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { environment, name, author },
-                    now,
-                  ),
-              ),
+          agentRenameEnvironment: (args) =>
+            viaWrite<LifecycleChange>(args, reachOf(args.environment), rejected, (now) =>
+              renameEnvironmentAs(state.raw.storage, store, changes, args, now),
             ),
-          agentAddRepo: ({ environment, repo, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<LifecycleChange>(
-                { author, input: { environment, repo, author }, reach: reachOf(environment) },
-                rejected,
-                () =>
-                  addRepoAs(state.raw.storage, store, changes, { environment, repo, author }, now),
-              ),
+          agentAddRepo: (args) =>
+            viaWrite<LifecycleChange>(args, reachOf(args.environment), rejected, (now) =>
+              addRepoAs(state.raw.storage, store, changes, args, now),
             ),
-          agentRemoveRepo: ({ environment, name, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<LifecycleOutcome<LifecycleChanged>>(
-                { author, input: { environment, name, author }, reach: reachOf(environment) },
-                rejected,
-                () =>
-                  removeRepoAs(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { environment, name, author },
-                    now,
-                  ),
-              ),
+          agentRemoveRepo: (args) =>
+            viaWrite<LifecycleOutcome<LifecycleChanged>>(
+              args,
+              reachOf(args.environment),
+              rejected,
+              (now) => removeRepoAs(state.raw.storage, store, changes, args, now),
             ),
-          recordRebuild: ({ environment, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<LifecycleOutcome<LifecycleChanged>>(
-                { author, input: { environment, author }, reach: reachOf(environment) },
-                rejected,
-                () =>
-                  recordRebuildAs(state.raw.storage, store, changes, { environment, author }, now),
-              ),
+          recordRebuild: (args) =>
+            viaWrite<LifecycleOutcome<LifecycleChanged>>(
+              args,
+              reachOf(args.environment),
+              rejected,
+              (now) => recordRebuildAs(state.raw.storage, store, changes, args, now),
             ),
-          agentMarkSecretBuild: ({ environment, name, build, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<SecretBuildMark>(
-                {
-                  author,
-                  input: { environment, name, build, author },
-                  reach: reachOf(environment),
-                },
-                rejected,
-                () =>
-                  markSecretBuildAs(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { environment, name, build, author },
-                    now,
-                  ),
-              ),
+          agentMarkSecretBuild: (args) =>
+            viaWrite<SecretBuildMark>(args, reachOf(args.environment), rejected, (now) =>
+              markSecretBuildAs(state.raw.storage, store, changes, args, now),
             ),
-          agentDeleteSecret: ({ environment, name, expected, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<SecretDeletion>(
-                {
-                  author,
-                  input: { environment, name, expected, author },
-                  reach: reachOf(environment),
-                },
-                rejected,
-                () =>
-                  deleteSecretAs(
-                    state.raw.storage,
-                    store,
-                    changes,
-                    { environment, name, expected, author },
-                    now,
-                  ),
-              ),
+          agentDeleteSecret: (args) =>
+            viaWrite<SecretDeletion>(args, reachOf(args.environment), rejected, (now) =>
+              deleteSecretAs(state.raw.storage, store, changes, args, now),
             ),
           keepAskedSecrets: ({ session, conversation, scope, reason, secrets: asked }) =>
             Effect.gen(function* () {
@@ -1892,8 +1846,9 @@ export const RegistryLive = Registry.make(
 
               return setup === null ? Effect.succeed(null) : withSettings(setup, skillSetHash);
             }),
-          agentSaveSkill: ({ environment, folder, files, author, expected }) =>
+          agentSaveSkill: (args) =>
             Effect.gen(function* () {
+              const { environment, files, expected } = args;
               // A change to the Skills kept Global is made only against what the owner approved.
               const unapproved = unapprovedGlobalChange(environment, expected !== undefined);
 
@@ -1901,20 +1856,12 @@ export const RegistryLive = Registry.make(
                 return { status: "rejected" as const, message: unapproved };
 
               const hashed = yield* Effect.promise(() => hashFiles(files));
-              const now = yield* Clock.currentTimeMillis;
 
-              return yield* viaGuarded<SkillSave>(
-                {
-                  author,
-                  input: { environment, folder, files, author, expected },
-                  reach: reachOf(environment),
-                },
-                rejected,
-                () =>
-                  saveSkillAs(
-                    { storage: state.raw.storage, store, skills, changes, now },
-                    { environment, folder, files, hashed, author, expected },
-                  ),
+              return yield* viaWrite<SkillSave>(args, reachOf(environment), rejected, (now) =>
+                saveSkillAs(
+                  { storage: state.raw.storage, store, skills, changes, now },
+                  { ...args, hashed },
+                ),
               );
             }),
           agentPreviewSkill: ({ environment, folder, files }) =>
@@ -1923,45 +1870,33 @@ export const RegistryLive = Registry.make(
 
               return previewSkillSave({ store, skills }, { environment, folder, files, hashed });
             }),
-          agentRemoveSkill: ({ environment, name, author, expected }) =>
-            Effect.gen(function* () {
+          agentRemoveSkill: (args) =>
+            Effect.suspend(() => {
+              const { environment, expected } = args;
               const unapproved = unapprovedGlobalChange(environment, expected !== undefined);
 
-              if (unapproved !== undefined)
-                return { status: "rejected" as const, message: unapproved };
-
-              const now = yield* Clock.currentTimeMillis;
-
-              return yield* viaGuarded<SkillRemoval>(
-                {
-                  author,
-                  input: { environment, name, author, expected },
-                  reach: reachOf(environment),
-                },
-                rejected,
-                () =>
-                  removeSkillAs(
-                    { storage: state.raw.storage, store, skills, changes, now },
-                    { environment, name, author, expected },
-                  ),
-              );
+              return unapproved !== undefined
+                ? Effect.succeed({ status: "rejected" as const, message: unapproved })
+                : viaWrite<SkillRemoval>(args, reachOf(environment), rejected, (now) =>
+                    removeSkillAs(
+                      { storage: state.raw.storage, store, skills, changes, now },
+                      args,
+                    ),
+                  );
             }),
           agentInstallSkills: ({ environment, source, skills: names, author, pin }) =>
             Effect.suspend(() => {
               const unapproved = unapprovedGlobalChange(environment, pin !== undefined);
 
               return unapproved === undefined
-                ? Effect.flatMap(
-                    viaChecked({
-                      author,
-                      input: { environment, source, skills: names, author, pin },
-                      reach: reachOf(environment),
-                    }),
-                    (problem) =>
-                      problem === undefined
-                        ? installFromGithub({ environment, source, skills: names, author, pin })
-                        : Effect.succeed({ status: "refused" as const, message: problem }),
-                  )
+                ? installFromGithub({
+                    environment,
+                    source,
+                    skills: names,
+                    author,
+                    pin,
+                    openCheck: viaCheckOf(author, reachOf(environment)),
+                  })
                 : Effect.succeed({ status: "refused" as const, message: unapproved });
             }),
           agentPreviewSkillInstall: ({ environment, source, skills: names }) =>
@@ -1979,17 +1914,14 @@ export const RegistryLive = Registry.make(
               const unapproved = unapprovedGlobalChange(environment, pins !== undefined);
 
               return unapproved === undefined
-                ? Effect.flatMap(
-                    viaChecked({
-                      author,
-                      input: { environment, names, overwrite, pins, author },
-                      reach: reachOf(environment),
-                    }),
-                    (problem) =>
-                      problem === undefined
-                        ? updateFromGithub({ environment, names, overwrite, pins, author })
-                        : Effect.succeed({ status: "refused" as const, message: problem }),
-                  )
+                ? updateFromGithub({
+                    environment,
+                    names,
+                    overwrite,
+                    pins,
+                    author,
+                    openCheck: viaCheckOf(author, reachOf(environment)),
+                  })
                 : Effect.succeed({ status: "refused" as const, message: unapproved });
             }),
           updateSkills: ({ environment, names, overwrite }) =>
@@ -2282,39 +2214,36 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => recordMcpDestroyed(store, environment, now)),
             ),
-          changeSettings: ({ environment, changes: wanted, author, guard }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<SettingsChange>(
-                {
-                  author,
-                  input: { environment, changes: wanted, author },
-                  // The Settings at Global are the `*` scope's: every Secret may be held in a text of theirs.
-                  reach: environment === undefined ? "every" : reachOf(environment),
-                },
-                rejected,
-                () => {
-                  const refuse =
-                    guard === undefined ? undefined : mcpGuard(store, environment, guard);
+          changeSettings: (args) =>
+            // The Settings at Global are the `*` scope's: every Secret may be held in a text of theirs.
+            viaWrite<SettingsChange>(
+              args,
+              args.environment === undefined ? "every" : reachOf(args.environment),
+              rejected,
+              (now) => {
+                const { environment, changes: wanted, author, guard } = args;
 
-                  return environment === undefined
-                    ? changeSettings(
-                        state.raw.storage,
-                        store,
-                        changes,
-                        { changes: wanted, author },
-                        now,
-                        refuse,
-                      )
-                    : changeSettingsOverrides(
-                        state.raw.storage,
-                        store,
-                        changes,
-                        { environment, changes: wanted, author },
-                        now,
-                        refuse,
-                      );
-                },
-              ),
+                const refuse =
+                  guard === undefined ? undefined : mcpGuard(store, environment, guard);
+
+                return environment === undefined
+                  ? changeSettings(
+                      state.raw.storage,
+                      store,
+                      changes,
+                      { changes: wanted, author },
+                      now,
+                      refuse,
+                    )
+                  : changeSettingsOverrides(
+                      state.raw.storage,
+                      store,
+                      changes,
+                      { environment, changes: wanted, author },
+                      now,
+                      refuse,
+                    );
+              },
             ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
           revertSettingsChange: ({ change }) =>
@@ -2359,37 +2288,21 @@ export const RegistryLive = Registry.make(
           setTriggerPaused: ({ id, paused }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
           removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),
-          agentCreateTrigger: ({ id, trigger, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<TriggerChanged>(
-                { author, input: { id, trigger, author }, reach: createReach(trigger) },
-                invalid,
-                () => triggerChanges.create(id, trigger, author, now),
-              ),
+          agentCreateTrigger: (args) =>
+            viaWrite<TriggerChanged>(args, createReach(args.trigger), invalid, (now) =>
+              triggerChanges.create(args.id, args.trigger, args.author, now),
             ),
-          agentUpdateTrigger: ({ id, patch, expected, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<TriggerChanged>(
-                { author, input: { id, patch, expected, author }, reach: triggerReach(id) },
-                invalid,
-                () => triggerChanges.update(id, patch, expected, author, now),
-              ),
+          agentUpdateTrigger: (args) =>
+            viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
+              triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
             ),
-          agentSetTriggerPaused: ({ id, paused, expected, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<TriggerChanged>(
-                { author, input: { id, paused, expected, author }, reach: triggerReach(id) },
-                invalid,
-                () => triggerChanges.setPaused(id, paused, expected, author, now),
-              ),
+          agentSetTriggerPaused: (args) =>
+            viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
+              triggerChanges.setPaused(args.id, args.paused, args.expected, args.author, now),
             ),
-          agentRemoveTrigger: ({ id, author }) =>
-            Effect.flatMap(Clock.currentTimeMillis, (now) =>
-              viaGuarded<TriggerChanged>(
-                { author, input: { id, author }, reach: triggerReach(id) },
-                invalid,
-                () => triggerChanges.remove(id, author, now),
-              ),
+          agentRemoveTrigger: (args) =>
+            viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
+              triggerChanges.remove(args.id, args.author, now),
             ),
           listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
           triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
@@ -2457,3 +2370,5 @@ export const RegistryLive = Registry.make(
     ),
   ),
 );
+
+export const RegistryLive = Registry.make(registryMethods);

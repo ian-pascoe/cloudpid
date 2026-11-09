@@ -5,10 +5,12 @@
 // (the reason included) holds one, written as is or in an encoding `Redactions` knows. Only a write whose author carries
 // `via` is checked; a Session's never is.
 //
-// The vault opens asynchronously and a write is synchronous (`transactionSync`), so the check runs first, in the same
-// call, just before the write's transaction. A stamp of the Secrets (how many, and when the newest was kept) is read
-// before the check and read again inside the transaction, which refuses the write when it differs ("try again"): a
-// Secret kept, replaced or deleted meanwhile means the check no longer says what the write would keep.
+// The vault opens asynchronously and a write is synchronous (`transactionSync`), so the Secrets are opened first, in the
+// same call, with a stamp of them (how many, and when the newest was kept). The check then runs inside the write's own
+// transaction, on the texts the write keeps, and reads the stamp again: it refuses the write when it differs ("try
+// again"), since a Secret kept, replaced or deleted meanwhile means the check no longer says what the write would keep.
+// An install or an update of Skills keeps what it fetched, so it opens the Secrets after the fetch and runs the check at
+// each save, on the files that save keeps.
 // Not covered: a value a Session holds from `secret_ask` and has not kept, and one resolved from 1Password.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- the texts are walked in a plain object, whatever its shape.
 import {
@@ -75,6 +77,16 @@ const textsOf = (value: KeptTexts, found: string[] = []): string[] => {
   return found;
 };
 
+/** The keys of a write's arguments that name what to change or what it is expected to be, and are not kept. */
+const NOT_KEPT: ReadonlySet<string> = new Set(["expected", "guard", "environment"]);
+
+/**
+ * What a write keeps, out of its arguments: all of them but those that only name what to change (`environment`) or what
+ * the caller expected it to be (`expected`, `guard`), which the write replaces or compares and does not keep.
+ */
+export const keptOf = (args: { readonly [key: string]: KeptTexts }): KeptTexts =>
+  Object.fromEntries(Object.entries(args).filter(([key]) => !NOT_KEPT.has(key)));
+
 /** How many Secrets are opened at once. */
 const OPEN_CONCURRENCY = 32;
 
@@ -85,7 +97,7 @@ export type ViaSecretsDeps = {
   readonly vault: Effect.Effect<KeptVault, SecretVaultError>;
 };
 
-/** One write to guard: its author, what it keeps (its whole input), and the Scopes' Secrets it reaches. */
+/** One write to guard: its author, what it keeps (`keptOf` its arguments), and the Scopes' Secrets it reaches. */
 export type ViaGuarded = {
   readonly author: AgentChangeAuthor;
   readonly input: KeptTexts;
@@ -93,46 +105,64 @@ export type ViaGuarded = {
 };
 
 /**
- * Open the Secrets `reach` names and say whether a text of `input` holds one: the refusal to answer, or undefined when it
- * holds none.
+ * What a check of the Secrets that are open says of what a write keeps: the refusal to answer, or undefined when it holds
+ * none and the Secrets are as they were when they were opened. Synchronous, so a write calls it inside its own
+ * transaction, where no Secret can be kept between the check and the write.
  */
-const holdsSecret = (
-  { store, vault }: ViaSecretsDeps,
-  { input, reach }: ViaGuarded,
-): Effect.Effect<string | undefined> =>
-  Effect.gen(function* () {
-    const sealed = store.sealedSecretsIn(reach);
+export type ViaCheck = (kept: KeptTexts) => string | undefined;
 
-    // A scope no Secret reaches never opens the vault, so it works whatever the master key.
-    if (!Arr.isReadonlyArrayNonEmpty(sealed)) return undefined;
+/**
+ * Open the Secrets `reach` names for a write by `author`, and answer the check to run on what it keeps, inside the
+ * write's transaction: it refuses a text that holds one, and refuses when the Secrets changed (kept, replaced or deleted)
+ * since they were opened ("try again"). Undefined for a write with no `via`, which is never checked.
+ */
+export const openViaCheck =
+  (deps: ViaSecretsDeps) =>
+  ({ author, reach }: Pick<ViaGuarded, "author" | "reach">): Effect.Effect<ViaCheck | undefined> =>
+    Effect.gen(function* () {
+      if (!isEndpointAuthor(author)) return undefined;
 
-    const keys = yield* Effect.option(vault);
+      const { store } = deps;
+      const stamp = store.keptSecretsStamp(reach);
+      const sealed = store.sealedSecretsIn(reach);
+      const unchanged = () => store.keptSecretsStamp(reach) === stamp;
 
-    if (Option.isNone(keys)) return SECRETS_UNCHECKABLE;
+      // A scope no Secret reaches never opens the vault, so it works whatever the master key.
+      if (!Arr.isReadonlyArrayNonEmpty(sealed)) {
+        return () => (unchanged() ? undefined : SECRETS_CHANGED);
+      }
 
-    const redactions = new Redactions();
+      const keys = yield* Effect.option(deps.vault);
 
-    // A Secret that does not open (sealed under another key) is held by no one, and is left out.
-    const opened = yield* Effect.forEach(
-      sealed,
-      (row) =>
-        Effect.option(
-          Effect.map(keys.value.open(binding(row.environment, row.name), row.sealed), (value) => ({
-            name: row.name,
-            value,
-          })),
-        ),
-      { concurrency: OPEN_CONCURRENCY },
-    );
+      if (Option.isNone(keys)) return () => SECRETS_UNCHECKABLE;
 
-    for (const found of opened) {
-      if (Option.isSome(found)) redactions.hold(found.value.name, found.value.value);
-    }
+      const redactions = new Redactions();
 
-    const texts = textsOf(input);
+      // A Secret that does not open (sealed under another key) is held by no one, and is left out.
+      const opened = yield* Effect.forEach(
+        sealed,
+        (row) =>
+          Effect.option(
+            Effect.map(
+              keys.value.open(binding(row.environment, row.name), row.sealed),
+              (value) => ({ name: row.name, value }),
+            ),
+          ),
+        { concurrency: OPEN_CONCURRENCY },
+      );
 
-    return redactions.redact(texts) === texts ? undefined : HOLDS_SECRET;
-  });
+      for (const found of opened) {
+        if (Option.isSome(found)) redactions.hold(found.value.name, found.value.value);
+      }
+
+      return (kept: KeptTexts) => {
+        if (!unchanged()) return SECRETS_CHANGED;
+
+        const texts = textsOf(kept);
+
+        return redactions.redact(texts) === texts ? undefined : HOLDS_SECRET;
+      };
+    });
 
 /**
  * Check `guarded` and run `write`, a synchronous write (it opens its own transaction) that answers as `refuse` does when
@@ -142,35 +172,13 @@ const holdsSecret = (
 export const guardedViaWrite =
   (deps: ViaSecretsDeps) =>
   <A>(guarded: ViaGuarded, refuse: (message: string) => A, write: () => A): Effect.Effect<A> =>
-    Effect.gen(function* () {
-      if (!isEndpointAuthor(guarded.author)) return write();
+    Effect.map(openViaCheck(deps)(guarded), (check) => {
+      if (check === undefined) return write();
 
-      const stamp = deps.store.keptSecretsStamp(guarded.reach);
-      const problem = yield* holdsSecret(deps, guarded);
+      // Inside a transaction, so no Secret is kept between the check and the write.
+      return deps.storage.transactionSync(() => {
+        const problem = check(guarded.input);
 
-      if (problem !== undefined) return refuse(problem);
-
-      // Inside a transaction, so no Secret is kept between the stamp read and the write.
-      return deps.storage.transactionSync(() =>
-        deps.store.keptSecretsStamp(guarded.reach) === stamp ? write() : refuse(SECRETS_CHANGED),
-      );
-    });
-
-/**
- * Check `guarded` before a write that is not synchronous (an install or an update of Skills, which fetches first and keeps
- * only what it fetched): the refusal to answer, or undefined when the write may go on. The Secrets' stamp is read again
- * when the check ends, but nothing holds it until the write.
- */
-export const checkedViaWrite =
-  (deps: ViaSecretsDeps) =>
-  (guarded: ViaGuarded): Effect.Effect<string | undefined> =>
-    Effect.gen(function* () {
-      if (!isEndpointAuthor(guarded.author)) return undefined;
-
-      const stamp = deps.store.keptSecretsStamp(guarded.reach);
-      const problem = yield* holdsSecret(deps, guarded);
-
-      if (problem !== undefined) return problem;
-
-      return deps.store.keptSecretsStamp(guarded.reach) === stamp ? undefined : SECRETS_CHANGED;
+        return problem === undefined ? write() : refuse(problem);
+      });
     });

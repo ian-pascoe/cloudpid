@@ -41,6 +41,7 @@ import {
 } from "./agent-changes.ts";
 import { type SecretScope, scopeOf } from "./secret-changes.ts";
 import type { EnvironmentRecord, RegistryStorage } from "./store.ts";
+import type { ViaCheck } from "./via-secrets.ts";
 
 /** A Skill's files: each one's path in the Skill's folder (`SKILL.md`, `references/x.md`), with its text. */
 export type SkillFiles = Readonly<Record<string, string>>;
@@ -776,6 +777,11 @@ export type SkillChangeContext = {
   readonly skills: Skills;
   readonly changes: AgentChanges;
   readonly now: number;
+  /**
+   * The check an endpoint's install or update opens after it fetched (`via-secrets.ts`): `saveSkillAs` runs it, inside
+   * its transaction, on the folder, files, source and author it keeps, and answers `rejected` when it refuses them.
+   */
+  readonly check?: ViaCheck | undefined;
 };
 
 /** A Skill to keep: its folder, its files (hashed beforehand), and where it was installed from, if it was. */
@@ -929,6 +935,16 @@ export const saveSkillAs = (
 ): SkillSave =>
   context.storage.transactionSync((): SkillSave => {
     const { author, environment, expected } = input;
+
+    const refused = context.check?.({
+      folder: input.folder,
+      files: input.files,
+      source: input.source,
+      author,
+    });
+
+    if (refused !== undefined) return { status: "rejected", message: refused };
+
     const plan = planSave(context, input);
 
     if (plan.status === "rejected" || plan.status === "missing") return plan;

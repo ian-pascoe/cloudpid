@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- node:crypto makes the test GitHub App's key; this config runs in Node.
 import { generateKeyPairSync } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import config, { testTimeout } from "@cloudpid/config/vitest";
 import { WEB_NOT_FOUND_HANDLING } from "./src/assets-config.ts";
@@ -52,6 +53,14 @@ export default defineConfig({
         defineProject({ test: { name: "node", exclude: [...configDefaults.exclude, workerd] } }),
       ),
       defineProject({
+        // The real Registry runs in a test Durable Object (`registry/registry.fixture.ts`), which needs only a part of Alchemy.
+        resolve: {
+          alias: {
+            "@alchemy.run/cloudflare": fileURLToPath(
+              new URL("./src/registry/alchemy.fixture.ts", import.meta.url).href,
+            ),
+          },
+        },
         plugins: [
           cloudflareTest({
             main: "./src/workerd.fixture.ts",
@@ -62,6 +71,7 @@ export default defineConfig({
                 SESSIONS: { className: "TestSession", useSQLite: true },
                 SUBAGENT_SESSIONS: { className: "TestSubagentSession", useSQLite: true },
                 REGISTRIES: { className: "TestRegistry", useSQLite: true },
+                REAL_REGISTRIES: { className: "RealRegistry", useSQLite: true },
                 MCP_HOSTS: { className: "TestMcpHost", useSQLite: true },
                 TRIGGERS: { className: "TestTrigger", useSQLite: true },
               },

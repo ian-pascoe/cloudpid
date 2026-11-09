@@ -34,6 +34,7 @@ import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { type EnvironmentSettingsState, patchEnvironmentSettings } from "./environment-settings.ts";
 import type { EnvironmentRepo } from "@cloudpid/protocol";
 import { buildKey, buildWanted } from "../workspace/build-record.ts";
@@ -402,7 +403,9 @@ type NewAgentChange = Omit<
  * is told it: without the client id.
  */
 export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
-  const { approved, beforeInherited, afterInherited, via, request: _request, ...made } = change;
+  const { approved, beforeInherited, afterInherited, via, ...rest } = change;
+  // The claim is not part of the change.
+  const made = Struct.omit(rest, ["request"]);
 
   const recorded: AgentChange = { ...made, id, revertedBy: null };
 
