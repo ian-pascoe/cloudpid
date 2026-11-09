@@ -16,7 +16,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ApprovalAsk, Approvals, type ApprovalsService, makeApprovals } from "./approvals.ts";
 import {
   AgentChangeLog,
@@ -40,6 +40,16 @@ const HELD = "sk-live-0123456789abcdef";
 
 /** Monday 2026-11-09 08:00 in Chicago (14:00 UTC): the weekly Trigger's next Fire is an hour away. */
 const NOW = Date.parse("2026-11-09T14:00:00Z");
+
+// The tools read the time from the Clock, which reads `Date`: held at `NOW`, the next Fires they give stay the same.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const details = (id: string, name: string): EnvironmentDetails => ({
   id,
