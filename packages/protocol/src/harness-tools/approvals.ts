@@ -371,13 +371,27 @@ export const MCP_WIDENING_TOOLS = [
 export type McpWideningToolName = (typeof MCP_WIDENING_TOOLS)[number];
 
 /**
+ * The Skill tools whose change asks the owner at Global (`id: "*"`) and is made at once at an Environment (S3b-3). They keep
+ * their declarations in `./environment-skills.ts`. An install and an update are multi-write: each Skill is kept in a
+ * transaction of its own, so an approved one cut midway is applied again under the same attempt (#685 L18).
+ */
+export const GLOBAL_SKILL_TOOLS = [
+  "environment_skill_install",
+  "environment_skill_update",
+  "environment_skill_remove",
+] as const;
+
+export type GlobalSkillToolName = (typeof GLOBAL_SKILL_TOOLS)[number];
+
+/**
  * Every tool whose change waits for the owner's Approval on the endpoint: the asking tools, the two resets, whose Limit's
  * reset asks (`settings_reset` of a Limit or of an MCP field that widens, `environment_setting_reset` of the size limit),
- * and the MCP tools that ask when they widen.
+ * the MCP tools that ask when they widen, and the Skill tools at Global.
  */
 export type ApprovalToolName =
   | ApprovalAskToolName
   | McpWideningToolName
+  | GlobalSkillToolName
   | "settings_reset"
   | "environment_setting_reset";
 

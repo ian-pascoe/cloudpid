@@ -75,8 +75,13 @@ type ArgsOf<Name extends keyof typeof HARNESS_TOOLS> =
 const refusal = (message: string) => EnvironmentsError.make({ message, code: INVALID_ARGUMENT });
 
 /** A Skill as a line of text: its name, and its folder in the repo when it has one. */
-const skillLine = ({ name, path }: { readonly name: string; readonly path: string }): string =>
-  path === "" ? name : `${name} (${path})`;
+export const skillLine = ({
+  name,
+  path,
+}: {
+  readonly name: string;
+  readonly path: string;
+}): string => (path === "" ? name : `${name} (${path})`);
 
 /** The Agent change a call that recorded some tells the Run's Notification of: the first; none when none was recorded. */
 const loggedOf = (
@@ -90,7 +95,7 @@ const loggedOf = (
 };
 
 /** The Skills' names as a sentence part. */
-const namesOf = (skills: ReadonlyArray<{ readonly name: string }>): string =>
+export const namesOf = (skills: ReadonlyArray<{ readonly name: string }>): string =>
   Arr.join(
     Arr.map(skills, ({ name }) => name),
     ", ",
@@ -386,19 +391,23 @@ export type SkillToolName = keyof SkillCores;
 
 // ─── The endpoint's values ───────────────────────────────────────────────────
 
-/** The value of `environment_skill_install`: what the Registry answered for each Skill, or the Skills it listed. */
-const installValue = ({
+/**
+ * The value of `environment_skill_install`: what the Registry answered for each Skill, or the Skills it listed. The
+ * approved install at Global (`./environment-skill-approvals.ts`) gives the same value.
+ */
+export const installValue = ({
   scope,
   source,
   results,
   listed,
 }: {
   readonly scope: { readonly id: string; readonly name: string };
+  /** What was read; null when nothing was (a declined request). */
   readonly source: {
     readonly repo: string;
     readonly ref: string | null;
     readonly commit: string;
-  };
+  } | null;
   readonly results: ReadonlyArray<InstalledSkill>;
   readonly listed: ReadonlyArray<{
     readonly name: string;
@@ -451,8 +460,8 @@ const installValue = ({
   );
 };
 
-/** The value of `environment_skill_update`. */
-const updateValue = ({
+/** The value of `environment_skill_update`, for an Environment's own Skills and an approved update at Global alike. */
+export const updateValue = ({
   scope,
   results,
   nothingMarked,

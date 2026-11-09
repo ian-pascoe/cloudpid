@@ -737,8 +737,9 @@ describe("the lifecycle, Skill and reset tools", () => {
       }),
     ));
 
-  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, so the
-  // ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's change answer and no probe.
+  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, and
+  // Global keeps grill-me, so the ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's
+  // change answer and no probe.
   it.each([
     [
       "settings_reset of a Limit",
@@ -753,12 +754,25 @@ describe("the lifecycle, Skill and reset tools", () => {
       { changes: [], changes_truncated: false, global: null },
     ],
     ["settings_mcp_enable", "settings_mcp_enable", { scope: "default", name: "docs", reason }, {}],
+    // S3b-3: a Skill change at Global asks the owner; its answer has the keys of the tool's change answer.
+    [
+      "a Skill install at Global",
+      "environment_skill_install",
+      { id: "*", source: "o/skills", skills: ["grill-me"], reason },
+      { changes: [], changed: false, installed: [], refused: [], listed: [], source: null },
+    ],
+    [
+      "a Skill update at Global",
+      "environment_skill_update",
+      { id: "*", reason },
+      { changes: [], changed: false, updated: [], refused: [], nothing_marked: false },
+    ],
   ] as const)(
     "hands %s to the ask for the owner's Approval, writing nothing",
     (_, tool, input, keys) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const { call, registryCalls, ledger } = changing();
+          const { call, registryCalls, ledger } = changing({ globalSkills: ["grill-me"] });
 
           const result = yield* call(tool, input);
 
@@ -772,14 +786,56 @@ describe("the lifecycle, Skill and reset tools", () => {
       ),
   );
 
+  // S3b-3: a Skill change at Global that needs the owner answers `pending`, its value the tool's endpoint output (read with
+  // its schema, so every key `asChangeAnswer` adds is there), with no change made. Global keeps grill-me, so an install of
+  // tdd adds a Skill, and an update or a removal of grill-me changes one.
   it.each([
     [
-      "a Skill install at Global",
       "environment_skill_install",
-      { id: "*", source: "o/skills", reason },
+      { id: "*", source: "o/skills", skills: ["tdd"], reason },
+      { installed: [], refused: [], listed: [], source: null },
     ],
-    ["a Skill update at Global", "environment_skill_update", { id: "*", reason }],
-    ["a Skill removal at Global", "environment_skill_remove", { id: "*", name: "a", reason }],
+    ["environment_skill_update", { id: "*", names: ["grill-me"], reason }, { updated: [] }],
+    [
+      "environment_skill_remove",
+      { id: "*", name: "grill-me", reason },
+      { skill: "grill-me", global_served: false },
+    ],
+  ] as const)(
+    "answers %s at Global pending, with its change's keys and no change",
+    (tool, input, own) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger } = changing({ globalSkills: ["grill-me"] });
+
+          const value = valueOf(HARNESS_TOOLS[tool].endpoint.output, yield* call(tool, input));
+
+          expect(value).toMatchObject({
+            status: "pending",
+            approval_id: "approval-1",
+            scope: { id: "*", name: "Global" },
+            changes: [],
+            changed: false,
+            ...own,
+          });
+          expect(ledger.changes).toEqual([]);
+        }),
+      ),
+  );
+
+  it("refuses the removal at Global of a Skill Global does not keep as not_found, writing nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing();
+
+        const result = yield* call("environment_skill_remove", { id: "*", name: "a", reason });
+
+        expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
+  it.each([
     [
       "a Test Build of proposed changes",
       "environment_rebuild",
