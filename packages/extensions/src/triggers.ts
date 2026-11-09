@@ -1,16 +1,20 @@
 // The `trigger_*` tools (`docs/architecture/triggers.md` → Agent tools and Approval, ADR-0019, ADR-0047): the agent
-// lists and reads the Triggers, makes an Environment trigger or a Workspace trigger for its own Workspace, changes its
-// message, Schedule or options, and pauses, resumes or removes one. Making a Trigger, changing what it sends or when (`trigger_create`, `trigger_message_set`,
-// `trigger_schedule_set`, `trigger_options_set`) and `trigger_resume` wait for the owner's Approval (`withApproval`),
-// since each makes cloudpid start Sessions unattended; `trigger_pause` and `trigger_remove` only narrow, so they apply at
-// once. A Trigger's kind and Environment never change. There is no fire-now tool: the agent can't start Sessions at
-// will. Each tool refuses without asking what it would refuse anyway (a Schedule without a zone, a 6-field one, `L`,
-// `W` or `#`; a reason, name or message holding a Secret; a message longer than the card shows), then makes the change
-// through the Session's `TriggerAccess`, which records it as an Agent change of the field `triggers.<id>` under the
-// Trigger's Environment and wakes the Trigger's object. An approved change is made only while the Trigger is still as
-// the owner saw it; `trigger_create` draws its Trigger's id before asking and keeps it in the request, so a rerun after
-// an eviction makes no second one. The tools are the root conversation's only (`trigger_` is in
-// `PARENT_ONLY_TOOL_PREFIXES`) and deferred, and give programs their outcome (`./trigger-outputs.ts`).
+// lists and reads the Triggers, makes an Environment trigger or a Workspace trigger for its own Workspace (on a
+// Schedule, or on a webhook with a `match`), changes its message, Schedule, `match` or options, and pauses, resumes or
+// removes one. Making a Trigger, changing what it sends, when or which deliveries (`trigger_create`,
+// `trigger_message_set`, `trigger_schedule_set`, `trigger_match_set`, `trigger_options_set`) and `trigger_resume` wait
+// for the owner's Approval (`withApproval`), since each makes cloudpid start Sessions unattended; `trigger_pause` and
+// `trigger_remove` only narrow, so they apply at once. A Trigger's kind, Environment and source type never change.
+// There is no fire-now tool: the agent can't start Sessions at will. A webhook Trigger's URL and Signing secret are the
+// owner's alone: no card, result or output holds them, and the tools say where the owner finds them. Each tool refuses
+// without asking what it would refuse anyway (a Schedule without a zone, a 6-field one, `L`, `W` or `#`; neither or both
+// of a schedule and a webhook; a match that is no path with values; a reason, name, message or match holding a Secret;
+// a message longer than the card shows), then makes the change through the Session's `TriggerAccess`, which records it
+// as an Agent change of the field `triggers.<id>` under the Trigger's Environment and wakes the Trigger's object. An
+// approved change is made only while the Trigger is still as the owner saw it; `trigger_create` draws its Trigger's id
+// before asking and keeps it in the request, so a rerun after an eviction makes no second one. The tools are the root
+// conversation's only (`trigger_` is in `PARENT_ONLY_TOOL_PREFIXES`) and deferred, and give programs their outcome
+// (`./trigger-outputs.ts`).
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off
 import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
