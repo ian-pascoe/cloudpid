@@ -181,11 +181,11 @@ const decodeSealed = Schema.decodeUnknownOption(Schema.fromJsonString(SealedValu
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
 /** A kept payload (without its body), or undefined when there is none or it no longer reads. */
-const payloadOf = (payload: string | null): FirePayload | undefined =>
+const firePayloadOf = (payload: string | null): FirePayload | undefined =>
   payload === null ? undefined : Option.getOrUndefined(decodePayload(payload));
 
 /** A kept body's bytes, or undefined for none. */
-const bodyOf = (body: ArrayBuffer | null): Uint8Array<ArrayBuffer> | undefined =>
+const bytesOf = (body: ArrayBuffer | null): Uint8Array<ArrayBuffer> | undefined =>
   body === null ? undefined : new Uint8Array(body);
 
 /** `payload` as its row keeps it: the JSON without a body (a `FirePayload` that has one is stored without it). */
@@ -204,13 +204,13 @@ export const dayOf = (at: number): string => new Date(at).toISOString().slice(0,
 
 /** The delivery a pending row keeps, or undefined for a Fire that has none (or one that no longer reads). */
 const deliveryOf = (row: PendingRow): KeptDelivery | undefined => {
-  const payload = payloadOf(row.payload);
+  const payload = firePayloadOf(row.payload);
 
   if (payload === undefined) return undefined;
 
   return {
     payload,
-    body: bodyOf(row.body),
+    body: bytesOf(row.body),
     revision: row.revision ?? undefined,
     facts: row.facts === null ? undefined : Option.getOrUndefined(decodeJson(row.facts)),
   };
@@ -468,9 +468,9 @@ export const openTriggerStore = (storage: MigrationStorage) => {
         )
         .toArray()[0];
 
-      const payload = payloadOf(row?.last_payload ?? null);
+      const payload = firePayloadOf(row?.last_payload ?? null);
 
-      return payload === undefined ? undefined : { payload, body: bodyOf(row?.last_body ?? null) };
+      return payload === undefined ? undefined : { payload, body: bytesOf(row?.last_body ?? null) };
     },
 
     /** The fire log, newest first, at most `limit` records. */

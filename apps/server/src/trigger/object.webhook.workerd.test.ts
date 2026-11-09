@@ -791,8 +791,11 @@ describe("rotation", () => {
     });
   });
 
-  it("answers none for an object with no Trigger, and makes no storage", async () => {
+  it("answers none for an object whose Registry has no such Trigger, and makes no storage", async () => {
     const trigger = env.TRIGGERS.getByName(`trigger:ghost${String(counter++)}`);
+
+    await trigger.use(env.REGISTRIES.newUniqueId().toString());
+    await trigger.setNow(start);
 
     expect(await trigger.rotate("url")).toEqual({ status: "none" });
     expect(await trigger.reveal()).toEqual({ status: "none" });
@@ -953,6 +956,76 @@ describe("a delivery kept while the Trigger's match changes", () => {
   });
 });
 
+describe("a Workspace Trigger's delivery that waits while its match changes", () => {
+  it("is recorded failed with the Fires merged into it, not dropped without a record", async () => {
+    const id = `w${String(counter++)}`;
+    const registry = env.REGISTRIES.get(env.REGISTRIES.newUniqueId());
+
+    await registry.createSession(
+      {
+        id: "s-0",
+        title: null,
+        workspace: {
+          kind: "new",
+          id: "0f0f0f0f",
+          environment: DEFAULT_ENVIRONMENT,
+          branch: null,
+          base: null,
+        },
+      },
+      start - DAY,
+    );
+    await registry.setSessionStatus("s-0", "running", start - DAY / 2);
+    expect(
+      await registry.createTrigger(
+        id,
+        {
+          kind: "workspace",
+          workspace: "0f0f0f0f",
+          name: "On events",
+          message: "Look at the event.",
+          source: { type: "webhook", format: "github", match: { action: ["opened"] } },
+        },
+        start,
+      ),
+    ).toMatchObject({ status: "ok" });
+
+    const trigger = env.TRIGGERS.getByName(`trigger:${id}`);
+
+    await trigger.use(registry.id.toString());
+    await trigger.setNow(start);
+    await trigger.sync();
+
+    const revealed = await trigger.reveal();
+
+    if (revealed.status !== "ok") throw new Error("A webhook Trigger has no secrets");
+
+    const { token, secret } = revealed.secrets;
+
+    // A waits for the busy Workspace; B and C are merged into it.
+    for (const delivery of ["a", "b", "c"]) {
+      await trigger.deliver(await github(token, secret, issue("opened"), { delivery }));
+      await runDurableObjectAlarm(trigger);
+    }
+
+    expect(await trigger.state()).toMatchObject({ pending: 1, waiting: { merged: 2 } });
+
+    // The owner narrowed the match while A waited.
+    await registry.updateTrigger(id, { match: { action: ["closed"] } }, start + 500);
+    await trigger.setNow(start + 60_000);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toEqual([]);
+    expect(await trigger.state()).toMatchObject({ pending: 0 });
+    expect((await trigger.fireLog()).find((fire) => fire.key === `${id}:a`)).toMatchObject({
+      outcome: { type: "failed", reason: "it no longer matches the trigger's filter, 2 merged" },
+    });
+    expect((await trigger.deliveries()).counts).toEqual([
+      { day: dayOf(start), outcome: "filtered", n: 1 },
+    ]);
+  });
+});
+
 describe("a Trigger whose kept secrets no longer read", () => {
   const corrupt = (trigger: DurableObjectStub<TestTrigger>) =>
     runInDurableObject(trigger, (_instance, state) => {
@@ -1010,6 +1083,31 @@ describe("a Trigger whose kept secrets no longer read", () => {
     expect(
       await trigger.deliver(await github(rotated.secrets.token, rotated.secrets.secret, issue())),
     ).toMatchObject({ status: 200, outcome: "accepted" });
+  });
+});
+
+describe("an object never synced", () => {
+  /** A webhook Trigger in the Registry, and an object that has never been synced to it. */
+  const unsynced = async () => {
+    const id = `w${String(counter++)}`;
+    const registry = env.REGISTRIES.get(env.REGISTRIES.newUniqueId());
+
+    await registry.createTrigger(id, webhook("github"), start);
+
+    const trigger = env.TRIGGERS.getByName(`trigger:${id}`);
+
+    await trigger.use(registry.id.toString());
+    await trigger.setNow(start);
+
+    return trigger;
+  };
+
+  it("reads its Trigger's definition first when asked to reveal, rather than answering none", async () => {
+    expect(await (await unsynced()).reveal()).toMatchObject({ status: "ok" });
+  });
+
+  it("reads its Trigger's definition first when asked to rotate, rather than answering none", async () => {
+    expect(await (await unsynced()).rotate("url")).toMatchObject({ status: "ok" });
   });
 });
 

@@ -264,6 +264,10 @@ const sameSchedule = (a: TriggerDefinition | undefined, b: TriggerDefinition): b
 
 const decodeDefinition = Schema.decodeUnknownOption(TriggerDefinition);
 
+/** A delivery's body as the checks read it: its bytes as UTF-8 text, parsed as its content type says (none when it doesn't parse). */
+const readBody = (contentType: string | undefined, bytes: Uint8Array): Schema.Json | undefined =>
+  bodyOf(contentKind(contentType) ?? "text", decoder.decode(bytes));
+
 const encoder = new TextEncoder();
 
 const decoder = new TextDecoder();
@@ -436,12 +440,23 @@ export const triggerHandlers = (options: {
           ),
         );
 
+  /** An object never synced (or wiped) reads its definition first, as a manual Fire does, so it can answer as the Trigger's. */
+  const known = Effect.gen(function* () {
+    if (existing() !== undefined) return;
+
+    const definition = yield* ports.definition(id);
+
+    if (definition !== null) yield* adopt(definition, yield* now);
+  });
+
   /**
    * The token and Signing secret as the owner reads them. A webhook Trigger that holds none (its creation did not
    * finish) makes them first; one whose kept secrets no longer read answers `unreadable`, and keeps them.
    */
   const revealed = (): Effect.Effect<HookAnswer, TriggerUnreachable> =>
     Effect.gen(function* () {
+      yield* known;
+
       const webhook = webhookOf(existing()?.definition());
 
       if (webhook === undefined) return { status: "none" } as const;
@@ -576,29 +591,40 @@ export const triggerHandlers = (options: {
 
     if (webhook === undefined) return true;
 
-    const kind = contentKind(delivery.payload.contentType) ?? "text";
-
     const body =
-      delivery.body === undefined ? delivery.facts : bodyOf(kind, decoder.decode(delivery.body));
+      delivery.body === undefined
+        ? delivery.facts
+        : readBody(delivery.payload.contentType, delivery.body);
 
     return matchesDelivery(webhook.match, { event: delivery.payload.event, body });
   };
 
   /**
    * A pending delivery that no longer passes the `match` of the definition it was admitted against (changed since it was
-   * accepted): counted `filtered` for the day and dropped, as if it had been filtered when it arrived.
+   * accepted): counted `filtered` for the day and dropped, as if it had been filtered when it arrived. One that waits for
+   * its Workspace with later Fires merged into it is recorded `failed` instead, with its merged count (as `settle` does
+   * for a waiting Fire lost for good), so those Fires are not lost without a record.
    */
   const unmatched = (pending: PendingFire, at: number) =>
-    Effect.sync(() => {
-      store().drop(pending.key);
+    Effect.gen(function* () {
       store().count("filtered", at);
+
+      if ((pending.waiting?.merged ?? 0) > 0) {
+        yield* settle(
+          pending,
+          { type: "failed", reason: "it no longer matches the trigger's filter" },
+          at,
+        );
+      } else {
+        store().drop(pending.key);
+        yield* Effect.annotateCurrentSpan("trigger.outcome", "filtered");
+      }
     }).pipe(
       Effect.andThen(
         Effect.logInfo("A pending delivery no longer matches its Trigger").pipe(
           Effect.annotateLogs({ "trigger.id": id, "trigger.fire": pending.key }),
         ),
       ),
-      Effect.andThen(Effect.annotateCurrentSpan("trigger.outcome", "filtered")),
     );
 
   /** The Session's `fire` for `pending` of `definition` at `at`. */
@@ -1015,8 +1041,7 @@ export const triggerHandlers = (options: {
 
         if (kind === undefined) return refused(415, "unsupported");
 
-        const text = decoder.decode(body);
-        const parsed = bodyOf(kind, text);
+        const parsed = readBody(headers.contentType, body);
         const event = eventOf(webhook.format, headers, parsed);
         const login = senderLogin(parsed);
 
@@ -1253,6 +1278,8 @@ export const triggerHandlers = (options: {
 
     rotate: (what) =>
       Effect.gen(function* () {
+        yield* known;
+
         if (webhookOf(existing()?.definition()) === undefined) return { status: "none" } as const;
 
         yield* renew({ token: what === "url", secret: what === "secret" });
