@@ -50,14 +50,6 @@ export const WRITE_IDEMPOTENT: HarnessAnnotations = {
   openWorldHint: false,
 };
 
-/** W: a write that a repeat does not leave as it is (an ask for the owner's Approval: a repeat may ask again). */
-export const WRITE: HarnessAnnotations = {
-  readOnlyHint: false,
-  idempotentHint: false,
-  destructiveHint: false,
-  openWorldHint: false,
-};
-
 /** D·idem: a write that narrows or takes something away (an unset), which a repeat leaves as it is. */
 export const DESTRUCTIVE_IDEMPOTENT: HarnessAnnotations = {
   readOnlyHint: false,
@@ -67,8 +59,8 @@ export const DESTRUCTIVE_IDEMPOTENT: HarnessAnnotations = {
 };
 
 /**
- * W: a write that a repeat may change again (a reset, a move among keys, a new Environment, a Build asked for), reaching
- * nothing outside cloudpid.
+ * W: a write that a repeat may change again (a reset, a move among keys, a new Environment, a Build asked for, an ask
+ * for the owner's Approval, which a repeat may ask again), reaching nothing outside cloudpid.
  */
 export const WRITE: HarnessAnnotations = {
   readOnlyHint: false,

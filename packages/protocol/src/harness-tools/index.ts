@@ -12,6 +12,7 @@ import * as Record from "effect/Record";
 import {
   APPROVAL_ASK_TOOLS,
   APPROVAL_FOLLOW_TOOLS,
+  type ApprovalAskToolName,
   type ApprovalFollowToolName,
 } from "./approvals.ts";
 import { environmentGet, environmentList } from "./environment.ts";
@@ -120,6 +121,12 @@ export const HARNESS_TOOLS = {
 } as const;
 
 export type HarnessToolName = keyof typeof HARNESS_TOOLS;
+
+/** The tools with a `session` part: all but the endpoint's own declarations of the asking and following tools. */
+export type SessionHarnessToolName = Exclude<
+  HarnessToolName,
+  ApprovalAskToolName | ApprovalFollowToolName
+>;
 
 /** The tools the `harness` operation serves: all but `approval_wait` and `approval_withdraw`, which have their own. */
 export type DispatchedToolName = Exclude<HarnessToolName, ApprovalFollowToolName>;

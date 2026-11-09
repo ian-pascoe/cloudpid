@@ -76,7 +76,7 @@ import type { ApprovalsRegistry, EndpointWrites } from "./services.ts";
 /** What a core's refusal carries: the message the caller reads, and the code that maps, if any. */
 type CoreError = {
   readonly message: string;
-  readonly code?: "not_found" | "invalid_argument" | "unavailable";
+  readonly code?: "not_found" | "invalid_argument" | "unsupported" | "unavailable";
 };
 
 /** An Agent change a claim recorded, as the Registry's lookup gives it (`ChangeRequest["changes"]`). */
