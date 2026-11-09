@@ -81,6 +81,9 @@ const TITLES: Readonly<Record<HarnessToolName, string>> = {
   settings_mcp_exposure_set: "Set an MCP server's exposure",
   settings_mcp_tool_exposure_set: "Set an MCP server's tool exposure",
   settings_mcp_remove: "Remove an MCP server",
+  settings_mcp_add: "Ask to add an MCP server",
+  settings_mcp_update: "Ask to change an MCP server's definition",
+  settings_mcp_enable: "Ask to switch an MCP server on",
   settings_spend_limit_set: "Ask to set the spend limit",
   settings_subagent_depth_set: "Ask to set the subagent depth",
   settings_subagent_workspaces_set: "Ask to set the Subagent Workspace limit",
@@ -188,6 +191,13 @@ const afterAsk = nextOf(
       : undefined,
 );
 
+/**
+ * What follows a change to an MCP server that asks only when it widens: `approval_wait` when the owner was asked, else
+ * `settings_mcp_list`, as for a change that was made.
+ */
+const afterServersAsk = (structured: Wire, enabled: Enabled): string | undefined =>
+  afterAsk(structured, enabled) ?? afterServersChange(structured, enabled);
+
 /** What follows a reset: `approval_wait` for a Limit's, which waits for the owner, else `settings_get`. */
 const afterReset = (structured: Wire, enabled: Enabled): string | undefined =>
   afterAsk(structured, enabled) ?? afterSettingsChange(structured, enabled);
@@ -209,9 +219,12 @@ const NEXTS: Readonly<
   settings_reset: afterReset,
   settings_mcp_reload: afterServersChange,
   settings_mcp_disable: afterServersChange,
-  settings_mcp_exposure_set: afterServersChange,
-  settings_mcp_tool_exposure_set: afterServersChange,
-  settings_mcp_remove: afterServersChange,
+  settings_mcp_exposure_set: afterServersAsk,
+  settings_mcp_tool_exposure_set: afterServersAsk,
+  settings_mcp_remove: afterServersAsk,
+  settings_mcp_add: afterAsk,
+  settings_mcp_update: afterAsk,
+  settings_mcp_enable: afterAsk,
   settings_spend_limit_set: afterAsk,
   settings_subagent_depth_set: afterAsk,
   settings_subagent_workspaces_set: afterAsk,
