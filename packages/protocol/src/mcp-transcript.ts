@@ -57,8 +57,13 @@ export const middleCut = (text: string, max: number): string => {
   return `${text.slice(0, head)}${marker(text.length - head - tail)}${tail === 0 ? "" : text.slice(-tail)}`;
 };
 
-/** GitHub token shapes (`ghs_`, `ghp_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`), which no Secret list need name. */
-const GITHUB_TOKEN = /\b(?:gh[psour]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})/g;
+/**
+ * GitHub token shapes (`ghs_`, `ghp_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`), which no Secret list need name. A
+ * stateless installation token (`ghs_<app id>_<JWT>`, about 520 characters, every new one from 2026-10-02) holds dots,
+ * dashes and underscores and varies in length, so `ghs_` takes GitHub's pattern for both formats, with no upper bound.
+ */
+const GITHUB_TOKEN =
+  /\b(?:ghs_[A-Za-z0-9._-]{20,}|gh[pour]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})/g;
 
 /** `text` with GitHub tokens replaced by `[REDACTED github token]` (`docs/architecture/mcp-endpoint.md` → Redaction). */
 export const redactGithubTokens = (text: string): string =>
