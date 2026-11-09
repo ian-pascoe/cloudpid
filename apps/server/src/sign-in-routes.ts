@@ -13,6 +13,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { flow } from "effect/Function";
 import { type AccessGuard, guardAccess } from "./access.ts";
+import type { HooksRouter } from "./hooks-serve.ts";
 import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 
 /** The start's path: behind Access, so it is no sign-in route here and goes on to the guard. */
@@ -160,10 +161,14 @@ export const serveSignInPaths =
     });
 
 /**
- * What the main Worker wraps its routes in: the sign-in paths first, then the Access guard (`guardAccess`) for every
+ * What the main Worker wraps its routes in: the sign-in paths first, then the Trigger URLs (`hooks`, when the Worker
+ * serves them: a request under `/hooks` otherwise goes to the guard), then the Access guard (`guardAccess`) for every
  * other request. The order is the point: a form of a public path must meet the router's 404, never the guard's answer
  * and never a route behind it. `worker-init.ts` builds its `fetch` with this, and the test of the composition is what keeps
  * the two from being swapped.
  */
-export const guardedRoutes = (guard: AccessGuard, handlers: SignInHandlers) =>
-  flow(guardAccess(guard), serveSignInPaths(handlers));
+export const guardedRoutes = (
+  guard: AccessGuard,
+  handlers: SignInHandlers,
+  hooks: HooksRouter = (guarded) => guarded,
+) => flow(guardAccess(guard), hooks, serveSignInPaths(handlers));

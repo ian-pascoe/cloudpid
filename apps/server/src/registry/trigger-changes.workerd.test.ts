@@ -311,8 +311,53 @@ describe("the owner's revert of a Trigger change", () => {
 
     expect(
       await registry.revertAgentChange(DEFAULT_ENVIRONMENT, removal.change.id, 3_000),
-    ).toMatchObject({ status: "reverted", change: { after: { source, whenBusy: "start" } } });
+    ).toMatchObject({
+      status: "reverted",
+      change: {
+        after: { source, whenBusy: "start" },
+        // Its object was wiped with it, so it has no secrets any more: it makes new ones, and the change says so.
+        reason: `Reverted change ${removal.change.id} (trigger_remove). It has a new Trigger URL and Signing secret: paste them again where the old ones were used.`,
+      },
+    });
     expect(await registry.triggerDefinition("t1")).toMatchObject({ source, revision: 2 });
+  });
+
+  it("does not say so of a Schedule's Trigger brought back, or of a webhook's change put back", async () => {
+    const { registry } = await made();
+    const removal = await registry.agentRemoveTrigger("t1", author("trigger_remove"), 2_000);
+
+    if (removal.status !== "changed") throw new Error("not removed");
+
+    expect(
+      await registry.revertAgentChange(DEFAULT_ENVIRONMENT, removal.change.id, 3_000),
+    ).toMatchObject({
+      change: { reason: `Reverted change ${removal.change.id} (trigger_remove)` },
+    });
+
+    const hook = fresh();
+
+    await hook.agentCreateTrigger(
+      "t2",
+      { ...weekly, source: { type: "webhook", format: "github" } },
+      author("trigger_create", true),
+      1_000,
+    );
+
+    const changed = await hook.agentUpdateTrigger(
+      "t2",
+      { message: "Another." },
+      { ...weeklyValue, source: { type: "webhook", format: "github" }, whenBusy: "start" },
+      author("trigger_message_set", true),
+      2_000,
+    );
+
+    if (changed.status !== "changed") throw new Error("not changed");
+
+    expect(
+      await hook.revertAgentChange(DEFAULT_ENVIRONMENT, changed.change.id, 3_000),
+    ).toMatchObject({
+      change: { reason: `Reverted change ${changed.change.id} (trigger_message_set)` },
+    });
   });
 
   it("removes a Trigger the agent made", async () => {

@@ -34,6 +34,7 @@ import {
   ownBranchProblem,
   SessionNotFound,
   type SettingsOverridesState,
+  type TriggerHook,
   forkTitle,
   workspaceDirectory,
 } from "@cloudpid/protocol";
@@ -60,6 +61,8 @@ import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
 import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
+import { hookPath } from "../hooks-path.ts";
+import type { HookAnswer, TriggerUnreachable } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
 import type { TriggerWrite } from "./triggers.ts";
 import type { DraftBranches } from "./draft-branches.ts";
@@ -75,6 +78,10 @@ import {
   noWorkspace,
   repoTaken,
   triggerChangedSince,
+  triggerNoDelivery,
+  triggerNoWebhook,
+  triggerRevertNotWiped,
+  triggerSecretsUnreadable,
   triggerPaused,
   triggerRemoved,
   triggerUnreachable,
@@ -151,6 +158,11 @@ export type RegistryRpcObjects<R = never> = {
    * Environment, and asked for their last Fire, fire log and Fire now.
    */
   readonly triggers: TriggerObjects;
+  /**
+   * The origin a live stage's Trigger URLs start with (`CLOUDPID_APP_ORIGIN`), absent under `alchemy dev`, where the page's
+   * own origin is the one: what `revealTrigger` and `rotateTrigger` answer before the path.
+   */
+  readonly appOrigin?: string | undefined;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
@@ -196,6 +208,32 @@ export const upkeepAfterStart = (
   environment: string,
 ): Effect.Effect<void> =>
   Effect.all([spares.of(environment), builds.of(environment)], { discard: true });
+
+/**
+ * A webhook Trigger's URL and Signing secret as the owner reads them, or the refusal for one that has none to show.
+ */
+const triggerHook = (
+  id: string,
+  answer: HookAnswer,
+  origin: string | undefined,
+): Effect.Effect<TriggerHook, EnvironmentError> => {
+  switch (answer.status) {
+    case "none":
+      return Effect.fail(EnvironmentError.make({ message: triggerNoWebhook }));
+    case "unreadable":
+      return Effect.fail(EnvironmentError.make({ message: triggerSecretsUnreadable }));
+    case "ok": {
+      const hook: Mutable<TriggerHook> = {
+        path: hookPath(id, answer.secrets.token),
+        secret: answer.secrets.secret,
+      };
+
+      if (origin !== undefined && origin !== "") hook.origin = origin;
+
+      return Effect.succeed(hook);
+    }
+  }
+};
 
 /** How many legacy objects one cleanup wipes. */
 const LEGACY_BATCH = 10;
@@ -410,6 +448,7 @@ export const serveRegistryRpc = <R = never>(
     workspaces,
     sessions,
     triggers,
+    appOrigin,
     legacy,
     spares,
     builds,
@@ -457,6 +496,13 @@ export const serveRegistryRpc = <R = never>(
           return Effect.fail(failed(missing));
       }
     };
+
+    /** What the object answered of Trigger `id`'s URL and Signing secret (a reveal, a rotation), as the owner reads them. */
+    const hooked = (id: string, answer: Effect.Effect<HookAnswer, TriggerUnreachable>) =>
+      answer.pipe(
+        Effect.mapError(() => failed(triggerUnreachable)),
+        Effect.flatMap((hook) => triggerHook(id, hook, appOrigin)),
+      );
 
     /** Trigger `id`'s object woken after the owner's write, as `paused` leaves the Trigger, answering `definition`. */
     const afterWrite = (definition: TriggerDefinition, done: string) =>
@@ -947,13 +993,28 @@ export const serveRegistryRpc = <R = never>(
                 const trigger = fieldTrigger(revert.change.field);
 
                 if (trigger !== null) {
-                  return armsTrigger(revert.change.before, revert.change.after)
-                    ? scheduling(trigger, "The change is reverted").pipe(
-                        // The revert's own error: it stays made.
-                        Effect.mapError(({ message }) => failed(message)),
-                        Effect.as(revert.change),
-                      )
-                    : background(triggers.sync(trigger)).pipe(Effect.as(revert.change));
+                  // A removal reverted brings the Trigger back to an object that may still hold the removed one's
+                  // token and Signing secret (its wipe was lost): it is wiped first, so the Trigger comes back with
+                  // new ones, as its Agent change says.
+                  const wiped =
+                    revert.change.before === null && revert.change.after !== null
+                      ? triggers.wipe(trigger).pipe(
+                          // The revert's own error: it stays made.
+                          Effect.mapError(() => failed(triggerRevertNotWiped)),
+                        )
+                      : Effect.void;
+
+                  return wiped.pipe(
+                    Effect.andThen(
+                      armsTrigger(revert.change.before, revert.change.after)
+                        ? scheduling(trigger, "The change is reverted").pipe(
+                            // The revert's own error: it stays made.
+                            Effect.mapError(({ message }) => failed(message)),
+                            Effect.as(revert.change),
+                          )
+                        : background(triggers.sync(trigger)).pipe(Effect.as(revert.change)),
+                    ),
+                  );
                 }
 
                 // A Container setting at Global put back: as after the owner's save, each Environment's Build is looked
@@ -1069,6 +1130,26 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      fireTriggerAgain: ({ id, key }) =>
+        triggers.fireAgain(id, key).pipe(
+          Effect.mapError(() => failed(triggerUnreachable)),
+          Effect.flatMap((answer) => {
+            switch (answer.status) {
+              case "queued":
+                return Effect.succeed({ key: answer.key });
+              case "paused":
+                return Effect.fail(failed(triggerPaused));
+              case "removed":
+                return Effect.fail(failed(triggerRemoved));
+              case "none":
+                return Effect.fail(failed(triggerNoDelivery));
+            }
+          }),
+        ),
+      revealTrigger: ({ id }) => hooked(id, triggers.reveal(id)),
+      rotateTrigger: ({ id, what }) => hooked(id, triggers.rotate(id, what)),
+      triggerDeliveries: ({ id }) =>
+        triggers.deliveries(id).pipe(Effect.mapError(() => failed(triggerUnreachable))),
       triggerFireLog: ({ id, limit }) =>
         triggers.fireLog(id, limit).pipe(Effect.mapError(() => failed(triggerUnreachable))),
       dismissAgentChange: ({ environment, change }) =>

@@ -9,22 +9,24 @@ const objectsFailing = (failures: number) => {
   const asked: string[] = [];
   let failing = failures;
 
+  const answering = (name: string) =>
+    Effect.suspend(() => {
+      asked.push(name);
+
+      if (failing > 0) {
+        failing--;
+
+        return Effect.die(new Error("no answer"));
+      }
+
+      return Effect.succeed({ status: "synced" });
+    });
+
   // SAFETY: the Trigger objects call only `getByName`, and on its result only `sync` and `remove`.
   const namespace = {
     getByName: (name: string) => ({
-      sync: () =>
-        Effect.suspend(() => {
-          asked.push(name);
-
-          if (failing > 0) {
-            failing--;
-
-            return Effect.die(new Error("no answer"));
-          }
-
-          return Effect.succeed({ status: "synced" });
-        }),
-      remove: () => Effect.void,
+      sync: () => answering(name),
+      remove: () => Effect.asVoid(answering(name)),
     }),
   } as never;
 
@@ -53,5 +55,26 @@ describe("triggerObjects", () => {
     await Effect.runPromise(syncing.objects.sync("t1"));
 
     expect(syncing.asked).toEqual(["trigger:t1"]);
+  });
+
+  it("retries a wipe as it does a wake, and fails one that never answers where `remove` only logs", async () => {
+    const wiping = objectsFailing(WAKE_RETRIES);
+
+    await Effect.runPromise(wiping.objects.wipe("t1"));
+
+    expect(wiping.asked).toHaveLength(WAKE_RETRIES + 1);
+
+    const never = objectsFailing(10);
+
+    const failed = await Effect.runPromise(never.objects.wipe("t1").pipe(Effect.flip));
+
+    expect(failed._tag).toBe("TriggerUnreachable");
+    expect(never.asked).toHaveLength(WAKE_RETRIES + 1);
+
+    const removing = objectsFailing(10);
+
+    await Effect.runPromise(removing.objects.remove("t1"));
+
+    expect(removing.asked).toEqual(["trigger:t1"]);
   });
 });

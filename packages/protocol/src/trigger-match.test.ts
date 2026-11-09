@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectRecord:off -- plain objects of hundreds of keys, built to see that there is no cap.
 import { describe, expect, it } from "vitest";
-import { EVENT_PATH, matchesDelivery, matchProblem } from "./trigger-match.ts";
+import { EVENT_PATH, matchesDelivery, matchFacts, matchProblem } from "./trigger-match.ts";
 
 const run = {
   action: "completed",
@@ -85,5 +85,47 @@ describe("matchProblem", () => {
     expect(matchProblem({ "a..b": ["x"] })).toBeDefined();
     expect(matchProblem({ ".a": ["x"] })).toBeDefined();
     expect(matchProblem({ a: [] })).toBeDefined();
+  });
+});
+
+describe("matchFacts", () => {
+  it("keeps what each path of a match reads, nested, so a match over those paths gives the same answer", () => {
+    const body = {
+      workflow_run: { conclusion: "failure", id: 7, head: { ok: true } },
+      other: "x",
+      list: ["a", "b"],
+    };
+
+    const match = {
+      "workflow_run.conclusion": ["failure"],
+      "workflow_run.id": ["7"],
+      "list.1": ["b"],
+      event: ["x"],
+    };
+
+    const facts = matchFacts(match, body);
+
+    expect(facts).toEqual({ workflow_run: { conclusion: "failure", id: "7" }, list: { "1": "b" } });
+    expect(matchesDelivery(match, { event: "x", body: facts })).toBe(true);
+    expect(
+      matchesDelivery(
+        { ...match, "workflow_run.conclusion": ["success"] },
+        { event: "x", body: facts },
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves out a path that holds no scalar, so a later match over it never passes", () => {
+    const facts = matchFacts({ a: ["x"], "b.c": ["y"], d: ["z"] }, { a: { n: 1 }, d: null });
+
+    expect(facts).toEqual({ d: "null" });
+    expect(matchFacts({ a: ["x"] }, undefined)).toEqual({});
+  });
+
+  it("never builds a key that could reach a prototype", () => {
+    const facts = matchFacts({ "__proto__.x": ["1"], a: ["1"] }, { a: 1 });
+
+    expect(Object.getPrototypeOf(facts)).toBe(Object.prototype);
+    expect(facts).toEqual({ a: "1" });
   });
 });

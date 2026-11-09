@@ -2,17 +2,25 @@
 // Object per Trigger, `trigger:<trigger id>`, which holds its Schedule's cursor, its pending Fires and its fire log, and
 // whose alarm fires it (`object.ts`). Its ports are RPC to the Registry (`triggerDefinition`, `admitFire`,
 // `notifyTriggerFailed`) and to the Fire's Session (`fire`), and the spare and Build upkeep after a Fire took a spare,
-// as after the owner's start (`upkeepAfterStart`). Every span is a custom span of the Worker's trace.
+// as after the owner's start (`upkeepAfterStart`). A webhook Trigger's secrets are sealed with `SecretsConfig`'s key under
+// the purpose `trigger:<id>`, and the App's own bot account (for the bot-loop guard) is asked of GitHub as the App
+// (`GitHubAppConfig`). Every span is a custom span of the Worker's trace.
+// @effect-diagnostics globalFetch:off globalDate:off -- GitHub is asked with `fetch`, as `GitHubApp` is everywhere.
 import * as Cloudflare from "@alchemy.run/cloudflare";
+import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { ApiResult, SubmitResult, TriggerDefinition } from "@cloudpid/protocol";
 import { workersTelemetry } from "@cloudpid/telemetry";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
+import { GitHubApp } from "../github/app.ts";
+import { GitHubAppConfig } from "../github/config.ts";
 import { buildUpkeep } from "../registry/builds.ts";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { spareUpkeep, upkeepAfterStart } from "../registry/rpc.ts";
+import { SecretsConfig } from "../session/secrets.ts";
 import { Session } from "../session/Session.ts";
 import { workersTracing } from "../tracing.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
@@ -49,8 +57,10 @@ export const TriggerLive = Trigger.make(
     sessions: Session,
     state: Cloudflare.DurableObjectState,
     worker: Cloudflare.WorkerEnvironment,
+    secrets: SecretsConfig,
+    github: GitHubAppConfig,
   }).pipe(
-    Effect.map(({ registries, sessions, state, worker }) =>
+    Effect.map(({ registries, sessions, state, worker, secrets, github }) =>
       Effect.gen(function* () {
         const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
         const registry = () => registries.getByName(REGISTRY_NAME);
@@ -63,6 +73,28 @@ export const TriggerLive = Trigger.make(
 
         const spares = spareUpkeep(registries, { workspaces });
         const builds = buildUpkeep(registries, { workspaces, spares });
+
+        // The object's id, so a token or secret sealed by one Trigger opens in no other.
+        const id = triggerOfObject(state.raw.id.name) ?? "";
+
+        // The vault is made once, at the first delivery or secret: a malformed master key fails those, not the object.
+        const vault = yield* Effect.cached(
+          openKeptVault(Redacted.value(secrets.encryptionKey), `trigger:${id}`).pipe(
+            Effect.mapError((error) =>
+              TriggerUnreachable.make({
+                message: `The vault could not be opened: ${error.message}`,
+              }),
+            ),
+          ),
+        );
+
+        // The App's own bot account, asked of GitHub once (`GET /app`); the guard falls back to any bot while it can't.
+        const app = new GitHubApp({
+          appId: Redacted.value(github.appId),
+          privateKey: Redacted.value(github.privateKey),
+          fetch: (url, init) => fetch(url, init),
+          now: () => Date.now(),
+        });
 
         const ports: TriggerPorts = {
           definition: (id) =>
@@ -93,11 +125,20 @@ export const TriggerLive = Trigger.make(
                 Effect.catchCause(unreachable("The Session's fire")),
               ),
           afterStart: (environment) => upkeepAfterStart({ spares, builds }, environment),
+          vault,
+          botLogin: Effect.tryPromise(() => app.botLogin()).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(
+                "The GitHub App's bot account could not be read",
+                error.message,
+              ).pipe(Effect.as(undefined)),
+            ),
+          ),
         };
 
         const handlers = triggerHandlers({
           // A name that is no `trigger:<id>` has no Trigger: its definition never reads, so its object wipes itself.
-          id: triggerOfObject(state.raw.id.name) ?? "",
+          id,
           storage: state.raw.storage,
           ports,
         });
@@ -110,6 +151,11 @@ export const TriggerLive = Trigger.make(
           sync: () => traced(handlers.sync()),
           remove: () => traced(handlers.remove()),
           fireNow: (input) => traced(handlers.fireNow(input)),
+          fireAgain: (input) => traced(handlers.fireAgain(input)),
+          deliver: (delivery) => traced(handlers.deliver(delivery)),
+          deliveries: () => traced(handlers.deliveries()),
+          reveal: () => traced(handlers.reveal()),
+          rotate: (what) => traced(handlers.rotate(what)),
           fireLog: (input) => traced(handlers.fireLog(input)),
           state: () => traced(handlers.state()),
           alarm: (info) => traced(handlers.alarm(info)),

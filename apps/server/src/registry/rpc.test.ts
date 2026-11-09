@@ -97,7 +97,7 @@ import { mcpStatus } from "../mcp/status.ts";
 import type { McpHostMethods } from "../mcp/host.ts";
 import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
-import { TriggerUnreachable } from "../trigger/object.ts";
+import { type DeliveryStats, type HookSecrets, TriggerUnreachable } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
 import type { TriggerWrite } from "./triggers.ts";
 import { pageSessions } from "./session-page.ts";
@@ -688,8 +688,75 @@ const fakeRegistries = () => {
       return { status: "ok", definition };
     });
 
+  /** The token and Signing secret each webhook Trigger's object holds, and what it says of its deliveries. */
+  const triggerHooks = new Map<string, HookSecrets>();
+
+  /** The Triggers whose object can't be wiped. */
+  const unwipableTriggers = new Set<string>();
+
+  /** The webhook Triggers whose object holds secrets that no longer read. */
+  const unreadableHooks = new Set<string>();
+
+  const triggerDeliveries = new Map<string, DeliveryStats>();
+
+  /** Whether a Trigger's object holds a delivery to send again. */
+  const lastDeliveries = new Set<string>();
+
   /** The Trigger objects: what was asked of each, in `calls`. */
   const triggerObjects: TriggerObjects = {
+    fireAgain: (id, key) =>
+      reachTrigger(id, () => {
+        calls.push(`fireTriggerAgainObject:${id}:${key}`);
+
+        const held = triggersHeld.get(id);
+
+        if (held === undefined) return { status: "removed" as const };
+
+        if (held.paused) return { status: "paused" as const };
+
+        return lastDeliveries.has(id)
+          ? { status: "queued" as const, key: `${id}:manual:${key}` }
+          : { status: "none" as const };
+      }),
+    deliver: (id) =>
+      reachTrigger(id, () => ({ status: 404 as const, outcome: "not_found" as const })),
+    deliveries: (id) =>
+      reachTrigger(
+        id,
+        () => triggerDeliveries.get(id) ?? { counts: [], lastDeliveryAt: null, pingAt: null },
+      ),
+    reveal: (id) =>
+      reachTrigger(id, () => {
+        calls.push(`revealTriggerObject:${id}`);
+
+        const held = triggerHooks.get(id);
+
+        if (unreadableHooks.has(id)) return { status: "unreadable" as const };
+
+        return held === undefined
+          ? { status: "none" as const }
+          : { status: "ok" as const, secrets: held };
+      }),
+    rotate: (id, what) =>
+      reachTrigger(id, () => {
+        calls.push(`rotateTriggerObject:${id}:${what}`);
+
+        const held = triggerHooks.get(id);
+
+        if (held === undefined) return { status: "none" as const };
+
+        // Secrets that no longer read are replaced, both of them, whichever is asked.
+        const replaced = unreadableHooks.delete(id);
+
+        const next = {
+          token: what === "url" || replaced ? `${held.token}+` : held.token,
+          secret: what === "secret" || replaced ? `${held.secret}+` : held.secret,
+        };
+
+        triggerHooks.set(id, next);
+
+        return { status: "ok" as const, secrets: next };
+      }),
     fireNow: (id, key) =>
       reachTrigger(id, () => {
         calls.push(`fireTriggerObject:${id}:${key}`);
@@ -727,6 +794,14 @@ const fakeRegistries = () => {
     remove: (id) =>
       Effect.sync(() => {
         calls.push(`removeTriggerObject:${id}`);
+      }),
+    wipe: (id) =>
+      Effect.suspend(() => {
+        calls.push(`removeTriggerObject:${id}`);
+
+        return unwipableTriggers.has(id)
+          ? Effect.fail(TriggerUnreachable.make({ message: "no answer" }))
+          : Effect.void;
       }),
   };
 
@@ -1748,6 +1823,11 @@ const fakeRegistries = () => {
     triggersHeld,
     triggerFires,
     triggerWaiting,
+    triggerHooks,
+    unreadableHooks,
+    unwipableTriggers,
+    triggerDeliveries,
+    lastDeliveries,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
     },
@@ -2066,6 +2146,7 @@ const worker =
       workspaces: fake.workspaceObjects,
       sessions: fake.sessionObjects,
       triggers: fake.triggerObjects,
+      appOrigin: "https://cloudpid.example.com",
       legacy: fake.legacy,
       spares: fake.spareUpkeep,
       builds: fake.buildUpkeep,
@@ -3930,6 +4011,11 @@ it("wakes the object of a Trigger a revert brought back now, and tells the owner
 
   expect(reverted.after).toEqual(asChangeJson(value));
   expect(fake.calls).toContain("wakeTriggerObject:t1");
+  // The object is wiped first, so a wipe the removal lost cannot give the brought back Trigger the old secrets.
+  expect(fake.calls.indexOf("removeTriggerObject:t1")).toBeGreaterThanOrEqual(0);
+  expect(fake.calls.indexOf("removeTriggerObject:t1")).toBeLessThan(
+    fake.calls.indexOf("wakeTriggerObject:t1"),
+  );
 
   const unscheduled = await call(fake, (registry) =>
     Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 2 })),
@@ -3945,6 +4031,66 @@ it("wakes the object of a Trigger a revert brought back now, and tells the owner
   await fake.runBackground();
 
   expect(fake.calls).not.toContain("syncTriggerObject:t1");
+});
+
+it("does not wipe the object of a Trigger a revert only resumed", async () => {
+  const value: TriggerChangeValue = {
+    kind: "environment",
+    name: "Weekly report",
+    message: "Summarize last week's PRs.",
+    source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+    whenBusy: "skip",
+    paused: false,
+  };
+
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "trigger_pause",
+    field: triggerField("t1"),
+    before: asChangeJson(value),
+    after: asChangeJson({ ...value, paused: true }),
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(fake.calls).toContain("wakeTriggerObject:t1");
+  expect(fake.calls).not.toContain("removeTriggerObject:t1");
+});
+
+it("fails the revert of a removal whose object can't be wiped, saying the URL and secret may be the old ones", async () => {
+  const value: TriggerChangeValue = {
+    kind: "environment",
+    name: "On events",
+    message: "Look.",
+    source: { type: "webhook", format: "github" },
+    whenBusy: "start",
+    paused: false,
+  };
+
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "trigger_remove",
+    field: triggerField("t1"),
+    before: asChangeJson(value),
+    after: null,
+  });
+  fake.unwipableTriggers.add("t1");
+
+  const failure = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 })),
+  );
+
+  expect(failure).toBeInstanceOf(EnvironmentError);
+  expect(failure.message).toContain("may still have its old URL and signing secret");
+  // The revert stays made, and the object is not woken as though it were wiped.
+  expect(Arr.map(fake.agentChanges, (change) => change.reverts)).toEqual([null, 1]);
+  expect(fake.calls).not.toContain("wakeTriggerObject:t1");
 });
 
 describe("the owner's Triggers", () => {
@@ -4182,6 +4328,147 @@ describe("the owner's Triggers", () => {
 
     const unreachable = await call(fake, (registry) =>
       Effect.flip(registry.triggerFireLog({ id: "t1" })),
+    );
+
+    expect(unreachable.message).toBe("The trigger's object didn't answer: try again");
+  });
+  it("reveals the URL's path and the Signing secret under the stage's origin, and rotates either", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+    fake.triggerHooks.set("t1", { token: "tok", secret: "sec" });
+
+    expect(await call(fake, (registry) => registry.revealTrigger({ id: "t1" }))).toEqual({
+      origin: "https://cloudpid.example.com",
+      path: "/hooks/t1/tok",
+      secret: "sec",
+    });
+    expect(
+      await call(fake, (registry) => registry.rotateTrigger({ id: "t1", what: "url" })),
+    ).toEqual({
+      origin: "https://cloudpid.example.com",
+      path: "/hooks/t1/tok+",
+      secret: "sec",
+    });
+    expect(
+      await call(fake, (registry) => registry.rotateTrigger({ id: "t1", what: "secret" })),
+    ).toEqual({
+      origin: "https://cloudpid.example.com",
+      path: "/hooks/t1/tok+",
+      secret: "sec+",
+    });
+    expect(fake.calls).toContain("rotateTriggerObject:t1:secret");
+  });
+
+  it("refuses to reveal or rotate a Trigger with no secrets, and says so when its object doesn't answer", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+
+    const none = await call(fake, (registry) => Effect.flip(registry.revealTrigger({ id: "t1" })));
+
+    expect(none.message).toBe(
+      "This trigger has no URL or signing secret: only a webhook trigger does",
+    );
+
+    const rotated = await call(fake, (registry) =>
+      Effect.flip(registry.rotateTrigger({ id: "t1", what: "url" })),
+    );
+
+    expect(rotated.message).toBe(none.message);
+
+    fake.unreachableTriggers.add("t1");
+
+    const unreachable = await call(fake, (registry) =>
+      Effect.flip(registry.revealTrigger({ id: "t1" })),
+    );
+
+    expect(unreachable.message).toBe("The trigger's object didn't answer: try again");
+  });
+
+  it("says kept secrets that no longer read can't be shown, and makes new ones when asked to rotate", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+    fake.triggerHooks.set("t1", { token: "tok", secret: "sec" });
+    fake.unreadableHooks.add("t1");
+
+    const unreadable = await call(fake, (registry) =>
+      Effect.flip(registry.revealTrigger({ id: "t1" })),
+    );
+
+    expect(unreadable.message).toBe(
+      "This trigger's URL and signing secret can't be read: make new ones with New URL or New signing secret",
+    );
+    expect(
+      await call(fake, (registry) => registry.rotateTrigger({ id: "t1", what: "url" })),
+    ).toEqual({
+      origin: "https://cloudpid.example.com",
+      path: "/hooks/t1/tok+",
+      secret: "sec+",
+    });
+  });
+
+  it("fires a Trigger again under the page's key, and refuses a paused one, a removed one and one with no delivery", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+
+    const none = await call(fake, (registry) =>
+      Effect.flip(registry.fireTriggerAgain({ id: "t1", key: "k0" })),
+    );
+
+    expect(none.message).toBe("No delivery has been accepted yet: there is nothing to send again");
+
+    fake.lastDeliveries.add("t1");
+
+    expect(
+      await call(fake, (registry) => registry.fireTriggerAgain({ id: "t1", key: "k1" })),
+    ).toEqual({ key: "t1:manual:k1" });
+    expect(fake.calls).toContain("fireTriggerAgainObject:t1:k1");
+
+    await call(fake, (registry) => registry.setTriggerPaused({ id: "t1", paused: true }));
+
+    const paused = await call(fake, (registry) =>
+      Effect.flip(registry.fireTriggerAgain({ id: "t1", key: "k2" })),
+    );
+
+    expect(paused.message).toBe("The trigger is paused: resume it to fire it");
+
+    await call(fake, (registry) => registry.removeTrigger({ id: "t1" }));
+
+    const removed = await call(fake, (registry) =>
+      Effect.flip(registry.fireTriggerAgain({ id: "t1", key: "k3" })),
+    );
+
+    expect(removed.message).toBe("This trigger was removed");
+  });
+
+  it("reads a Trigger's deliveries", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+
+    expect(await call(fake, (registry) => registry.triggerDeliveries({ id: "t1" }))).toEqual({
+      counts: [],
+      lastDeliveryAt: null,
+      pingAt: null,
+    });
+
+    const stats = {
+      counts: [{ day: "2026-11-09", outcome: "filtered", n: 3 }],
+      lastDeliveryAt: 5,
+      pingAt: 4,
+    };
+
+    fake.triggerDeliveries.set("t1", stats);
+
+    expect(await call(fake, (registry) => registry.triggerDeliveries({ id: "t1" }))).toEqual(stats);
+
+    fake.unreachableTriggers.add("t1");
+
+    const unreachable = await call(fake, (registry) =>
+      Effect.flip(registry.triggerDeliveries({ id: "t1" })),
     );
 
     expect(unreachable.message).toBe("The trigger's object didn't answer: try again");

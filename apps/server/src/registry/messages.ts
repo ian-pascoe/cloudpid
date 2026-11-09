@@ -24,6 +24,22 @@ export const triggerUnreachable = "The trigger's object didn't answer: try again
 /** That Fire now was asked of a paused Trigger. */
 export const triggerPaused = "The trigger is paused: resume it to fire it";
 
+/** That a Trigger's URL or Signing secret was asked of one that has none: only a webhook Trigger does. */
+export const triggerNoWebhook =
+  "This trigger has no URL or signing secret: only a webhook trigger does";
+
+/** That a Trigger's kept URL and Signing secret no longer read: the owner makes new ones. */
+export const triggerSecretsUnreadable =
+  "This trigger's URL and signing secret can't be read: make new ones with New URL or New signing secret";
+
+/** That the revert of a removal could not wipe the Trigger's object, which may still hold the old URL and secret. */
+export const triggerRevertNotWiped =
+  "The change is reverted, but the trigger's object didn't answer, so it isn't scheduled and may still have its old URL and signing secret: pause and resume it, then make new ones with New URL and New signing secret";
+
+/** That Fire again was asked of a Trigger that has accepted no delivery yet. */
+export const triggerNoDelivery =
+  "No delivery has been accepted yet: there is nothing to send again";
+
 /** That a Trigger was made under an id another Trigger has, or had, with other values. */
 export const triggerIdTaken = "A trigger was already saved under this id with other values";
 

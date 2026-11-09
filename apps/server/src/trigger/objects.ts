@@ -4,12 +4,21 @@
 // see a Trigger with no alarm scheduled (one made, brought back or resumed), tries again and then fails; `sync` and
 // `remove` log a failure and leave it to the object, which reads its definition again at its next alarm.
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import type { FireRecord } from "@cloudpid/protocol";
+import type { FireRecord, TriggerRotation } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import { TRIGGER_CLASS, triggerObjectName } from "./name.ts";
-import { type FireNowAnswer, type TriggerState, TriggerUnreachable } from "./object.ts";
+import {
+  type Delivery,
+  type DeliveryAnswer,
+  type DeliveryStats,
+  type FireAgainAnswer,
+  type FireNowAnswer,
+  type HookAnswer,
+  type TriggerState,
+  TriggerUnreachable,
+} from "./object.ts";
 import type { Trigger } from "./Trigger.ts";
 
 /** The `Trigger` namespace, as far as its callers use it. */
@@ -25,8 +34,32 @@ export type TriggerObjects = {
   readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
   readonly remove: (id: string) => Effect.Effect<void>;
+  /**
+   * Wipe Trigger `id`'s object as `remove` does, for a caller that must know it is wiped (a reverted removal, whose
+   * Trigger must not keep the old URL and Signing secret): tried `WAKE_RETRIES` more times, then fails.
+   */
+  readonly wipe: (id: string) => Effect.Effect<void, TriggerUnreachable>;
   /** The owner's Fire now of Trigger `id`, one Fire per `key`: a Fire recorded `manual`, or why there is none. */
   readonly fireNow: (id: string, key: string) => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
+  /** The owner's Fire again of Trigger `id`, one Fire per `key`: a Fire recorded `manual` with the last delivery. */
+  readonly fireAgain: (
+    id: string,
+    key: string,
+  ) => Effect.Effect<FireAgainAnswer, TriggerUnreachable>;
+  /** A delivery to Trigger `id`'s URL: what its object answers (the main Worker builds the response). */
+  readonly deliver: (
+    id: string,
+    delivery: Delivery,
+  ) => Effect.Effect<DeliveryAnswer, TriggerUnreachable>;
+  /** The deliveries Trigger `id`'s object took: the counts of 30 days, its last delivery and its ping. */
+  readonly deliveries: (id: string) => Effect.Effect<DeliveryStats, TriggerUnreachable>;
+  /** Trigger `id`'s token and Signing secret, or why there are none to show. */
+  readonly reveal: (id: string) => Effect.Effect<HookAnswer, TriggerUnreachable>;
+  /** Replace Trigger `id`'s token (`url`) or Signing secret (`secret`) at once, and answer both. */
+  readonly rotate: (
+    id: string,
+    what: TriggerRotation,
+  ) => Effect.Effect<HookAnswer, TriggerUnreachable>;
   /** Trigger `id`'s fire log, newest first: at most `limit` Fires. */
   readonly fireLog: (
     id: string,
@@ -76,7 +109,16 @@ export const triggerObjects = (
           Effect.logWarning("A Trigger's object could not be wiped", cause),
         ),
       ),
+    wipe: (id) =>
+      reach(id, (stub) => stub.remove()).pipe(
+        Effect.retry({ schedule: wakeSchedule, times: WAKE_RETRIES }),
+      ),
     fireNow: (id, key) => reach(id, (stub) => stub.fireNow({ key })),
+    fireAgain: (id, key) => reach(id, (stub) => stub.fireAgain({ key })),
+    deliver: (id, delivery) => reach(id, (stub) => stub.deliver(delivery)),
+    deliveries: (id) => reach(id, (stub) => stub.deliveries()),
+    reveal: (id) => reach(id, (stub) => stub.reveal()),
+    rotate: (id, what) => reach(id, (stub) => stub.rotate(what)),
     fireLog: (id, limit) => reach(id, (stub) => stub.fireLog(limit === undefined ? {} : { limit })),
     state: (id) => reach(id, (stub) => stub.state()),
   };

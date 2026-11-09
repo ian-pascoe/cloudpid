@@ -86,7 +86,7 @@ const fakeGitHub = (options: {
     });
 
     if (method === "GET" && url === "https://api.github.com/app") {
-      return Response.json({ owner: { login: "ian-pascoe" } });
+      return Response.json({ owner: { login: "ian-pascoe" }, slug: "cloudpid-app" });
     }
 
     if (method === "GET" && url === "https://api.github.com/app/installations?per_page=100") {
@@ -116,6 +116,24 @@ const fakeGitHub = (options: {
 };
 
 describe("GitHubApp", () => {
+  it("names its own bot account from the app's slug, asked once", async () => {
+    const now = Date.UTC(2026, 0, 1, 12);
+    const github = fakeGitHub({ now: () => now });
+
+    const app = new GitHubApp({
+      appId: "123456",
+      privateKey: KEYS.privateKey,
+      fetch: github.fetch,
+      now: () => now,
+    });
+
+    expect(await app.botLogin()).toBe("cloudpid-app[bot]");
+    expect(await app.botLogin()).toBe("cloudpid-app[bot]");
+    expect(github.seen.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      "GET https://api.github.com/app",
+    ]);
+  });
+
   it("mints a token for the installation on its own account with a JWT its PKCS#1 key signs", async () => {
     const now = Date.UTC(2026, 0, 1, 12);
     const github = fakeGitHub({ now: () => now });

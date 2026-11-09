@@ -220,7 +220,7 @@ const Account = Schema.NullOr(Schema.Struct({ login: Schema.String }));
 
 const Installations = Schema.Array(Schema.Struct({ id: Schema.Int, account: Account }));
 
-const AppAnswer = Schema.Struct({ owner: Account });
+const AppAnswer = Schema.Struct({ owner: Account, slug: Schema.optionalKey(Schema.String) });
 
 const MintAnswer = Schema.Struct({ token: Schema.String, expires_at: Schema.String });
 
@@ -261,6 +261,8 @@ export class GitHubApp implements GitHubTokens {
   #installations: { readonly at: number; readonly ids: ReadonlyMap<string, number> } | undefined;
   /** The account that owns the app, in lower case. */
   #appAccount: string | undefined;
+  /** The app's own bot account's login, in lower case. */
+  #botLogin: string | undefined;
   /** Every token minted, oldest first, until it expires. */
   #minted: MintedToken[];
   /** The tokens GitHub refused (`invalidate`), which are not handed out again. */
@@ -478,6 +480,28 @@ export class GitHubApp implements GitHubTokens {
 
       throw cause;
     }
+  }
+
+  /**
+   * The login GitHub gives the app's own bot account, `<slug>[bot]` in lower case (what its comments and pushes are made
+   * as), asked once. Throws, saying why, when GitHub does not say.
+   */
+  async botLogin(): Promise<string> {
+    if (this.#botLogin !== undefined) return this.#botLogin;
+
+    return this.#once("bot", async () => {
+      const answer = await this.#ask(`${API}/app`, { method: "GET" });
+
+      if (!answer.ok) throw refusal(answer.status, answer.message);
+
+      const slug = Option.getOrUndefined(decodeAppAnswer(answer.value))?.slug;
+
+      if (slug === undefined) throw new Error("GitHub's answer to the GitHub App did not name it");
+
+      this.#botLogin = `${slug.toLowerCase()}[bot]`;
+
+      return this.#botLogin;
+    });
   }
 
   /** The account that owns the app, in lower case, asked once. */
