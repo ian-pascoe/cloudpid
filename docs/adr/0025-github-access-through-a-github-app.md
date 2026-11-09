@@ -14,7 +14,7 @@ cloudpid reached GitHub with a personal access token, `CLOUDPID_GITHUB_TOKEN`: o
   - The private key never reaches a Container.
 - **Masking and refusals.**
   - Output masking and the snapshot scan match every token the Workspace DO minted that has not expired, not one fixed string. The DO keeps them in its storage until they expire, since its Container, and a command holding a token, can outlive the instance that minted it. An expired token in a snapshot is harmless.
-  - The Session DO never sees those tokens. Its refusal of plain values covers the private key and any string shaped like a GitHub token (`ghs_`, `ghp_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`).
+  - The Session DO never sees those tokens. Its refusal of plain values covers the private key and any string shaped like a GitHub token (`ghs_`, `ghp_`, `gho_`, `ghu_`, `ghr_`, `github_pat_`; for `ghs_`, the stateless `ghs_<app id>_<JWT>` form GitHub mints since 2026-10-02 too).
 - **Checks and failures.** A private key that is not an RSA PEM fails the deploy or `alchemy dev` at startup; startup never calls GitHub. When minting fails at runtime, the last token of that installation is handed out until it expires; after that a Container command runs without it, with a note on stderr saying which accounts have no token and why, and minting is tried again after a wait that doubles with each failure. The Diff pane and the draft's menu show their usual GitHub errors.
 - **Permissions.** Contents, pull requests, issues and workflows: write. Actions, checks and commit statuses: read. Metadata: read.
 - **Authorship.** Pushes, pull requests and comments come from `cloudpid[bot]`. Commits keep their author (`CLOUDPID_GIT_NAME`, `CLOUDPID_GIT_EMAIL`, default `cloudpid` and the owner's email).

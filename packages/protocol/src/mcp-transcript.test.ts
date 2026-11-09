@@ -222,6 +222,15 @@ describe("renderTranscript", () => {
     expect(redactGithubTokens("ghp_short")).toBe("ghp_short");
   });
 
+  it("redacts a stateless installation token whole", () => {
+    // `ghs_<app id>_<JWT>`, about 520 characters: GitHub's format for every new one since 2026-10-02.
+    const token =
+      "ghs_1234567_eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIiLCJpbnN0YWxsYXRpb24iOjk4NzY1fQ." +
+      "aB3-_x9Q".repeat(50);
+
+    expect(redactGithubTokens(`use ${token} now`)).toBe("use [REDACTED github token] now");
+  });
+
   describe("redacts a Secret before the cut can split it", () => {
     const secret = "s3cr3t-value-that-is-long";
     const redact = (text: string) => text.replaceAll(secret, "[S]");

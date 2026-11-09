@@ -25,6 +25,8 @@ export const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
 export const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{20,}/,
   /\bgh[pousr]_[A-Za-z0-9]{30,}/,
+  // A stateless installation token, `ghs_<app id>_<JWT>` (GitHub's pattern for both formats).
+  /\bghs_[A-Za-z0-9._-]{36,}/,
   /\bgithub_pat_[A-Za-z0-9_]{30,}/,
   /\bglpat-[A-Za-z0-9_-]{20,}/,
   /\bnpm_[A-Za-z0-9]{36}\b/,
