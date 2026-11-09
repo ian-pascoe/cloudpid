@@ -87,6 +87,10 @@ const backendOf = (
 ): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
 
+  const dispatch = harnessDispatch(
+    harnessServices({ registry, mcpHosts: endpoint.mcpHosts, appOrigin: endpoint.appOrigin }),
+  );
+
   // A failed RPC is a defect here: `McpApiService` answers every one as `unavailable`, which may heal.
   return {
     environments: Effect.suspend(() => registry.listEnvironments()).pipe(Effect.orDie),
@@ -152,18 +156,8 @@ const backendOf = (
       Effect.suspend(() => removals(registry, endpoint.objects).removeSession(id)).pipe(
         Effect.orDie,
       ),
-    // The management tools' reads over the Registry and the hosts, with no Session; built per call, since a read of the
-    // Registry's stub is made when the reads are.
-    harness: (request) =>
-      Effect.suspend(() =>
-        harnessDispatch(
-          harnessServices({
-            registry,
-            mcpHosts: endpoint.mcpHosts,
-            appOrigin: endpoint.appOrigin,
-          }),
-        )(request),
-      ),
+    // The management tools' reads over the Registry and the hosts, with no Session.
+    harness: (request) => dispatch(request),
   };
 };
 
