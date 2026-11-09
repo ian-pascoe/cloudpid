@@ -16,6 +16,7 @@ import {
   type ShownVisual,
   type TranscriptMessage,
   type TranscriptPart,
+  TriggerPayloadChip,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -278,6 +279,12 @@ const decodeVia = Schema.decodeUnknownOption(SessionVia);
 export const shownVia = (custom: MessageCustom | undefined): SessionVia | undefined =>
   Option.getOrUndefined(decodeVia(custom?.["via"]));
 
+const decodePayload = Schema.decodeUnknownOption(TriggerPayloadChip);
+
+/** The webhook payload a Trigger's Fire carried, as a user message's metadata keeps it; none for any other message. */
+export const shownPayload = (custom: MessageCustom | undefined): TriggerPayloadChip | undefined =>
+  Option.getOrUndefined(decodePayload(custom?.["triggerPayload"]));
+
 const decodeReview = Schema.decodeUnknownOption(Schema.Array(ShownReviewAnnotation));
 
 /** The Annotations of a Review a user message's metadata keeps; none for a message that is not one. */
@@ -325,12 +332,16 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
       app.length > 0 ||
       review.length > 0 ||
       message.via !== undefined ||
+      message.triggerPayload !== undefined ||
       prompt !== undefined
     ) {
       const custom: MessageCustom = {};
 
       // The mark of who sent it over the MCP endpoint, which the message shows as a chip.
       if (message.via !== undefined) custom["via"] = { ...message.via };
+
+      if (message.triggerPayload !== undefined)
+        custom["triggerPayload"] = { ...message.triggerPayload };
 
       if (prompt !== undefined) custom["mcpPrompt"] = { ...prompt };
 

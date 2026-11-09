@@ -32,6 +32,7 @@ import {
   shownResources,
   shownReview,
   shownSkills,
+  shownPayload,
   shownVia,
 } from "../session/thread-messages.ts";
 import {
@@ -48,6 +49,7 @@ import { pageHost, pageLabel } from "./attached-pages.ts";
 import { entryIdOf } from "../session/tree.ts";
 import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
 import { McpPromptChipLine, McpPromptDisclosure } from "./prompt-message.tsx";
+import { PayloadChip } from "./payload-chip.tsx";
 import { ViaChip } from "./via-chip.tsx";
 
 /**
@@ -176,6 +178,7 @@ const UserMessage = () => {
   const apps = shownApps(custom);
   const review = shownReview(custom);
   const via = shownVia(custom);
+  const payload = shownPayload(custom);
   const prompt = shownMcpPrompt(custom);
 
   return (
@@ -185,6 +188,7 @@ const UserMessage = () => {
         <MessagePrimitive.Parts components={USER_PARTS} />
         {prompt !== undefined && <McpPromptDisclosure prompt={prompt} messageId={id} />}
         {via !== undefined && <ViaChip via={via} />}
+        {payload !== undefined && <PayloadChip chip={payload} />}
         {pages.length > 0 && (
           <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
             {Arr.map(pages, (page) => (
