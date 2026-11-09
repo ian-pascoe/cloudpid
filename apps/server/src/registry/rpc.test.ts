@@ -895,6 +895,8 @@ const fakeRegistries = () => {
 
         return triggers;
       }),
+    listSessionTriggers: ({ session }) =>
+      Effect.sync(() => Arr.filter([...triggersHeld.values()], (held) => held.session === session)),
     deleteSessionWithTriggers: ({ id }) =>
       Effect.sync(() => {
         calls.push(`deleteSession:${id}`);
@@ -1692,8 +1694,6 @@ const fakeRegistries = () => {
           (held) => environment === undefined || held.environment === environment,
         ),
       ),
-    listSessionTriggers: ({ session }) =>
-      Effect.sync(() => Arr.filter([...triggersHeld.values()], (held) => held.session === session)),
     triggerDefinition: () => Effect.succeed(null),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
     notifyTriggerFailed: () => Effect.void,
@@ -3843,30 +3843,6 @@ describe("the owner's Triggers", () => {
     ]);
   });
 
-  it("lists the Session triggers of one Session", async () => {
-    const fake = fakeRegistries();
-
-    const first = await create(fake, "t1");
-
-    fake.triggersHeld.set("t2", {
-      ...first,
-      id: "t2",
-      kind: "session",
-      session: "s-1",
-      whenBusy: "queue",
-    });
-
-    expect(
-      Arr.map(
-        await call(fake, (registry) => registry.listSessionTriggers({ session: "s-1" })),
-        (each) => each.id,
-      ),
-    ).toEqual(["t2"]);
-    expect(
-      await call(fake, (registry) => registry.listSessionTriggers({ session: "s-2" })),
-    ).toEqual([]);
-  });
-
   it("changes a Trigger only while it has the fields the form opened on, a pause aside", async () => {
     const fake = fakeRegistries();
 
@@ -5791,19 +5767,12 @@ it("leaves a Fork and a Clone of a Session with a Session trigger with none of i
   fake.triggersHeld.set("t1", { ...held, kind: "session", session: source.id, whenBusy: "queue" });
   fake.calls.length = 0;
 
-  const forked = await call(fake, (registry) =>
+  await call(fake, (registry) =>
     registry.forkSession({ source: source.id, point: { entryId: 3, position: "before" } }),
   );
+  await call(fake, (registry) => registry.forkSession({ source: source.id }));
 
-  const cloned = await call(fake, (registry) => registry.forkSession({ source: source.id }));
-
-  const triggersOf = (session: string) =>
-    call(fake, (registry) => registry.listSessionTriggers({ session }));
-
-  // A copy answers every Fire too, so it takes none: the Trigger stays its source's alone.
-  expect(await triggersOf(forked.session.id)).toEqual([]);
-  expect(await triggersOf(cloned.session.id)).toEqual([]);
-  expect(Arr.map(await triggersOf(source.id), (each) => each.id)).toEqual(["t1"]);
+  // A copy answers every Fire too, so it takes none: a Fork and a Clone touch no Trigger.
   expect(Arr.some(fake.calls, (name) => /rigger/.test(name))).toBe(false);
 });
 

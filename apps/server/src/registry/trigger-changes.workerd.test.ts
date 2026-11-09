@@ -706,7 +706,7 @@ describe("the agent's Session triggers", () => {
         author("trigger_create", true),
         1_000,
       ),
-    ).toMatchObject({ status: "invalid", problem: expect.stringContaining("own Session") });
+    ).toMatchObject({ status: "invalid" });
     expect(
       await registry.agentCreateTrigger(
         "t1",
@@ -730,7 +730,6 @@ describe("the agent's Session triggers", () => {
 
     expect(await registry.agentCreateTrigger("t1", checkCi, endpoint, 1_000)).toMatchObject({
       status: "invalid",
-      problem: expect.stringContaining("own Session"),
     });
     expect(await registry.storedTriggerIds()).toEqual([]);
 

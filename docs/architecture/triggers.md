@@ -311,7 +311,7 @@ Following [`AGENTS.md`](../../AGENTS.md)'s conventions.
 - **workerd tests** (`*.workerd.test.ts`):
   - **The Trigger object:** the alarm fires when due and re-arms for the next Fire (which also proves croner loads under workerd); a `fire` that throws is retried without a second Session; the catch-up rule for missed Fires; a removed definition found at the alarm retires the object, and a paused one drops its Fires not yet admitted and completes the admitted ones; the stale-revision refresh; signatures in both formats (bad, missing, a stale `standard` timestamp); a 404 for an unknown id writes no storage; bodies at the 1 MiB edge, kept or not; a replaced instance mid-Fire (`refusingStorage`).
   - **The Registry's `admitFire`:** overlap for each kind, over real storage, with concurrent admits; the Workspace record kept by a Workspace trigger; the cascades.
-  - **The Session's `fire`:** fenced untrusted content, the file in the Workspace, the chip; the `notify-submissions` entry; `queue`, `steer` and `skip`, and coalescing.
+  - **The Session's `fire`, and `fireSession` for a Session trigger:** fenced untrusted content, the file in the Workspace, the chip; the `notify-submissions` entry; for `fireSession`, `queue`, `steer` and `skip`, coalescing, and the refusals (archived, importing, deleted, over the spend limit). A Session trigger takes a Schedule only: the Registry and the tool each refuse a webhook source.
   - **The tools:** the Approval flows, over the existing approvals fixtures.
   - **Migration manifests** for the Registry and the Trigger object.
 - **A deployed stage** (S6), on a preview and then on `prod`: see [_Slices_](#slices).

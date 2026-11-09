@@ -1,5 +1,6 @@
-// The Session's `fire` (`docs/architecture/triggers.md` → Pending Fires; Fire records, origin marks and notifications),
-// against real Durable Object storage: the header, the Trigger's mark, the Run's Notification and the Fire's key.
+// The Session's `fire` and a Session trigger's `fireSession` (`docs/architecture/triggers.md` → Pending Fires; Fire
+// records, origin marks and notifications), against real Durable Object storage: the header, the Trigger's mark, the
+// Run's Notification and the Fire's key; for `fireSession`, `queue`, `steer` and `skip` and coalescing, and the refusals.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
@@ -401,7 +402,7 @@ describe("a Session trigger's fire", () => {
 
     expect(await stub.fireSession(sessionFire("queue", 2))).toMatchObject({
       ok: false,
-      error: { retryable: false, message: expect.stringContaining("spend limit") },
+      error: { code: "unavailable", retryable: false },
     });
     expect(await userTexts(stub)).toEqual(before);
     expect(

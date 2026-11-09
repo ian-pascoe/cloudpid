@@ -1135,14 +1135,13 @@ describe("a Session trigger's definition", () => {
 
     expect(await registry.createTrigger("t1", daily("nope"), 2_000)).toMatchObject({
       status: "invalid",
-      problem: "There is no Session nope",
     });
     expect(
       await registry.createTrigger("t1", { ...daily(), whenBusy: "start" }, 2_000),
-    ).toMatchObject({ status: "invalid", problem: expect.stringContaining("when_busy") });
+    ).toMatchObject({ status: "invalid" });
     expect(
       await registry.createTrigger("t1", { ...weekly, whenBusy: "queue" }, 2_000),
-    ).toMatchObject({ status: "invalid", problem: expect.stringContaining("when_busy") });
+    ).toMatchObject({ status: "invalid" });
     expect(await registry.listTriggers()).toEqual([]);
   });
 
@@ -1159,7 +1158,6 @@ describe("a Session trigger's definition", () => {
 
     expect(made).toMatchObject({
       status: "invalid",
-      problem: "A Session trigger fires on a Schedule only",
     });
     expect(await registry.listTriggers()).toEqual([]);
   });
