@@ -3,11 +3,12 @@
 // the label's precheck, GitHub's refusals, the second call for a dropped label, a post with no answer, `retry-after`, the
 // pacing of posts, and the pruning of old rows. Never GitHub itself.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off newPromise:off globalTimers:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GitHubNotInstalled } from "../github/app.ts";
+import { poll } from "../poll.fixture.ts";
 import {
   type AgentCloudpidReportInput,
   openCloudpidReports,
@@ -75,7 +76,7 @@ const fakeGitHub = () => {
       if (answer === "hang") throw new Error("The operation was aborted due to timeout");
 
       // The object is cut off while it waits: an eviction mid-post.
-      if (answer === "never") return new Promise<Response>(() => {});
+      if (answer === "never") return Promise.withResolvers<Response>().promise;
 
       return answer;
     }
@@ -218,9 +219,10 @@ describe("a cloudpid report", () => {
 
       void reports.file(report("s1", 1));
 
-      while (calls(github.seen, "POST", "/issues").length === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
+      await poll(
+        () => calls(github.seen, "POST", "/issues").length > 0,
+        () => "the cut-off call never posted",
+      );
 
       github.script.create = () => created(2, ["cloudpid-report", "needs-triage"]);
 

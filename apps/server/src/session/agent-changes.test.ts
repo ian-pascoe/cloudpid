@@ -41,6 +41,7 @@ describe("runNotice", () => {
     );
 
     expect(count(body, "cloudpid report")).toBe(1);
+    // The format is the contract (D12): at most two clauses, one per kind, so several reports open with their count.
     expect(body).toMatch(/^2 cloudpid reports/);
     expect(body).toContain(`#1 ${"a".repeat(79)}…`);
     expect(body).not.toContain("a".repeat(80));
