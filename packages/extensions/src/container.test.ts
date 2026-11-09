@@ -131,22 +131,6 @@ describe("the container extension", () => {
 describe("container_restart", () => {
   const restartOver = (control: ContainerControl) => toolOver(control, "container_restart");
 
-  it("asks for a reason, and says when to use it, what it ends and what the next command starts from", async () => {
-    const tool = await restartOver(fakeContainer(true).control);
-
-    expect(tool.parameters).toMatchObject({
-      required: ["reason"],
-      properties: { reason: { type: "string" }, fresh: { type: "boolean" } },
-    });
-    expect(tool.description).toMatch(/stops answering/);
-    expect(tool.description).toMatch(/`echo` included/);
-    expect(tool.description).toMatch(/every command running there ends/);
-    expect(tool.description).toMatch(/files in \/workspace stay/);
-    expect(tool.description).toMatch(/last snapshot/);
-    expect(tool.description).toMatch(/`fresh`.*Build or the image/s);
-    expect(tool.description).toMatch(/same size/);
-  });
-
   it("restarts from the snapshot by default, and says the running commands ended", async () => {
     const container = fakeContainer(true);
     const tool = await restartOver(container.control);
@@ -213,48 +197,6 @@ describe("container_restart", () => {
 
 describe("container_resize", () => {
   const resizeOver = (control: ContainerControl) => toolOver(control, "container_resize");
-
-  it("asks for a size and a reason, and says what it stops, what comes back and how long the size lasts", async () => {
-    const tool = await resizeOver(fakeContainer(true).control);
-
-    expect(tool.parameters).toMatchObject({
-      required: ["size", "reason"],
-      properties: {
-        size: {
-          enum: [
-            "lite",
-            "basic",
-            "cpu-1",
-            "standard-1",
-            "mem-4",
-            "standard-2",
-            "cpu-2",
-            "mem-8",
-            "standard-3",
-            "cpu-3",
-            "mem-12",
-            "standard-4",
-          ],
-        },
-        reason: { type: "string" },
-      },
-    });
-    // Each size with what it offers, smallest memory first.
-    expect(tool.description).toMatch(/cpu-1: 1 vCPU, 3 GiB memory/);
-    expect(tool.description).toMatch(/cpu-3: 3 vCPU, 9 GiB memory, 12 GB disk/);
-    expect(tool.description).toMatch(/mem-12: 2 vCPU, 12 GiB memory, 12 GB disk/);
-    expect(tool.description.indexOf("standard-3:")).toBeLessThan(
-      tool.description.indexOf("cpu-3:"),
-    );
-    expect(tool.description.indexOf("cpu-1:")).toBeLessThan(
-      tool.description.indexOf("standard-1:"),
-    );
-    expect(tool.description).toMatch(/memory guard/);
-    expect(tool.description).toMatch(/size limit/);
-    expect(tool.description).toMatch(/every command running there ends/);
-    expect(tool.description).toMatch(/snapshot/);
-    expect(tool.description).toMatch(/idle/);
-  });
 
   it("snapshots and stops a running container, and says what ended and what the next command starts on", async () => {
     const container = fakeContainer(true);

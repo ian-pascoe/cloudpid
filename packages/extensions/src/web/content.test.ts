@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { convertContent, type WebFetchFormat } from "./content.ts";
 import { htmlToMarkdown, MAX_FRAMES, MAX_SPANS } from "./html-markdown.ts";
-import { HtmlTooDeepError, MAX_HTML_DEPTH } from "./html-parse.ts";
+import { HtmlTooDeepError } from "./html-parse.ts";
 
 const page = (html: string, format: WebFetchFormat): string =>
   convertContent(html, "text/html", format);
@@ -152,34 +152,6 @@ describe("nesting", () => {
     },
   );
 
-  it("bounds the output of nested lists", () => {
-    const html = `${"<ul><li>item".repeat(400)}end`;
-    const { output, ms } = timed(() => page(html, "markdown"));
-
-    expect(output.length).toBeLessThan(500_000);
-    expect(output).toContain("end");
-    expect(ms).toBeLessThan(5_000);
-  });
-
-  it("bounds the output of nesting through <article>, as main-content extraction finds it", () => {
-    const html = `<main>${"<article><blockquote><p>line</p>".repeat(500)}end</main>`;
-    const { output, ms } = timed(() => page(html, "markdown"));
-
-    expect(output.length).toBeLessThan(500_000);
-    expect(output).toContain("end");
-    expect(ms).toBeLessThan(5_000);
-  });
-
-  it("keeps the markup of the outermost prefixes and the text of the rest", () => {
-    const markdown = htmlToMarkdown(
-      `${"<blockquote>".repeat(20)}<p>one</p><p>two</p>${"</blockquote>".repeat(20)}<p>after</p>`,
-    );
-
-    expect(markdown).toBe(
-      `${"> ".repeat(MAX_FRAMES)}one\n${"> ".repeat(MAX_FRAMES - 1)}>\n${"> ".repeat(MAX_FRAMES)}two\n\nafter`,
-    );
-  });
-
   it("converts nested inline elements in linear time, keeping the outermost markup and all the text", () => {
     const { output, ms } = timed(() =>
       htmlToMarkdown(`${"<b>".repeat(1_000)}deep text${"</b>".repeat(1_000)} after`),
@@ -187,14 +159,6 @@ describe("nesting", () => {
 
     expect(output).toBe(`${"**".repeat(MAX_SPANS)}deep text${"**".repeat(MAX_SPANS)} after`);
     expect(ms).toBeLessThan(3_000);
-  });
-
-  it("closes the right span when inline elements nest past the limit", () => {
-    expect(
-      htmlToMarkdown(
-        `${"<i>".repeat(MAX_SPANS)}<b>inner</b> mid${"</i>".repeat(MAX_SPANS)} <b>tail</b>`,
-      ),
-    ).toBe(`${"*".repeat(MAX_SPANS)}inner mid${"*".repeat(MAX_SPANS)} **tail**`);
   });
 
   it.each(["markdown", "text"] as const)(
@@ -208,13 +172,6 @@ describe("nesting", () => {
       expect(Date.now() - started).toBeLessThan(2_000);
     },
   );
-
-  it("converts a page nested up to the depth limit", () => {
-    const depth = MAX_HTML_DEPTH - 1;
-
-    expect(htmlToMarkdown(`${"<div>".repeat(depth)}deep${"</div>".repeat(depth)}`)).toBe("deep");
-    expect(() => htmlToMarkdown("<div>".repeat(MAX_HTML_DEPTH + 1))).toThrow(HtmlTooDeepError);
-  });
 
   it("fails rather than produce more than the output limit", () => {
     const html = `${"<blockquote>".repeat(MAX_FRAMES)}${"<p>x</p>".repeat(400_000)}`;

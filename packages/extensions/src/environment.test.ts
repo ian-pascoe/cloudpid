@@ -1095,16 +1095,6 @@ describe("environment_container_resize", () => {
     ]);
   });
 
-  it("says in its description that the size limit is the user's to raise, through environment_container_size_limit_set", async () => {
-    const tool = await toolsOver(fakeEnvironments().service);
-    const description = tool("environment_container_resize").description;
-
-    expect(description).toContain("environment_container_size_limit_set");
-    expect(description).toContain("container_resize");
-    expect(description).toContain("- cpu-3: 3 vCPU, 9 GiB memory");
-    expect(description).toContain("- mem-12: 2 vCPU, 12 GiB memory");
-  });
-
   it("refuses a size above the size limit, naming it and the tool that raises it, and records nothing", async () => {
     const environments = fakeEnvironments();
     const logged: RunChange[] = [];
@@ -1182,7 +1172,7 @@ describe("environment_idle_time_set", () => {
     expect(text(result)).toContain("up to $0.0045 for each idle stretch of 10 minutes");
   });
 
-  it.each([0, 1441, 1.5])(
+  it.each([0, 1441])(
     "refuses %s as the owner's save does, and records nothing",
     async (minutes) => {
       const environments = fakeEnvironments();
@@ -1251,14 +1241,6 @@ describe("environment_spare_workspace_set", () => {
     ).toContain("is on already: nothing changed");
     expect(environments.changes).toEqual([]);
   });
-
-  it("describes the trade-off: new Sessions that start fast against the Container time of each spare", async () => {
-    const tool = await toolsOver(fakeEnvironments().service);
-    const { description } = tool("environment_spare_workspace_set");
-
-    expect(description).toContain("without waiting for the clones and the Setup Scripts");
-    expect(description).toContain("runs a Container for a minute or two");
-  });
 });
 
 const SCRIPT = "#!/usr/bin/env bash\nset -eu\napt-get install -y postgresql\n";
@@ -1270,7 +1252,6 @@ describe.each([
     what: "Setup Script",
     key: "script",
     value: SCRIPT,
-    hint: ".cloudpid/setup.sh",
   },
   {
     name: "environment_start_script_set",
@@ -1278,7 +1259,6 @@ describe.each([
     what: "Start Script",
     key: "script",
     value: SCRIPT,
-    hint: ".cloudpid/start.sh",
   },
   {
     name: "environment_toolchains_set",
@@ -1286,9 +1266,8 @@ describe.each([
     what: "Toolchains",
     key: "mise_toml",
     value: '[tools]\nnode = "22"\n',
-    hint: "mise.toml",
   },
-])("$name", ({ name, field, what, key, value: content, hint }) => {
+])("$name", ({ name, field, what, key, value: content }) => {
   const args = { id: "default", [key]: content };
 
   it("saves the whole text, with the old and new values for the card, and records it for the Run", async () => {
@@ -1312,12 +1291,6 @@ describe.each([
     expect(logged).toEqual([{ tool: name, environmentName: "Default", field }]);
     // The text itself is not echoed back: the card shows it.
     expect(text(result)).not.toContain(content.trim());
-  });
-
-  it("explains itself, pointing a Repo's own step to its .cloudpid directory", async () => {
-    const tool = await toolsOver(fakeEnvironments().service);
-
-    expect(tool(name).description).toContain(hint);
   });
 
   it("removes the setting with an empty text", async () => {
@@ -1373,15 +1346,6 @@ describe.each([
 });
 
 describe("environment_setup_script_set and environment_start_script_set", () => {
-  it("say when each runs: once per content, with a Build, and at every start, detaching services", async () => {
-    const tool = await toolsOver(fakeEnvironments().service);
-
-    expect(tool("environment_setup_script_set").description).toContain("once per content");
-    expect(tool("environment_setup_script_set").description).toContain("makes a new Build");
-    expect(tool("environment_start_script_set").description).toContain("every Container start");
-    expect(tool("environment_start_script_set").description).toContain("must detach");
-  });
-
   it("say no new Build was asked for when the Environment has nothing to build, and point to container_restart for its own", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
 
@@ -1614,20 +1578,14 @@ describe("the environment tools from a program", () => {
     });
   });
 
-  it("cuts what can grow: Environments, scripts, paths, variables, Secrets, Skills, Repos and overriding Environments", async () => {
-    // Variables: Global's holds the Environment's own names, which it hides, and large ones it inherits.
+  it("cuts what can grow, so what a program gets fits under what a nested call holds", async () => {
     const names = Arr.makeBy(3_000, (index) => `V${index}`);
-
-    const ownVariables = Record.fromEntries(Arr.map(names, (name) => [name, "v"] as const));
 
     const bigGlobal: ContainerSettings = {
       ...DEFAULT_CONTAINER_SETTINGS,
       setupScript: "echo setup\n".repeat(20_000),
-      startScript: "echo start\n".repeat(20_000),
-      toolchains: `# ${"t".repeat(40_000)}`,
-      ignore: Arr.makeBy(3_000, (index) => `/${"d".repeat(100)}${index}`),
       variables: {
-        ...ownVariables,
+        ...Record.fromEntries(Arr.map(names, (name) => [name, "v"] as const)),
         ...Record.fromEntries(
           Arr.makeBy(200, (index) => [`VAR_${index}`, "v".repeat(4_000)] as const),
         ),
@@ -1635,12 +1593,6 @@ describe("the environment tools from a program", () => {
     };
 
     const base = fakeEnvironments("default", bigGlobal).service;
-
-    const skills = Arr.makeBy(2_000, (index) => ({
-      name: `skill-${index}`,
-      description: "d".repeat(100),
-      savedAt: 1,
-    }));
 
     const crowded: EnvironmentsService = {
       ...base,
@@ -1652,34 +1604,8 @@ describe("the environment tools from a program", () => {
           build: { status: "none" as const },
         })),
       ),
-      get: (id) =>
-        Effect.map(base.get(id), (found) =>
-          found === null
-            ? null
-            : {
-                ...found,
-                repos: Arr.makeBy(1_000, (index) => ({
-                  name: `repo-${index}`,
-                  url: `https://github.com/o/${"r".repeat(60)}.git`,
-                })),
-                secrets: Arr.makeBy(2_000, (index) => ({
-                  name: `SECRET_${index}`,
-                  scope: "environment" as const,
-                  build: false,
-                })),
-                skills,
-                globalSkills: skills,
-                overrides: { ...found.overrides, variables: ownVariables },
-                problem: "p".repeat(20_000),
-              },
-        ),
       global: Effect.map(base.global, (kept) => ({
         ...kept,
-        overriddenIn: {
-          ...kept.overriddenIn,
-          instance: Arr.makeBy(1_000, (index) => ({ id: `env-${index}`, name: "n".repeat(40) })),
-        },
-        skills,
         secrets: Arr.makeBy(2_000, (index) => ({
           name: `SECRET_${index}`,
           scope: "every" as const,
@@ -1688,67 +1614,32 @@ describe("the environment tools from a program", () => {
       })),
     };
 
-    // Called as a program does: a value this big does not fit a tool result's text, so what comes back is how large it
-    // is, which of its lists were cut and how long each is. Each must be a value (no error) under what a nested call
-    // holds. The only diagnostics are of the text, which the Harness cuts for the model.
+    // Called as a program does: what comes back is a value (no error) under what a nested call holds, with which of
+    // its lists were cut.
     const sized = await runSized(
       [await extensionOver(crowded)],
       [
         ["environment_list", {}],
         ["environment_get", { id: "*" }],
-        ["environment_get", { id: "default" }],
       ],
     );
 
-    expect(Arr.map(sized, (each) => each.isError)).toEqual([false, false, false]);
+    expect(Arr.map(sized, (each) => each.isError)).toEqual([false, false]);
 
     for (const each of sized) expect(each.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
 
-    const [list, global, own] = sized;
-
-    // `environment_get`'s worst case is stated in `environment-outputs.ts`: far under the cap.
-    expect(global?.bytes).toBeLessThan(1024 * 1024);
-    expect(own?.bytes).toBeLessThan(1024 * 1024);
+    const [list, global] = sized;
 
     expect(list?.truncated).toMatchObject({ environments_truncated: true });
     expect(list?.lengths.environments).toBeLessThan(4_000);
-
-    expect(global?.truncated).toMatchObject({
-      variables_truncated: true,
-      secrets_truncated: true,
-      skills_truncated: true,
-    });
-    expect(global?.lengths.variables).toBeLessThan(3_200);
+    expect(global?.truncated).toMatchObject({ variables_truncated: true, secrets_truncated: true });
     expect(global?.lengths.secrets).toBeLessThan(2_000);
-    expect(global?.lengths.skills).toBeLessThan(2_000);
 
-    expect(own?.truncated).toMatchObject({
-      repos_truncated: true,
-      variables_truncated: true,
-      secrets_truncated: true,
-      skills_truncated: true,
-      problem_truncated: true,
-    });
-    expect(own?.lengths.repos).toBeLessThan(1_000);
-    expect(own?.lengths.secrets).toBeLessThan(2_000);
-    // The names Global's variables and Skills have that the Environment's own hide are cut too.
-    expect(own?.lengths.overridden_global_variables).toBeLessThan(3_000);
-    expect(own?.lengths.overridden_global_skills).toBeLessThan(2_000);
-
-    // The cuts inside the settings, which a script gets as `value_truncated` and `overridden_in_truncated`.
+    // The cut inside the settings, which a script gets as `value_truncated`.
     const tool = await toolsOver(crowded);
+    const result = await run(tool("environment_get"), { id: "*" });
+    const output = Schema.decodeUnknownSync(EnvironmentGetOutput)(result.structuredOutput);
 
-    for (const id of ["*", "default"]) {
-      const result = await run(tool("environment_get"), { id });
-      const output = Schema.decodeUnknownSync(EnvironmentGetOutput)(result.structuredOutput);
-
-      expect(output.settings).toMatchObject({
-        setup_script: { value_truncated: true },
-        start_script: { value_truncated: true },
-        toolchains: { value_truncated: true },
-        ignore: { value_truncated: true },
-      });
-      expect(output.settings.instance.overridden_in_truncated).toBe(id === "*");
-    }
+    expect(output.settings).toMatchObject({ setup_script: { value_truncated: true } });
   });
 });

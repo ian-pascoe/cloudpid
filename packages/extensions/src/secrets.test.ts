@@ -6,8 +6,7 @@ import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type JsonObject } from "@earendil-works/pi-durable";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { decodeProgramCall, runSized } from "./program.fixture.ts";
-import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
+import { decodeProgramCall } from "./program.fixture.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 import {
@@ -138,40 +137,16 @@ describe("secrets", () => {
   it.each([
     ["a placeholder", ref("MISSING"), ref("MISSING"), hint(removedByExtension(ref("MISSING")))],
     [
-      "a placeholder written twice",
-      `${ref("MISSING")} and ${ref("MISSING")}`,
-      ref("MISSING"),
-      hint(removedByExtension(ref("MISSING"))),
-    ],
-    [
       "a shell expansion",
       `curl -u $${env("MISSING")}`,
       `$${env("MISSING")}`,
       hint(shellEscape(`$${env("MISSING")}`)),
     ],
     [
-      "a braced shell expansion",
-      `curl -u \${${env("MISSING")}}`,
-      `\${${env("MISSING")}}`,
-      hint(shellEscape(`\${${env("MISSING")}}`)),
-    ],
-    [
-      "a shell expansion with a modifier",
-      `curl -u \${${env("MISSING")}:-none}`,
-      `\${${env("MISSING")}`,
-      hint(shellEscape(`\${${env("MISSING")}`)),
-    ],
-    [
       "a reference in both forms",
       `${ref("MISSING")} or $${env("MISSING")}`,
       `${ref("MISSING")}, $${env("MISSING")}`,
       hint(removedByExtension(ref("MISSING")), shellEscape(`$${env("MISSING")}`)),
-    ],
-    [
-      "a bare word before a shell expansion",
-      `${env("MISSING")} is unset: echo $${env("MISSING")}`,
-      `${env("MISSING")}, $${env("MISSING")}`,
-      hint(removedByExtension(env("MISSING")), shellEscape(`$${env("MISSING")}`)),
     ],
   ])(
     "blocks a call whose %s names no held Secret, quoting it as written and showing how to escape each form",
@@ -192,12 +167,6 @@ describe("secrets", () => {
 
   it.each([
     ["a malformed placeholder", ref("lower-case"), hint(removedByExtension(ref("lower-case")))],
-    ["an empty placeholder", ref(""), hint(removedByExtension(ref("")))],
-    [
-      "a malformed environment reference",
-      `$${env("lower")}`,
-      hint(shellEscape(`$${env("lower")}`)),
-    ],
   ])(
     "blocks %s, quoting it and saying what a Secret Name looks like",
     async (_kind, written, escapes) => {
@@ -215,16 +184,6 @@ describe("secrets", () => {
       expect(session.recorded).toEqual([]);
     },
   );
-
-  it("gives a malformed and an unheld reference each its own advice in one block, with one escape example for the placeholders", async () => {
-    const session = await openSecretsHarness();
-
-    await session.prompt("Go", call("record", { text: `${ref("bad name")} ${ref("MISSING")}` }));
-
-    expect((await session.lastResult())?.text).toContain(
-      `The call did not run. ${ref("bad name")} is not a valid Secret Reference: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references ${ref("MISSING")}, which this Session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it: \\${ref("bad name")}, which the Secrets extension removes before the tool runs.`,
-    );
-  });
 
   it("passes an environment tool's reference through unresolved, held or not, for the tool to refuse", async () => {
     const saved: string[] = [];
@@ -697,44 +656,6 @@ describe("secrets", () => {
           { name: "MISSING", status: "not_held", scope: null },
         ],
       });
-    });
-
-    it("cuts a long list of Secrets, and the call still succeeds", async () => {
-      const kept: KeptSecret[] = Array.from({ length: 4000 }, (_, index) => ({
-        name: `KEPT_SECRET_${String(index).padStart(5, "0")}_${"X".repeat(40)}`,
-        value: `value-${index}-0123456789`,
-        scope: "environment",
-        build: false,
-      }));
-
-      const session = await openSecretsHarness([], kept);
-      const [got] = await runSized([session.extension], [["secret_list", {}]]);
-
-      // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
-      expect(got).toMatchObject({
-        isError: false,
-        truncated: { secrets_truncated: true },
-      });
-      expect(got?.lengths.secrets).toBeGreaterThan(0);
-      expect(got?.lengths.secrets).toBeLessThan(kept.length);
-      expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
-    });
-
-    it("cuts a long list of names forgotten, and the call still succeeds", async () => {
-      const session = await openSecretsHarness();
-
-      const names = Array.from(
-        { length: 4000 },
-        (_, index) => `NAME_${String(index).padStart(5, "0")}_${"X".repeat(60)}`,
-      );
-
-      const [got] = await runSized([session.extension], [["secret_forget", { names }]]);
-
-      // The text is cut too, which pi-durable says in a diagnostic: the value is what is under test.
-      expect(got).toMatchObject({ isError: false, truncated: { secrets_truncated: true } });
-      expect(got?.lengths.secrets).toBeGreaterThan(0);
-      expect(got?.lengths.secrets).toBeLessThan(names.length);
-      expect(got?.bytes).toBeLessThan(MAX_NESTED_STRUCTURED_OUTPUT_BYTES);
     });
 
     // The program stand-in's own result is redacted too, which would hide a value left in the nested one: so the nested

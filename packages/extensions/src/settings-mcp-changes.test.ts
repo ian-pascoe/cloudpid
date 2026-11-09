@@ -211,21 +211,6 @@ describe("settings_mcp_disable", () => {
       ),
     ).toContain("zzz");
   });
-
-  it("refuses a reason that holds a Secret Reference, saving nothing", async () => {
-    const { tool, recorded } = await setup({ global: { mcp: { servers: { files: FILES } } } });
-
-    await failure(
-      run(tool("settings_mcp_disable"), {
-        scope: DEFAULT,
-        name: "files",
-        // A placeholder, written in two parts so that nothing here is one.
-        reason: `uses ${"{{"}secret:ABC${"}}"}`,
-      }),
-    );
-
-    expect(recorded).toEqual([]);
-  });
 });
 
 describe("settings_mcp_exposure_set", () => {

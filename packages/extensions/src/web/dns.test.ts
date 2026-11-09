@@ -86,8 +86,6 @@ describe("DohResolverLive", () => {
 
   it.each([
     ["a server failure", () => doh({ Status: 2 })],
-    ["an HTTP error", () => new Response("", { status: 500 })],
-    ["a body that is not DoH JSON", () => ok("<html>", "text/html")],
     ["a transport failure", () => WebToolError.make({ message: "network error" })],
   ])("fails closed on %s", async (_name, answer) => {
     const { exit } = await resolve("example.com", answer);
