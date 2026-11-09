@@ -7,6 +7,8 @@ import {
   fieldSkill,
   armsTrigger,
   type TriggerDefinition,
+  type TriggerSourceInput,
+  githubHookOf,
   type TriggerOverview,
   TriggerUnscheduled,
   fieldTrigger,
@@ -71,6 +73,7 @@ import {
   repoTaken,
   triggerChangedSince,
   triggerNoDelivery,
+  triggerGitHubHooksUnavailable,
   triggerNoWebhook,
   triggerRevertNotWiped,
   triggerSecretsUnreadable,
@@ -225,6 +228,8 @@ const triggerHook = (
       };
 
       if (origin !== undefined && origin !== "") hook.origin = origin;
+
+      if (answer.github !== undefined) hook.github = answer.github;
 
       return Effect.succeed(hook);
     }
@@ -499,6 +504,21 @@ export const serveRegistryRpc = <R = never>(
         Effect.mapError(() => failed(triggerUnreachable)),
         Effect.flatMap((hook) => triggerHook(id, hook, appOrigin)),
       );
+
+    /**
+     * Whether the Registry makes `source`'s GitHub-managed hook (`workers.md` → the callee lists its features): a source
+     * that names none passes, and one that does is refused while the Registry doesn't list `githubHooks`.
+     */
+    const githubHooksListed = (source: TriggerSourceInput) =>
+      githubHookOf({ source }) === undefined
+        ? Effect.void
+        : registry.triggerFeatures().pipe(
+            Effect.map(({ githubHooks }) => githubHooks),
+            // An older Registry has no such method.
+            Effect.catchCause(() => Effect.succeed(false)),
+            Effect.filterOrFail(Predicate.isTruthy, () => failed(triggerGitHubHooksUnavailable)),
+            Effect.asVoid,
+          );
 
     /** Trigger `id`'s object woken after the owner's write, as `paused` leaves the Trigger, answering `definition`. */
     const afterWrite = (definition: TriggerDefinition, done: string) =>
@@ -1031,7 +1051,7 @@ export const serveRegistryRpc = <R = never>(
               definitions,
               (definition) =>
                 triggers.state(definition.id).pipe(
-                  Effect.map(({ lastFire, waiting }): TriggerOverview => {
+                  Effect.map(({ lastFire, waiting, github }): TriggerOverview => {
                     const overview: Mutable<TriggerOverview> = {
                       definition,
                       lastFire,
@@ -1040,6 +1060,8 @@ export const serveRegistryRpc = <R = never>(
 
                     // An object older than this Worker says nothing of it.
                     if (Predicate.isNotNullish(waiting)) overview.waiting = waiting;
+
+                    if (Predicate.isNotNullish(github)) overview.github = github;
 
                     return overview;
                   }),
@@ -1052,7 +1074,8 @@ export const serveRegistryRpc = <R = never>(
         ),
       listSessionTriggers: ({ session }) => registry.listSessionTriggers({ session }),
       createTrigger: ({ id, trigger }) =>
-        registry.createTrigger({ id, trigger }).pipe(
+        githubHooksListed(trigger.source).pipe(
+          Effect.andThen(registry.createTrigger({ id, trigger })),
           Effect.flatMap((write) =>
             triggerWritten(
               write,

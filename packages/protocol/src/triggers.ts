@@ -653,12 +653,13 @@ export type FireNowQueued = typeof FireNowQueued.Type;
  * A webhook Trigger's URL and Signing secret, as the owner reveals them (`triggers.md` → Secrets): the URL's `path`
  * (`/hooks/<id>/<token>`), and the stage's `origin` before it, absent where the page's own is the one (`alchemy dev`).
  * The `secret` is as the sender is given it: `whsec_<base64>` for a `standard` Trigger, else the key itself. The agent
- * never reads this.
+ * never reads this. A Trigger with a GitHub-managed hook says where it is (`github`): a rotation updates it at GitHub.
  */
 export const TriggerHook = Schema.Struct({
   origin: Schema.optionalKey(Schema.String),
   path: Schema.String,
   secret: Schema.String,
+  github: Schema.optionalKey(GitHubHookStatus),
 });
 
 export type TriggerHook = typeof TriggerHook.Type;

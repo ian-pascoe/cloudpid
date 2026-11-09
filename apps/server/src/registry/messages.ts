@@ -24,6 +24,13 @@ export const triggerUnreachable = "The trigger's object didn't answer: try again
 /** That Fire now was asked of a paused Trigger. */
 export const triggerPaused = "The trigger is paused: resume it to fire it";
 
+/**
+ * That a Trigger with a GitHub-managed hook was asked of a Registry that doesn't list `githubHooks` yet (one older than
+ * its caller, for the minutes after a deploy), which would keep the Trigger with no hook.
+ */
+export const triggerGitHubHooksUnavailable =
+  "The server is being updated and can't make a GitHub-managed hook yet: try again in a few minutes";
+
 /** That a Trigger's URL or Signing secret was asked of one that has none: only a webhook Trigger does. */
 export const triggerNoWebhook =
   "This trigger has no URL or signing secret: only a webhook trigger does";

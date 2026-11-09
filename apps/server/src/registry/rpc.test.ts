@@ -36,6 +36,8 @@ import {
   type SkillInstallation,
   skillField,
   type FireRecord,
+  type GitHubHookStatus,
+  type OwnerTriggerInput,
   MAX_FIRE_LOG,
   sourceProblem,
   type TriggerChangeValue,
@@ -133,6 +135,9 @@ const scriptedMcpHost = (methods: {
 }) =>
   // SAFETY: the answers are `unknown` on purpose; the status reads decode them as they would an answer from the wire.
   methods as Pick<McpHostMethods, "servers" | "serverLog" | "apply" | "request">;
+
+/** What a fake Registry's `triggerFeatures` answers: `missing` for an older Registry that has no such method. */
+type TriggerFeatureAnswer = { current: { githubHooks: boolean } | "missing" };
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
@@ -646,6 +651,31 @@ const fakeRegistries = () => {
   const triggerFires = new Map<string, Array<FireRecord>>();
   const triggerWaiting = new Map<string, { since: number; merged: number }>();
 
+  /** Where each Trigger object's GitHub-managed hook is, for one that has one. */
+  const triggerGitHub = new Map<string, GitHubHookStatus>();
+
+  /** What the Registry's `triggerFeatures` answers; `missing` for an older Registry that has no such method. */
+  const triggerFeatureList: TriggerFeatureAnswer = { current: { githubHooks: true } };
+
+  /** What Trigger `id`'s object says of itself. */
+  const triggerState = (id: string) => ({
+    definition: triggersHeld.get(id) ?? null,
+    nextFireAt: null,
+    lastFire: triggerFires.get(id)?.[0] ?? null,
+    pending: 0,
+    waiting: triggerWaiting.get(id) ?? null,
+    github: triggerGitHub.get(id) ?? null,
+  });
+
+  /** A Trigger object's `ok` answer for `secrets`, with its GitHub-managed hook when it has one. */
+  const hookAnswer = (id: string, secrets: { token: string; secret: string }) => {
+    const github = triggerGitHub.get(id);
+
+    return github === undefined
+      ? { status: "ok" as const, secrets }
+      : { status: "ok" as const, secrets, github };
+  };
+
   /** Call Trigger `id`'s object, failing as one that never answers when it is unreachable. */
   const reachTrigger = <A>(id: string, answer: () => A) =>
     Effect.suspend(() =>
@@ -721,9 +751,7 @@ const fakeRegistries = () => {
 
         if (unreadableHooks.has(id)) return { status: "unreadable" as const };
 
-        return held === undefined
-          ? { status: "none" as const }
-          : { status: "ok" as const, secrets: held };
+        return held === undefined ? { status: "none" as const } : hookAnswer(id, held);
       }),
     rotate: (id, what) =>
       reachTrigger(id, () => {
@@ -743,7 +771,7 @@ const fakeRegistries = () => {
 
         triggerHooks.set(id, next);
 
-        return { status: "ok" as const, secrets: next };
+        return hookAnswer(id, next);
       }),
     fireNow: (id, key) =>
       reachTrigger(id, () => {
@@ -759,21 +787,14 @@ const fakeRegistries = () => {
       }),
     fireLog: (id, limit) =>
       reachTrigger(id, () => (triggerFires.get(id) ?? []).slice(0, limit ?? MAX_FIRE_LOG)),
-    state: (id) =>
-      reachTrigger(id, () => ({
-        definition: triggersHeld.get(id) ?? null,
-        nextFireAt: null,
-        lastFire: triggerFires.get(id)?.[0] ?? null,
-        pending: 0,
-        waiting: triggerWaiting.get(id) ?? null,
-      })),
+    state: (id) => reachTrigger(id, () => triggerState(id)),
     wake: (id) =>
       Effect.suspend(() => {
         calls.push(`wakeTriggerObject:${id}`);
 
         return unreachableTriggers.has(id)
           ? Effect.fail(TriggerUnreachable.make({ message: "no answer" }))
-          : Effect.void;
+          : Effect.sync(() => triggerState(id));
       }),
     sync: (id) =>
       Effect.sync(() => {
@@ -1696,7 +1717,14 @@ const fakeRegistries = () => {
       ),
     triggerDefinition: () => Effect.succeed(null),
     knownTriggers: () => Effect.succeed([]),
-    triggerFeatures: () => Effect.succeed({ githubHooks: true }),
+    triggerFeatures: () =>
+      Effect.suspend(() => {
+        const features = triggerFeatureList.current;
+
+        return features === "missing"
+          ? Effect.die("The Registry has no method triggerFeatures")
+          : Effect.succeed(features);
+      }),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
     notifyTriggerFailed: () => Effect.void,
     deleteEnvironmentWithTriggers: ({ id }) =>
@@ -1809,6 +1837,8 @@ const fakeRegistries = () => {
     triggersHeld,
     triggerFires,
     triggerWaiting,
+    triggerGitHub,
+    triggerFeatureList,
     triggerHooks,
     unreadableHooks,
     unwipableTriggers,
@@ -3735,8 +3765,11 @@ describe("the owner's Triggers", () => {
   };
 
   /** Make Trigger `id` of `trigger` as the owner's form does. */
-  const create = (fake: ReturnType<typeof fakeRegistries>, id: string, trigger = WEEKLY) =>
-    call(fake, (registry) => registry.createTrigger({ id, trigger }));
+  const create = (
+    fake: ReturnType<typeof fakeRegistries>,
+    id: string,
+    trigger: OwnerTriggerInput = WEEKLY,
+  ) => call(fake, (registry) => registry.createTrigger({ id, trigger }));
 
   it("makes a Trigger under the form's id, and once only when the form sends it again", async () => {
     const fake = fakeRegistries();
@@ -3843,6 +3876,81 @@ describe("the owner's Triggers", () => {
       ["t1", { since: 7, merged: 2 }],
       ["t2", undefined],
     ]);
+  });
+
+  const HOOKED = {
+    ...WEEKLY,
+    name: "CI failures",
+    source: {
+      type: "webhook" as const,
+      format: "github" as const,
+      repo: "octo-org/octo-repo",
+      events: ["workflow_run"],
+    },
+  };
+
+  it("makes a GitHub-managed hook only once the Registry lists the feature", async () => {
+    const fake = fakeRegistries();
+
+    fake.triggerFeatureList.current = "missing";
+
+    const older = await call(fake, (registry) =>
+      Effect.flip(registry.createTrigger({ id: "t1", trigger: HOOKED })),
+    );
+
+    fake.triggerFeatureList.current = { githubHooks: false };
+
+    const without = await call(fake, (registry) =>
+      Effect.flip(registry.createTrigger({ id: "t1", trigger: HOOKED })),
+    );
+
+    expect(older).toBeInstanceOf(EnvironmentError);
+    expect(older.message).toBe(
+      "The server is being updated and can't make a GitHub-managed hook yet: try again in a few minutes",
+    );
+    expect(without.message).toBe(older.message);
+    expect(fake.triggersHeld.size).toBe(0);
+
+    // A webhook with no repo needs no feature.
+    const plain = await create(fake, "t2", {
+      ...HOOKED,
+      source: { type: "webhook", format: "github" },
+    });
+
+    fake.triggerFeatureList.current = { githubHooks: true };
+
+    const hooked = await create(fake, "t1", HOOKED);
+
+    expect(plain.id).toBe("t2");
+    expect(hooked.source).toEqual(HOOKED.source);
+  });
+
+  it("lists a GitHub-managed hook's state on its row, and says it with the revealed URL", async () => {
+    const fake = fakeRegistries();
+
+    const failed: GitHubHookStatus = {
+      repo: "octo-org/octo-repo",
+      state: "failed",
+      problem: { code: "permission", message: "Accept Webhooks: write" },
+    };
+
+    await create(fake, "t1", HOOKED);
+    await create(fake, "t2");
+    fake.triggerGitHub.set("t1", failed);
+    fake.triggerHooks.set("t1", { token: "tok", secret: "sec" });
+
+    const listed = await call(fake, (registry) =>
+      registry.listTriggers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(Arr.map(listed, ({ definition, github }) => [definition.id, github])).toEqual([
+      ["t1", failed],
+      ["t2", undefined],
+    ]);
+    expect(await call(fake, (registry) => registry.revealTrigger({ id: "t1" }))).toMatchObject({
+      path: "/hooks/t1/tok",
+      github: failed,
+    });
   });
 
   it("changes a Trigger only while it has the fields the form opened on, a pause aside", async () => {
