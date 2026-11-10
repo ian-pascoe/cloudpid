@@ -483,6 +483,27 @@ describe("GitHubApp", () => {
     });
   });
 
+  it("narrows its tokens to the repositories it was made with, by name only (ADR-0051)", async () => {
+    const now = Date.UTC(2026, 0, 1, 12);
+    const github = fakeGitHub({ now: () => now });
+
+    const app = new GitHubApp({
+      appId: "1",
+      privateKey: KEYS.privateKey,
+      fetch: github.fetch,
+      now: () => now,
+      permissions: { issues: "write" },
+      repositories: ["cloudpid"],
+    });
+
+    await app.token("ian-pascoe");
+
+    expect(JSON.parse(github.seen.at(-1)?.body ?? "")).toEqual({
+      repositories: ["cloudpid"],
+      permissions: { issues: "write" },
+    });
+  });
+
   it("finds the installation again when it is gone (installed again under another id)", async () => {
     let now = Date.UTC(2026, 0, 1, 12);
     let installation = 42;

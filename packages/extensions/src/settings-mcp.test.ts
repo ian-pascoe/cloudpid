@@ -282,6 +282,7 @@ const toolsOver = async (
         get: () => Effect.die("No Settings"),
         own: Effect.die("No Settings"),
         change: () => Effect.die("No Settings"),
+        models: Effect.die("No Settings"),
       }),
       Effect.provideService(SettingsReload, { apply: Effect.die("No Settings") }),
       Effect.provideService(AgentChangeLog, { record: () => Effect.die("No Settings") }),

@@ -4,7 +4,7 @@
 // registers are one step no other request lands in the middle of. The table is migration 34's (`store.ts`); deleting
 // an Environment deletes its Triggers. The Registry never calls out: the caller wakes the Trigger's object.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over SQLite.
-import { ThinkingLevel } from "@cloudpid/config";
+import { catalogHas, ThinkingLevel, unservedModel } from "@cloudpid/config";
 import {
   defaultWhenBusy,
   fireTitle,
@@ -40,6 +40,7 @@ import {
   type SessionRefusal,
 } from "./store.ts";
 import { noWorkspace, subagentWorkspaceHoldsNoTrigger, triggerIdTaken } from "./messages.ts";
+import { readModelCatalog } from "./model-catalog.ts";
 
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =
@@ -331,9 +332,16 @@ export const openTriggers = (
     | "deleteWorkspace"
     | "deleteWorkspaceWithTriggers"
     | "deleteSession"
+    | "getDocument"
   >,
 ) => {
   const { sql } = storage;
+
+  /** Why a Trigger can't be given `model` (null: none, the Environment's default): one the Model catalog does not list. */
+  const modelProblem = (model: string | null | undefined): string | undefined =>
+    model === null || model === undefined || catalogHas(readModelCatalog(store), model)
+      ? undefined
+      : `model: ${unservedModel(model)}`;
 
   /** The ids of the active Triggers kept for Workspace `id`. */
   const activeWorkspaceTriggers = (id: string): ReadonlyArray<string> =>
@@ -502,13 +510,14 @@ export const openTriggers = (
         const model = "model" in input ? (input.model ?? null) : null;
         const thinking = "thinking" in input ? (input.thinking ?? null) : null;
 
-        const problem = fieldsProblem(input.kind, {
-          ...input,
-          when_busy: whenBusy,
-          base,
-          model,
-          thinking,
-        });
+        const problem =
+          fieldsProblem(input.kind, {
+            ...input,
+            when_busy: whenBusy,
+            base,
+            model,
+            thinking,
+          }) ?? modelProblem(model);
 
         if (problem !== undefined) return { status: "invalid", problem };
 
@@ -666,7 +675,9 @@ export const openTriggers = (
           updated_at: now,
         };
 
-        const problem = fieldsProblem(toFields(known).kind, { ...next, source });
+        // Only a model the change gives is checked: one kept from before stays, whatever the catalog says of it now.
+        const problem =
+          fieldsProblem(toFields(known).kind, { ...next, source }) ?? modelProblem(patch.model);
 
         if (problem !== undefined) return { status: "invalid", problem };
 
@@ -954,14 +965,14 @@ export const openTriggers = (
      * Delete Environment `id` (`store.deleteEnvironment`, which deletes its Triggers in the same transaction) and answer
      * the ids of the Triggers that went with it (`docs/architecture/triggers.md` → Cascades).
      */
-    deleteEnvironment: (id: string): EnvironmentRemoval =>
+    deleteEnvironment: (id: string, now?: number): EnvironmentRemoval =>
       storage.transactionSync((): EnvironmentRemoval => {
         const held = Arr.map(
           sql.exec<{ id: string }>("SELECT id FROM triggers WHERE environment = ?", id).toArray(),
           (found) => found.id,
         );
 
-        const deletion = store.deleteEnvironment(id);
+        const deletion = store.deleteEnvironment(id, now);
 
         return { deletion, triggers: deletion === "deleted" ? held : [] };
       }),

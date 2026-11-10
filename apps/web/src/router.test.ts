@@ -1,5 +1,11 @@
 // @effect-diagnostics asyncFunction:off newPromise:off -- a test that holds a native promise open and lets it go.
-import { agentChangesPath, GLOBAL_SEGMENT, SETTINGS_PATH, settingsPath } from "@cloudpid/protocol";
+import {
+  agentChangesPath,
+  approvalPath,
+  GLOBAL_SEGMENT,
+  SETTINGS_PATH,
+  settingsPath,
+} from "@cloudpid/protocol";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appViews } from "./app-view/teardown.ts";
@@ -468,6 +474,23 @@ describe("the request a Session page's link names", () => {
 
     replaceSearch("");
     expect(registry.get(requestParamAtom)).toBeUndefined();
+  });
+
+  it("names the request of an Approval's url too, with the Settings section its path shows", () => {
+    const id = "0192-ab/c";
+
+    stubWindow(approvalPath("work", "limits", id));
+
+    const registry = AtomRegistry.make();
+
+    registry.mount(requestParamAtom);
+    registry.mount(pageAtom);
+    expect(registry.get(requestParamAtom)).toBe(id);
+    expect(registry.get(pageAtom)).toMatchObject({
+      kind: "settings",
+      scope: "work",
+      view: { kind: "section", section: "limits" },
+    });
   });
 });
 

@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off nodeBuiltinImport:off -- native array methods over plain values (the bundle carries no Effect runtime); runs on node, on the owner's machine.
+// @effect-diagnostics preferEffectArray:off nodeBuiltinImport:off -- native array methods over plain values (the extension carries no Effect runtime); runs on node, on the owner's machine.
 /**
  * Where the endpoint is (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Configuration): the `cloudpid`
  * setting from pi's global settings and a trusted project's, through pi's own `SettingsManager` over real files. No

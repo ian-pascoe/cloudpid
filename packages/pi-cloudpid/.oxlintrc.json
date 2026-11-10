@@ -2,10 +2,10 @@
   "$schema": "../../node_modules/@effect/tsgo/oxlint-schema.json",
   "extends": ["../../.oxlintrc.json"],
   "rules": {
-    // Replaces the root rule. The extension runs on the owner's laptop and bundles the SDK's client
-    // (docs/architecture/mcp-endpoint.md → The `/cloudpid` command), so the SDK rule of the Workers is replaced by what a
-    // laptop bundle must never reach: Workers code, and every other `@modelcontextprotocol/*` package. It may import
-    // only types from `@cloudpid/protocol`, whose Schemas pull `effect` and the Registry into the bundle.
+    // Replaces the root rule. The extension runs on the owner's laptop and loads the SDK's client
+    // (docs/architecture/mcp-endpoint.md → The `/cloudpid` command), so the SDK rule of the Workers is replaced by what
+    // the extension must never reach: Workers code, and every other `@modelcontextprotocol/*` package. It may import
+    // only types from `@cloudpid/protocol`, whose Schemas would load `effect` and the Registry.
     "no-restricted-imports": [
       "error",
       {
@@ -32,12 +32,12 @@
           },
           {
             "group": ["@modelcontextprotocol/**", "!@modelcontextprotocol/client"],
-            "message": "pi-cloudpid bundles the SDK's client and nothing else of it: not the server, core, an extension or a transport (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+            "message": "pi-cloudpid loads the SDK's client and nothing else of it: not the server, core, an extension or a transport (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
           },
           {
             "regex": "^@cloudpid/protocol(/|$)",
             "allowTypeImports": true,
-            "message": "pi-cloudpid imports only types from @cloudpid/protocol (`import type`): its Schemas pull effect and the Registry into the bundle, so the constants are copied (src/constants.ts, checked by constants.test.ts)."
+            "message": "pi-cloudpid imports only types from @cloudpid/protocol (`import type`): its Schemas would load effect and the Registry on the owner's machine, so the constants are copied (src/constants.ts, checked by constants.test.ts)."
           }
         ]
       }
@@ -46,7 +46,7 @@
   "overrides": [
     {
       // Tests and the stub endpoint build on cloudpid's own protocol values (`apiOk`, the tool table) and check the
-      // copied constants against them; none of them is in the bundle.
+      // copied constants against them; the extension never loads them.
       "files": ["**/*.test.ts", "**/*.fixture.ts"],
       "rules": {
         "no-restricted-imports": [
@@ -75,7 +75,7 @@
               },
               {
                 "group": ["@modelcontextprotocol/**", "!@modelcontextprotocol/client"],
-                "message": "pi-cloudpid bundles the SDK's client and nothing else of it: not the server, core, an extension or a transport (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+                "message": "pi-cloudpid loads the SDK's client and nothing else of it: not the server, core, an extension or a transport (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
               }
             ]
           }

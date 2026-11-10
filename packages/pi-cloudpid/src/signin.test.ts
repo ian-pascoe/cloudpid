@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off globalFetch:off newPromise:off globalTimers:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as `fetch` gives them; runs on node, on the owner's machine; the loopback request a browser would make; a browser that opens late.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off globalFetch:off newPromise:off globalTimers:off -- native array methods over plain values (the extension carries no Effect runtime); plain Promises, as `fetch` gives them; runs on node, on the owner's machine; the loopback request a browser would make; a browser that opens late.
 /**
  * Signing in against a stub authorization server (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → The
  * connection): discovery from the 401's `resource_metadata`, Dynamic Client Registration with a loopback redirect, PKCE

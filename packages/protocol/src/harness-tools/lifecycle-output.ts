@@ -6,10 +6,12 @@
 // (`packages/extensions/src/harness-session.test.ts` pins them): the shape of a change at a Scope
 // (`ChangeOutputFields`) with whether anything changed and what the tool adds. The endpoint's are flat objects with
 // optional keys (`next`, which `McpServer` fills, and `replayed`), no Approval and nothing that is a Session's own (the
-// Workspace a change was handed to, a call that ran again): the endpoint serves an Environment's own Skills only, so
-// no list of the Environments whose own Skill hides one kept Global.
+// Workspace a change was handed to, a call that ran again). A Skill tool's change at Global asks the owner (S3b-3), so its
+// endpoint output gains the request's optional keys (`status`, `approval_id`, `url`, `expires_at`): a `pending` answer
+// carries a change's keys with no change made yet.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Schema from "effect/Schema";
+import { ApprovalRequestFields } from "./approvals.ts";
 import { ChangeEndpointOutput, ChangeOutputFields } from "./change-output.ts";
 import { RepoOutput, SkillSourceOutput } from "./environment-output.ts";
 import { ScopeRef } from "./scope.ts";
@@ -237,11 +239,26 @@ export const SkillUpdateOutput = Schema.Struct({
   }),
 });
 
+/**
+ * The keys of a Skill tool's endpoint answer to a change at Global, which asks the owner: `status` and the request's (all
+ * absent from a change made at once, at an Environment).
+ */
+const SkillAskFields = {
+  status: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        '"pending": a change to the Skills kept Global, so the owner was asked (approval_wait follows the request) and nothing is changed yet; "unchanged": Global keeps it so already, so nothing was asked; absent for a change made at once, at an Environment',
+    }),
+  ),
+  ...ApprovalRequestFields,
+};
+
 /** The fields of a Skill tool's endpoint answer that every one has: the Scope, the changes and what was left alone. */
 const SkillEndpointFields = {
   ...ChangeEndpointOutput.fields,
   unchanged_truncated: UnchangedTruncated,
   changed,
+  ...SkillAskFields,
 };
 
 /** `environment_skill_install` on the endpoint: for an Environment's own Skills, what was installed, refused or listed. */
@@ -270,6 +287,7 @@ export const SkillUpdateEndpointOutput = Schema.Struct({
 export const SkillRemoveEndpointOutput = Schema.Struct({
   ...ChangeEndpointOutput.fields,
   changed,
+  ...SkillAskFields,
   skill: SkillChangeFields.skill,
   global_served: SkillRemoveOutput.fields.global_served,
 });

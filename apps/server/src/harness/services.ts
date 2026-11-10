@@ -3,16 +3,19 @@
 // Registry, the McpHosts and the main Worker's upkeep with no Session. `/mcp`'s `api` target runs the cores over them
 // (`./dispatch.ts`). The reads are the Session's own reads; the writes are the Session's services built with the
 // endpoint's author source (`../session/change-author.ts`), with no Workspace to hand a change to, and with the Builds'
-// and spares' upkeep they run handed to `background`, so it runs after the answer as after the owner's save.
+// and spares' upkeep they run handed to `background`, so it runs after the answer as after the owner's save. The deletes
+// an approved request runs are the Session's too (`sessionEnvironmentRemoval`), over the objects the owner's delete wipes.
 import type { SettingsEndpointServices } from "@cloudpid/extensions/settings-endpoint";
 import type { SettingsMcpAccessService } from "@cloudpid/extensions/settings-mcp";
-import { DeployCredentials } from "@cloudpid/extensions/environment";
+import { DeployCredentials, type EnvironmentsService } from "@cloudpid/extensions/environment";
+import type { SettingsAccessService } from "@cloudpid/extensions/settings";
 import {
   type EnvironmentChangeServices,
   endpointTextCheck,
   type TextCheck,
 } from "@cloudpid/extensions/environment-changes";
 import type { LifecycleChangeServices } from "@cloudpid/extensions/environment-lifecycle-changes";
+import type { EnvironmentRemovalService } from "@cloudpid/extensions/environment-deletes";
 import type { ResetCoreServices } from "@cloudpid/extensions/environment-reset";
 import type { SkillChangeServices } from "@cloudpid/extensions/environment-skill-changes";
 import type { EnvironmentReadServices } from "@cloudpid/extensions/environment-reads";
@@ -25,10 +28,15 @@ import { mcpHostName } from "../mcp/name.ts";
 import type { McpPushes } from "../mcp/push.ts";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
+import type { RemovalObjects } from "../registry/removal.ts";
 import type { Spares } from "../registry/rpc.ts";
 import { afterRepos, type UpkeepChange, upkeepFor } from "../registry/upkeep.ts";
 import { type AuthorSource, sessionSource } from "../session/change-author.ts";
 import { type LifecycleRegistry, sessionLifecycle } from "../session/environment-lifecycle.ts";
+import {
+  type EnvironmentRemovalRegistry,
+  sessionEnvironmentRemoval,
+} from "../session/environment-removal.ts";
 import {
   type EnvironmentReadsRegistry,
   type EnvironmentsRegistry,
@@ -55,16 +63,154 @@ export type HarnessChangeRegistry = Pick<
   "agentChangeFeatures" | "changeRequest" | "settleChangeRequest" | "notifyMcpChanges"
 >;
 
+/**
+ * What the Approvals asked over the endpoint use of the Registry (`./approval-ask.ts`, `./approval-runner.ts`,
+ * `./approval-follow.ts`): the requests, their lease and push, and the claims an approved one's write records.
+ */
+export type ApprovalsRegistry = Pick<
+  RegistryMethods,
+  | "requestApproval"
+  | "approval"
+  | "withdrawApproval"
+  | "claimApproval"
+  | "finishApproval"
+  | "releaseApproval"
+  | "staleApprovals"
+  | "notifyApproval"
+  | "waitApproval"
+  | "changeRequest"
+  | "settleChangeRequest"
+>;
+
 /** What the tools use of the Registry: the endpoint's Registry stub fits it, as a Session's does. */
 export type HarnessRegistry = EnvironmentReadsRegistry &
   SettingsReadsRegistry &
   SettingsMcpReadsRegistry &
-  EnvironmentsRegistry &
-  LifecycleRegistry &
-  SettingsRegistry &
+  EnvironmentWritesRegistry &
   SettingsMcpRegistry &
   Pick<RegistryMethods, "mcpLookRepoFiles"> &
-  HarnessChangeRegistry;
+  HarnessChangeRegistry &
+  ApprovalsRegistry;
+
+/** What the writes with no Session use of the Registry: the Environments', the Settings' and the deletes'. */
+export type EnvironmentWritesRegistry = EnvironmentsRegistry &
+  LifecycleRegistry &
+  SettingsRegistry &
+  EnvironmentRemovalRegistry;
+
+/** What the writes with no Session are built from (`endpointWrites`). */
+export type EndpointWriteDeps = {
+  readonly registry: EnvironmentWritesRegistry & SettingsMcpRegistry;
+  readonly builds: Pick<Builds, "of" | "rebuild">;
+  readonly spares: Pick<Spares, "of">;
+  /** The push of the hosts' MCP server sets, after an Environment's delete. */
+  readonly mcp: Pick<McpPushes, "sync">;
+  /** What an Environment's delete wipes besides its records, as the owner's delete does (`../registry/removal.ts`). */
+  readonly objects: RemovalObjects;
+  readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
+  readonly credentials: ReadonlyArray<string>;
+  /** What an Environment's Repos' change runs after it (`../registry/upkeep.ts` `afterRepos`); none where no tool adds one. */
+  readonly afterRepos?: Parameters<typeof sessionLifecycle>[0]["afterRepos"];
+  /**
+   * The McpHost of an Environment, which the MCP servers' reads of a host's inventory ask (an ask's `prepare`); none for the
+   * owner's `/rpc` call that applies an approved request, whose apply and words ask no host: that host fails when asked.
+   */
+  readonly host?: SettingsMcpAccessService["host"] | undefined;
+  /** This stage's app origin (`APP_ORIGIN_VAR`), for the MCP reads the Self-use rule shapes. */
+  readonly appOrigin?: string | undefined;
+};
+
+/** The writes a caller with no Session makes, by author source: the Environments, the Settings, and the check of a text. */
+export type EndpointWrites = {
+  /** The Environments, written as the Session writes them, with no Workspace, the upkeep after the answer. */
+  readonly environments: (source: AuthorSource) => EnvironmentsService;
+  /** The Settings at either Scope, written as the Session writes them. */
+  readonly settings: (source: AuthorSource) => Pick<SettingsAccessService, "get" | "change">;
+  /**
+   * The deletes an approved request makes: an Environment as the owner's delete deletes it, then the hosts' sets pushed
+   * after the answer; a kept Secret recorded, then the Builds' upkeep after the answer.
+   */
+  readonly removal: (source: AuthorSource) => EnvironmentRemovalService;
+  /** The endpoint's check of a kept text: the deploy-time credentials and Secret References (the Registry checks the kept Secrets). */
+  readonly holdsSecret: TextCheck;
+  /** The Registry's MCP read and checks for an MCP server's change, written as the Session writes them (no own Environment). */
+  readonly settingsMcp: (source: AuthorSource) => SettingsMcpAccessService;
+  /**
+   * The main Worker's push of an Environment's MCP server set to its host (`mcp.sync`), after the answer, for each Environment
+   * a change reaches. It never fails what it follows.
+   */
+  readonly mcpSync: (environment: string) => Effect.Effect<void>;
+};
+
+/** The host of an apply that asks none: a defect when asked, which the cores' contract rules out. */
+const noHost: SettingsMcpAccessService["host"] = () => {
+  const unasked = (what: string) =>
+    Effect.die(
+      new Error(`An approved MCP change asked a host (${what}): its apply and words ask none.`),
+    );
+
+  return {
+    requestStart: () => unasked("requestStart"),
+    servers: () => unasked("servers"),
+    apply: () => unasked("apply"),
+    request: () => unasked("request"),
+  };
+};
+
+/**
+ * The writes with no Session over `deps`: what the management tools' change cores run over, and what an approved
+ * Approval's apply runs over (`./approval-runner.ts`), from the `/mcp` request or from the owner's `/rpc` call alike.
+ */
+export const endpointWrites = ({
+  registry,
+  builds,
+  spares,
+  mcp,
+  objects,
+  background,
+  credentials,
+  afterRepos: reposChanged,
+  host = noHost,
+  appOrigin,
+}: EndpointWriteDeps): EndpointWrites => {
+  // The upkeep a write runs, after the answer: as after the owner's save, it never fails the change.
+  const afterAnswer = {
+    builds: { of: (environment: string) => background(builds.of(environment)) },
+    spares: { of: (environment: string) => background(spares.of(environment)) },
+  };
+
+  return {
+    environments: (source) =>
+      // No Workspace: `current` is null, so no change is this caller's own, and none is handed anywhere.
+      sessionEnvironments({
+        registry,
+        author: source,
+        ...afterAnswer,
+        lifecycle: sessionLifecycle({
+          registry,
+          author: source,
+          // No Test Builds: the lifecycle refuses one on the endpoint (S4a serves them). The Build a rebuild asks for is
+          // awaited, as the owner's Rebuild awaits it: the answer says whether one was asked for.
+          builds: { ...afterAnswer.builds, rebuild: builds.rebuild },
+          spares: afterAnswer.spares,
+          afterRepos: reposChanged,
+        }),
+      }),
+    settings: (source) => sessionSettingsAccess({ registry, author: source }),
+    settingsMcp: (source) =>
+      sessionSettingsMcpAccess({ registry, author: source, host, appOrigin }),
+    mcpSync: (environment) =>
+      background(Effect.suspend(() => mcp.sync(environment)).pipe(Effect.ignoreCause)),
+    removal: (source) =>
+      sessionEnvironmentRemoval({ registry, author: source, objects, builds, background, mcp }),
+    // The deploy-time credentials and the Secret Reference placeholders: the Registry checks the kept Secrets itself.
+    holdsSecret: (text) =>
+      endpointTextCheck.pipe(
+        Effect.provideService(DeployCredentials, { values: credentials }),
+        Effect.flatMap((check) => check(text)),
+      ),
+  };
+};
 
 /** What the services are built from: the Registry, the Environments' McpHosts, the upkeep, and this stage's app origin. */
 export type HarnessDeps = {
@@ -79,10 +225,14 @@ export type HarnessDeps = {
   readonly spares: Pick<Spares, "of" | "all">;
   /** The push of an Environment's MCP server set to its host, after a change of an MCP server's key. */
   readonly mcp: Pick<McpPushes, "sync">;
+  /** What an approved Environment's delete wipes besides its records, as the owner's delete does. */
+  readonly objects: RemovalObjects;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
   /** The deploy-time credentials a kept text may not hold (`DeployCredentials`): the GitHub App's key, in its forms. */
   readonly credentials: ReadonlyArray<string>;
+  /** This request's own origin, which a request's card `url` starts with. */
+  readonly origin?: string | undefined;
 };
 
 /** What the change tools' cores run over: each family's services (one `Environments`, written as the Session writes it). */
@@ -104,13 +254,20 @@ export type HarnessServices = {
   /**
    * What the Settings' and the MCP servers' cores run over for a call made by `source`: the Settings and the servers written
    * as the Session writes them, with the endpoint's check of a kept text and no `SettingsReload`; the sets a change reaches are
-   * pushed to their hosts before the answer, and one that fails is sent again with one `mcp.sync(environment)` in `background`.
+   * pushed to their hosts by the main Worker after the answer (one `mcp.sync(environment)` in `background` for each).
    */
   readonly settingsChanges: (source: AuthorSource) => SettingsEndpointServices;
   /** The MCP servers' access for `settings_mcp_reload`, which makes no Agent change and so has no author. */
   readonly settingsMcpReload: SettingsMcpAccessService;
-  /** The probe, the claims of `request_id` and the notice. */
-  readonly registry: HarnessChangeRegistry;
+  /** The writes with no Session, which an approved Approval's apply runs over. */
+  readonly writes: EndpointWrites;
+  /** The probe, the claims of `request_id` and the notice, and the Approvals asked over the endpoint. */
+  readonly registry: HarnessChangeRegistry & ApprovalsRegistry;
+  /**
+   * This request's own origin (`https://<host>`), which a request's card `url` starts with; none for a caller that has none
+   * (a test), whose `url` is the path.
+   */
+  readonly origin?: string | undefined;
   /** The upkeep recorded `changes` call for, in `background`: what an answer built from an earlier call's records runs. */
   readonly upkeep: (changes: ReadonlyArray<UpkeepChange>) => Effect.Effect<void>;
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
@@ -124,55 +281,43 @@ export const harnessServices = ({
   builds,
   spares,
   mcp,
+  objects,
   background,
   credentials,
+  origin,
 }: HarnessDeps): HarnessServices => {
   const host: SettingsMcpAccessService["host"] = (environment) =>
     mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment)));
 
-  // The upkeep a write runs, after the answer: as after the owner's save, it never fails the change.
-  const afterAnswer = {
-    builds: { of: (environment: string) => background(builds.of(environment)) },
-    spares: { of: (environment: string) => background(spares.of(environment)) },
-  };
-
-  // The deploy-time credentials and the Secret Reference placeholders: the Registry checks the kept Secrets itself.
-  const holdsSecret: TextCheck = (text) =>
-    endpointTextCheck.pipe(
-      Effect.provideService(DeployCredentials, { values: credentials }),
-      Effect.flatMap((check) => check(text)),
-    );
+  const writes = endpointWrites({
+    registry,
+    builds,
+    spares,
+    mcp,
+    objects,
+    background,
+    credentials,
+    // As after the owner's `addRepo` and `removeRepo`: a Repo's `.pi/mcp.json` is looked at, then the set is pushed.
+    afterRepos: (repos) => afterRepos({ registry, mcp, background }, repos),
+    host,
+    appOrigin,
+  });
 
   return {
     environments: { ...environmentReads(registry), current: Effect.succeed(null) },
     settings: { ...settingsReads(registry), own: Effect.succeed(null) },
     settingsMcp: { ...settingsMcpReads(registry, host), own: Effect.succeed(null), appOrigin },
     changes: (source) => ({
-      // No Workspace: `current` is null, so no change is this caller's own, and none is handed anywhere.
-      environments: sessionEnvironments({
-        registry,
-        author: source,
-        ...afterAnswer,
-        lifecycle: sessionLifecycle({
-          registry,
-          author: source,
-          // No Test Builds: the lifecycle refuses one on the endpoint (S4a serves them). The Build a rebuild asks for is
-          // awaited, as the owner's Rebuild awaits it: the answer says whether one was asked for.
-          builds: { ...afterAnswer.builds, rebuild: builds.rebuild },
-          spares: afterAnswer.spares,
-          // As after the owner's `addRepo` and `removeRepo`: a Repo's `.pi/mcp.json` is looked at, then the set is pushed.
-          afterRepos: (repos) => afterRepos({ registry, mcp, background }, repos),
-        }),
-      }),
-      holdsSecret,
+      environments: writes.environments(source),
+      holdsSecret: writes.holdsSecret,
     }),
     settingsChanges: (source) => ({
       settings: sessionSettingsAccess({ registry, author: source }),
       settingsMcp: sessionSettingsMcpAccess({ registry, author: source, host, appOrigin }),
-      // A set that could not be handed to a host is sent again once, after the answer, as after the owner's save.
-      pushFailed: (environment) => background(Effect.suspend(() => mcp.sync(environment))),
+      // Each Environment a change reaches is pushed its new set by the main Worker, after the answer, as after the owner's save.
+      sync: writes.mcpSync,
       // The Registry checks the kept Secrets in the write itself: a text that cannot be checked is refused, as holding one.
-      holdsSecret: (text) => holdsSecret(text).pipe(Effect.orElseSucceed(() => true)),
+      holdsSecret: (text) => writes.holdsSecret(text).pipe(Effect.orElseSucceed(() => true)),
     }),
     // Nobody is a Session here: `sessionSource(undefined)` has no own Environment, and the reload reads none.
     settingsMcpReload: sessionSettingsMcpAccess({
@@ -181,7 +326,9 @@ export const harnessServices = ({
       host,
       appOrigin,
     }),
+    writes,
     registry,
+    origin,
     upkeep: (changes) => upkeepFor({ registry, builds, spares, mcp, background }, changes),
     background,
   };

@@ -1,17 +1,20 @@
 // The cores of the MCP servers' tools the endpoint serves besides the reads (`docs/architecture/mcp-endpoint.md` →
 // Environment and Settings tools → Shared definitions and the core/wrapper split, Names and surfaces, Retries:
 // `request_id`; `docs/architecture/mcp-configuration.md` → The agent's changes): `settings_mcp_disable`,
-// `_exposure_set`, `_tool_exposure_set`, `_remove` and the reset of an adjustment's key, which narrow what is reachable,
+// `_exposure_set`, `_tool_exposure_set`, `_remove` and the reset of an adjustment's key, as they narrow what is reachable,
 // and `settings_mcp_reload`, which is no Agent change. The key-changing and the definition tools are the Session's own
 // engines (`./settings-mcp-changes.ts`, `./settings-mcp-definitions.ts`) built over the endpoint's surface, with no
-// Approvals: a change that would ask the owner (it widens what is reachable) is refused as `unsupported`, and nothing is
-// changed; one that narrows is made, recorded, and pushed to the host of each Environment it reaches before the answer
-// (`./settings-mcp-commit.ts`). The words name the owner and no Session. The dispatcher calls these with
-// `surface: "endpoint"`; the Session's tools call the engines directly, since they ask through the Session's task.
+// Approvals: these cores make only the change that narrows, recorded, with the push of the new set to each host it reaches
+// left to the main Worker's `mcp.sync` after the answer (`./settings-mcp-commit.ts`). One that would widen what is reachable
+// asks the owner first (`./settings-mcp-approvals.ts`, which the dispatcher consults before it runs these), so one that
+// reaches here widening only because the state changed since is refused, `unavailable`, and nothing is changed. The words
+// name the owner and no Session. The dispatcher calls these with `surface: "endpoint"`; the Session's tools call the engines
+// directly, since they ask through the Session's task.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off
 import {
   GLOBAL_SETTINGS_SCOPE,
   type HARNESS_TOOLS,
+  type SessionHarnessToolName,
   SettingsMcpReloadEndpointOutput,
   type Surface,
 } from "@cloudpid/protocol/harness-tools";
@@ -44,7 +47,7 @@ import {
 } from "./settings.ts";
 
 /** The arguments of tool `Name`, as a Session's call decodes them (the endpoint's add only `request_id`). */
-type ArgsOf<Name extends keyof typeof HARNESS_TOOLS> =
+type ArgsOf<Name extends SessionHarnessToolName> =
   (typeof HARNESS_TOOLS)[Name]["session"]["input"]["Type"];
 
 /** What the cores run over: the Registry's MCP read and checks and the hosts, the Settings, and the check of a text. */
@@ -53,8 +56,8 @@ export type McpChangeCoreServices = {
   readonly settings: SettingsAccessService;
   /** Whether `value` holds a Secret's value or a credential (the endpoint's: the deploy-time credentials only). */
   readonly holdsSecret: (value: string) => Effect.Effect<boolean>;
-  /** Told of an Environment whose host a push failed for (`McpCommitServices.pushFailed`). */
-  readonly pushFailed?: ((environment: string) => Effect.Effect<void>) | undefined;
+  /** The main Worker's push of an Environment's new set to its host (`McpCommitServices.sync`). */
+  readonly sync?: ((environment: string) => Effect.Effect<void>) | undefined;
 };
 
 /** What `settings_reset` of an MCP server's key takes. */
@@ -95,7 +98,7 @@ export const mcpChangeCores = (services: McpChangeCoreServices) => {
         settings: services.settings,
         changes,
         approvals: undefined,
-        pushFailed: services.pushFailed,
+        sync: services.sync,
       });
 
       return make({ keys: mcpChanges(engine), definitions: mcpDefinitions(engine) }).pipe(

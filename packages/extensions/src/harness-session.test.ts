@@ -13,7 +13,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ContainerSettings, McpExposure, McpResolvedServer, Settings } from "@cloudpid/config";
+import {
+  type ContainerSettings,
+  FALLBACK_CATALOG,
+  type McpExposure,
+  type McpResolvedServer,
+  type Settings,
+} from "@cloudpid/config";
 import type { McpApplySet } from "@cloudpid/mcp/types";
 import type {
   AgentChange,
@@ -301,6 +307,7 @@ const settings: SettingsAccessService = {
     }),
   own: Effect.succeed("default"),
   change: () => nothing("changes"),
+  models: Effect.succeed(FALLBACK_CATALOG),
 };
 
 // --- MCP servers -------------------------------------------------------------------------------------------------
@@ -443,6 +450,7 @@ const extensionsOver = (over: EnvironmentsService, standins: Standins = {}) =>
     Effect.provideService(EnvironmentRemoval, {
       footprint: () => nothing("deletes"),
       deleteEnvironment: () => nothing("deletes"),
+      afterGone: () => nothing("deletes"),
       keptSecrets: () => nothing("deletes"),
       deleteSecret: () => nothing("deletes"),
     }),

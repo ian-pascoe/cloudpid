@@ -9,6 +9,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { isJsonArray, isJsonObject, utf8Bytes } from "./json.ts";
+import { ModelId } from "./model-catalog.ts";
 import {
   MCP_ROOT,
   type McpLayerScope,
@@ -22,22 +23,6 @@ import {
 } from "./mcp-servers.ts";
 import { problemLines, problemsOf, type SettingsProblem, withProblems } from "./schema-problems.ts";
 
-/** The models the model proxy serves, as `provider/modelId`: those of `~/.pi/agent/models.json` the Session registers. */
-export const SUPPORTED_MODELS = [
-  "anthropic/claude-fable-5-1",
-  "anthropic/claude-opus-5-5",
-  "anthropic/claude-sonnet-5-5",
-  "anthropic/claude-haiku-5-5",
-] as const;
-
-/** A model as `provider/modelId`, one the proxy serves: any other would fail the request that uses it. */
-export const ModelId = Schema.Literals(SUPPORTED_MODELS);
-
-export type ModelId = typeof ModelId.Type;
-
-/** Whether `value` is a model the proxy serves. */
-export const isModelId = Schema.is(ModelId);
-
 /** pi-ai's thinking levels, `off` included. */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -49,19 +34,6 @@ export type ThinkingLevel = typeof ThinkingLevel.Type;
 export const ROLE_NAMES = ["small", "medium", "large", "xlarge"] as const;
 
 export type RoleName = (typeof ROLE_NAMES)[number];
-
-/** Split `provider/modelId` into the pair pi-durable's `ModelRef` holds. */
-export const parseModelId = (id: ModelId) => {
-  const slash = id.indexOf("/");
-
-  return { provider: id.slice(0, slash), modelId: id.slice(slash + 1) };
-};
-
-/** The `provider/modelId` of a pi-durable `ModelRef`. */
-export const formatModelId = (ref: {
-  readonly provider: string;
-  readonly modelId: string;
-}): string => `${ref.provider}/${ref.modelId}`;
 
 /** A model role: its model, and the hint that tells an agent when to pick it. */
 const role = (model: ModelId, hint: string) =>
@@ -90,7 +62,8 @@ const Compaction = Schema.Struct({
  * deferred: the model finds it by searching, and code mode scripts call it without loading it. This is the owner's local
  * pi exposure (`defaultTools` on top of pi's read, bash, edit and write: codemode, the file search tools, `tool_search`),
  * plus the context tools, which compaction depends on (the Rollover request tells the model to call `context_rollover`),
- * and `secret_ask`, so the prompt keeps its guidance not to ask the owner to paste a credential into the conversation.
+ * `secret_ask`, so the prompt keeps its guidance not to ask the owner to paste a credential into the conversation, and
+ * `cloudpid_report`, so the agent can report a problem with cloudpid in passing (ADR-0051).
  * `tool_search` and `context_rollover` are always offered, whatever is saved: without the first the model cannot reach
  * a deferred tool, and without the second Rollover turns itself off.
  */
@@ -108,6 +81,7 @@ export const DEFAULT_OFFERED_TOOLS: ReadonlyArray<string> = [
   "context_history",
   "context_rollover",
   "secret_ask",
+  "cloudpid_report",
 ];
 
 /** What a name or pattern in the offered tools looks like: snake_case, with `*` for any run of characters. */
@@ -487,7 +461,8 @@ export type LenientSettings = {
 
 /**
  * The settings `overrides` give once every override that does not resolve is dropped: a value a release no longer
- * accepts (a model that left `SUPPORTED_MODELS`) or a key it dropped costs only itself, and its siblings still apply.
+ * accepts or a key it dropped costs only itself, and its siblings still apply. A model the Model catalog no longer lists
+ * is left out before this, by `withServedModels` (ADR-0052).
  * Overrides that are not an object at all give the defaults. Writes stay strict (`resolveSettings`); this is for
  * reading what an earlier release saved.
  */

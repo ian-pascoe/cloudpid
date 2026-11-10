@@ -19,7 +19,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { fileAuthStore } from "./auth-store.ts";
 import { completionsFor, parseCommand } from "./command.ts";
-import { clientName, type Config, readConfig, type SettingsSource } from "./config.ts";
+import { clientName } from "./client-name.ts";
+import { type Config, readConfig, type SettingsSource } from "./config.ts";
 import { connectEndpoint } from "./endpoint.ts";
 import { ApiFailure, Refusal } from "./errors.ts";
 import type { Host } from "./flow.ts";

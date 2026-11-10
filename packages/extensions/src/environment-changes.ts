@@ -77,7 +77,7 @@ export type EnvironmentChangeServices = {
 };
 
 /** The arguments of tool `Name`, as a Session's call decodes them (the endpoint's add only `request_id`). */
-type ArgsOf<Name extends keyof typeof HARNESS_TOOLS> =
+type ArgsOf<Name extends ContainerSettingToolName | "environment_secret_build"> =
   (typeof HARNESS_TOOLS)[Name]["session"]["input"]["Type"];
 
 /** A refusal the caller reads: on the endpoint, `invalid_argument` with the core's own words. */

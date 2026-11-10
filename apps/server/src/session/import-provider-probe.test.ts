@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off processEnv:off preferEffectArray:off preferEffectRecord:off -- a live probe: plain Promise code over the model proxy, and arrays of fixtures.
 // The live provider probe of a Session import (`docs/architecture/mcp-endpoint.md` → Session import → Translation → Tool calls).
 // An imported transcript calls tools the Session's requests do not declare. This sends each provider cloudpid serves
-// (`SUPPORTED_MODELS`) a history with such calls, in a request that declares one tool, through the model proxy
+// (the fallback Model catalog's: `FALLBACK_CATALOG`) a history with such calls, in a request that declares one tool, through the model proxy
 // (Commissary), and checks what the provider does with it:
 //
 // - a provider that accepts it keeps the calls as they are (`FLATTEN_ABSENT_TOOL_CALLS[provider]` is false);
@@ -16,7 +16,7 @@
 //
 // A failure of the first test names the provider and what to change; the second fails only if flattening does not work
 // for a provider.
-import { parseModelId, SUPPORTED_MODELS } from "@cloudpid/config";
+import { FALLBACK_CATALOG, parseModelId } from "@cloudpid/config";
 import type {
   Api,
   AssistantMessage,
@@ -35,11 +35,11 @@ import { proxyModels } from "./models.ts";
 const url = process.env["MODEL_PROXY_URL"];
 const apiKey = process.env["MODEL_PROXY_API_KEY"];
 
-/** The models of each provider the proxy serves, as `provider` and the ids of its models, in `SUPPORTED_MODELS` order. */
+/** The models of each provider the proxy serves, as `provider` and the ids of its models, in `FALLBACK_CATALOG` order. */
 const providers = (() => {
   const byProvider = new Map<string, string[]>();
 
-  for (const id of SUPPORTED_MODELS) {
+  for (const { id } of FALLBACK_CATALOG.models) {
     const { provider, modelId } = parseModelId(id);
 
     byProvider.set(provider, [...(byProvider.get(provider) ?? []), modelId]);

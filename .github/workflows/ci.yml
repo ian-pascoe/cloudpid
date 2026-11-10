@@ -142,8 +142,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `check` does not build; the web app's bundle is what the server serves, and `/cloudpid`'s bundle (which also
-          # fails when it reaches Workers code) is what the `pi-cloudpid` job publishes: make sure both still build. The
+          # `check` does not build; the web app's bundle is what the server serves: make sure it still builds. The
           # Server Worker's startup budget fails here what the deploy would refuse with `ScriptStartupError`
           # (`docs/development/workers.md` → Startup).
           - name: Typecheck, lint, format, build
@@ -151,7 +150,7 @@ jobs:
             run: >-
               bunx turbo run typecheck lint
               && bun run format:check
-              && bunx turbo run build --filter @cloudpid/web --filter @cloudpid/pi-cloudpid
+              && bunx turbo run build --filter @cloudpid/web
               && bun run --cwd apps/server startup
           - name: Tests
             part: tests
@@ -237,19 +236,45 @@ jobs:
         env:
           MODE: ${{ matrix.mode }}
 
+  # The owner installs `/cloudpid` with `pi install git:github.com/ian-pascoe/cloudpid`, which clones the repo and runs
+  # npm's production install at its root (`packages/pi-cloudpid/git-install-check.ts`; `docs/architecture/mcp-endpoint.md`
+  # → The `/cloudpid` command → Distribution). This installs a copy of the tree the same way and loads the extension from
+  # it, so a `workspace:` version, a `prepare` that needs the development tools, or an extension that no longer loads
+  # fails here and not on the owner's machine.
+  git-install:
+    name: Git install
+    needs: changes
+    if: github.event.action != 'closed' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: git-install-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      # No token in the checkout: npm runs every dependency's install scripts.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install: the check runs on pi's own
+      # loader, a development dependency.
+      - uses: ./.github/actions/setup
+
+      - run: bun run --cwd packages/pi-cloudpid git-install:check
+
   # The one status the `main` ruleset requires (`Check`), and what the deploy jobs wait for: it passes only when every
   # part did, or for a docs-only change when `docs` did. It runs when one fails too (`!cancelled()`), so a failure
   # reports as one rather than as skipped, which a required check would count as passing.
   check:
     name: Check
-    needs: [changes, checks, conformance, docs, manifests]
+    needs: [changes, checks, conformance, git-install, docs, manifests]
     if: ${{ !cancelled() && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
           test "$CHANGES" = success
-          if [ "$CODE" = true ]; then test "$CHECKS" = success -a "$CONFORMANCE" = success; else test "$DOCS" = success; fi
+          if [ "$CODE" = true ]; then test "$CHECKS" = success -a "$CONFORMANCE" = success -a "$GIT_INSTALL" = success; else test "$DOCS" = success; fi
           # Skipped on a push and on a docs-only change, which have no manifest to guard.
           test "$MANIFESTS" = success -o "$MANIFESTS" = skipped
         env:
@@ -257,6 +282,7 @@ jobs:
           CODE: ${{ needs.changes.outputs.code }}
           CHECKS: ${{ needs.checks.result }}
           CONFORMANCE: ${{ needs.conformance.result }}
+          GIT_INSTALL: ${{ needs.git-install.result }}
           DOCS: ${{ needs.docs.result }}
           MANIFESTS: ${{ needs.manifests.result }}
 
@@ -334,87 +360,6 @@ jobs:
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
-
-  # Publishes the `/cloudpid` pi extension (`packages/pi-cloudpid`) once `Deploy prod` has succeeded, so a laptop never
-  # updates to an extension that is ahead of the endpoint it talks to (`docs/architecture/mcp-endpoint.md` → The
-  # `/cloudpid` command → Distribution): it builds `dist/` and appends one commit naming the `main` SHA to the orphan
-  # branch `pi-cloudpid`, which the owner installs with `pi install git:github.com/ian-pascoe/cloudpid@pi-cloudpid`.
-  # It holds no deploy credentials and no environment, and `contents: write` reaches only the push step (the checkout
-  # keeps no token, so install scripts never see it). It never force-pushes: a branch that moved meanwhile fails the push.
-  # The build is not a turbo task here: turbo's cache would replay a `dist/` that has an older commit built in.
-  pi-cloudpid:
-    name: Publish pi-cloudpid
-    needs: deploy
-    # `!cancelled()`, as on `deploy`: without a status function the condition carries an implicit `success()`, which also
-    # needs every job `deploy` waits on, and `docs` and `manifests` are skipped on a push, so this never ran.
-    if: ${{ !cancelled() && needs.deploy.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    # One publish at a time, in the order the deploys ran; never cancel one midway.
-    concurrency:
-      group: pi-cloudpid
-      cancel-in-progress: false
-    steps:
-      # The whole history: the append step asks whether the branch already holds a build of a newer `main` commit.
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      # No dependency cache in a job that can write to the repository (cache poisoning).
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-
-      # Only this package's dependencies (and the workspace packages it names): the job builds nothing else.
-      - run: bun install --frozen-lockfile --filter @cloudpid/pi-cloudpid
-
-      - run: bun run build
-        working-directory: packages/pi-cloudpid
-        env:
-          PI_CLOUDPID_SHA: ${{ github.sha }}
-
-      # A commit on top of the branch's tip with `dist/` as its whole tree (or the first commit of the orphan branch).
-      - name: Append to the pi-cloudpid branch
-        run: |
-          set -euo pipefail
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          echo "::add-mask::${auth#AUTHORIZATION: basic }"
-          publish="$RUNNER_TEMP/publish"
-          mkdir "$publish"
-          cd "$publish"
-          git init --quiet --initial-branch=pi-cloudpid
-          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
-          if git -c "http.extraheader=$auth" fetch --quiet --depth=1 origin pi-cloudpid; then
-            # A rerun of an older run must not put an older build on top of a newer one: skip when the build at the tip
-            # was made from a `main` commit that has this run's commit in its history.
-            tip="$(git log -1 --format=%s FETCH_HEAD | sed -n 's/^pi-cloudpid: build of main \([0-9a-f]\{40\}\)$/\1/p')"
-            if [ -n "$tip" ] && [ "$tip" != "$GITHUB_SHA" ]; then
-              git -C "$GITHUB_WORKSPACE" -c "http.extraheader=$auth" fetch --quiet origin main
-              if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$GITHUB_SHA" "$tip"; then
-                echo "pi-cloudpid already has a build of $tip, which is newer than $GITHUB_SHA."
-                exit 0
-              fi
-            fi
-            git reset --quiet --soft FETCH_HEAD
-          fi
-          cp -R "$GITHUB_WORKSPACE/packages/pi-cloudpid/dist/." .
-          git add --all
-          if git diff --cached --quiet; then
-            echo "pi-cloudpid already has this build."
-            exit 0
-          fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit --quiet -m "pi-cloudpid: build of main $GITHUB_SHA"
-          git -c "http.extraheader=$auth" push origin pi-cloudpid
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Deploys stage `pr-<number>` for a pull request from this repository, and destroys it when the pull request is closed
   # (https://alchemy.run/environments/ci/#how-pr-previews-work). Credentials come from the `preview` environment, which

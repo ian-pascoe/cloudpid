@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the bundle carries no Effect runtime).
+// @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the extension carries no Effect runtime).
 /**
  * The active pi Session as the import sends it (docs/architecture/mcp-endpoint.md → Session import → Translation): the
  * file's header line and the active branch's entries (`getBranch()`), one `JSON.stringify` per line, byte-identical to

@@ -87,6 +87,9 @@ export type McpServerApi = Pick<
    * (the conformance run, an older fake): a tool that needs it then answers `unsupported`.
    */
   readonly harness?: (request: HarnessRequest) => ReturnType<McpApi["harness"]>;
+  /** `approval_wait`'s and `approval_withdraw`'s operations; absent from an older `Server` or a plain object, as `harness`. */
+  readonly approvalWait?: McpApi["approvalWait"];
+  readonly approvalWithdraw?: McpApi["approvalWithdraw"];
   /** Over RPC a call is a Promise, whatever the method says; a plain object in the conformance run answers at once. */
   readonly describe: () =>
     | PromiseLike<ReturnType<McpApi["describe"]>>

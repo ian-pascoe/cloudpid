@@ -5,16 +5,28 @@
  * the main Worker's `harness` operation runs its core and answers `{text, structured}`. This wraps them as the session tools'
  * are: the text is the core's (the same words as in a Session, cut for the endpoint) with the `next` sentence added as its
  * last paragraph, and `structuredContent` is the core's flat object with the same sentence as its optional `next`. A
- * write's `request_id` travels as the request's `requestId` too, so the dispatcher handles it in one place.
+ * write's `request_id` travels as the request's `requestId` too, so the dispatcher handles it in one place. The two tools
+ * that follow an Approval asked over the endpoint (`approval_wait`, `approval_withdraw`; → Approvals with no Session) have
+ * operations of their own, and their words are written here.
  */
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferTypedSchemaDecoder:off -- an answer is read for the keys `next` needs, whatever else it holds.
 import {
+  APPROVAL_FOLLOW_TOOLS,
+  type ApprovalFollowToolName,
+  type DispatchedToolName,
   ENVIRONMENT_FIELD_WORDS,
   HARNESS_TOOLS,
   type HarnessToolName,
+  isApprovalFollowTool,
   MAX_PAGE_CHARS,
 } from "@cloudpid/protocol/harness-tools";
-import { ApiResult, apiFailure, HarnessAnswer, harnessServed } from "@cloudpid/protocol/mcp-api";
+import {
+  ApiResult,
+  apiFailure,
+  ApprovalState,
+  HarnessAnswer,
+  harnessServed,
+} from "@cloudpid/protocol/mcp-api";
 import * as Arr from "effect/Array";
 import type * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -69,6 +81,18 @@ const TITLES: Readonly<Record<HarnessToolName, string>> = {
   settings_mcp_exposure_set: "Set an MCP server's exposure",
   settings_mcp_tool_exposure_set: "Set an MCP server's tool exposure",
   settings_mcp_remove: "Remove an MCP server",
+  settings_mcp_add: "Ask to add an MCP server",
+  settings_mcp_update: "Ask to change an MCP server's definition",
+  settings_mcp_enable: "Ask to switch an MCP server on",
+  settings_spend_limit_set: "Ask to set the spend limit",
+  settings_subagent_depth_set: "Ask to set the subagent depth",
+  settings_subagent_workspaces_set: "Ask to set the Subagent Workspace limit",
+  settings_instructions_set: "Ask to set the Instructions",
+  environment_container_size_limit_set: "Ask to set an Environment's size limit",
+  environment_delete: "Ask to delete an Environment",
+  environment_secret_delete: "Ask to delete a kept Secret",
+  approval_wait: "Wait for the owner's Approval",
+  approval_withdraw: "Withdraw a request for Approval",
 };
 
 const decode = Schema.decodeUnknownExit(ApiResult(HarnessAnswer));
@@ -158,8 +182,35 @@ const afterServersChange = nextOf(
       : undefined,
 );
 
+/** What follows an ask: `approval_wait` with the request's id, for a request that waits. */
+const afterAsk = nextOf(
+  Schema.Struct({ status: Schema.String, approval_id: Schema.optionalKey(Schema.String) }),
+  (value, enabled) =>
+    enabled.has("approval_wait") && value.status === "pending" && value.approval_id !== undefined
+      ? `Call approval_wait with approval_id="${value.approval_id}" to follow the owner's answer; only the owner answers, in cloudpid at the url shown.`
+      : undefined,
+);
+
+/**
+ * What follows a change to an MCP server that asks only when it widens: `approval_wait` when the owner was asked, else
+ * `settings_mcp_list`, as for a change that was made.
+ */
+const afterServersAsk = (structured: Wire, enabled: Enabled): string | undefined =>
+  afterAsk(structured, enabled) ?? afterServersChange(structured, enabled);
+
+/** What follows a reset: `approval_wait` for a Limit's, which waits for the owner, else `settings_get`. */
+const afterReset = (structured: Wire, enabled: Enabled): string | undefined =>
+  afterAsk(structured, enabled) ?? afterSettingsChange(structured, enabled);
+
+/**
+ * What follows an Environment's change that may ask: `approval_wait` for one that waits for the owner (the reset of the size
+ * limit, a Skill change at Global), else `environment_get`.
+ */
+const afterEnvironmentAsk = (structured: Wire, enabled: Enabled): string | undefined =>
+  afterAsk(structured, enabled) ?? afterChange(structured, enabled);
+
 const NEXTS: Readonly<
-  Record<HarnessToolName, (structured: Wire, enabled: Enabled) => string | undefined>
+  Record<DispatchedToolName, (structured: Wire, enabled: Enabled) => string | undefined>
 > = {
   settings_model_set: afterSettingsChange,
   settings_role_set: afterSettingsChange,
@@ -168,12 +219,22 @@ const NEXTS: Readonly<
   settings_compaction_set: afterSettingsChange,
   settings_branch_summary_set: afterSettingsChange,
   settings_extension_set: afterSettingsChange,
-  settings_reset: afterSettingsChange,
+  settings_reset: afterReset,
   settings_mcp_reload: afterServersChange,
   settings_mcp_disable: afterServersChange,
-  settings_mcp_exposure_set: afterServersChange,
-  settings_mcp_tool_exposure_set: afterServersChange,
-  settings_mcp_remove: afterServersChange,
+  settings_mcp_exposure_set: afterServersAsk,
+  settings_mcp_tool_exposure_set: afterServersAsk,
+  settings_mcp_remove: afterServersAsk,
+  settings_mcp_add: afterAsk,
+  settings_mcp_update: afterAsk,
+  settings_mcp_enable: afterAsk,
+  settings_spend_limit_set: afterAsk,
+  settings_subagent_depth_set: afterAsk,
+  settings_subagent_workspaces_set: afterAsk,
+  settings_instructions_set: afterAsk,
+  environment_container_size_limit_set: afterAsk,
+  environment_delete: afterAsk,
+  environment_secret_delete: afterAsk,
   environment_variable_set: afterChange,
   environment_variable_unset: afterChange,
   environment_container_resize: afterChange,
@@ -189,10 +250,10 @@ const NEXTS: Readonly<
   environment_repo_add: afterChange,
   environment_repo_remove: afterChange,
   environment_rebuild: afterChange,
-  environment_skill_install: afterChange,
-  environment_skill_update: afterChange,
-  environment_skill_remove: afterChange,
-  environment_setting_reset: afterChange,
+  environment_skill_install: afterEnvironmentAsk,
+  environment_skill_update: afterEnvironmentAsk,
+  environment_skill_remove: afterEnvironmentAsk,
+  environment_setting_reset: afterEnvironmentAsk,
   environment_list: nextOf(
     Schema.Struct({ environments: Schema.Array(Schema.Unknown) }),
     ({ environments }, enabled) =>
@@ -268,7 +329,7 @@ const NEXTS: Readonly<
 };
 
 /** A management tool, from its declaration. */
-const harnessTool = (name: HarnessToolName): Tool => {
+const harnessTool = (name: DispatchedToolName): Tool => {
   const declaration = HARNESS_TOOLS[name];
 
   return {
@@ -317,6 +378,122 @@ const harnessTool = (name: HarnessToolName): Tool => {
   };
 };
 
+const decodeState = Schema.decodeUnknownExit(ApiResult(ApprovalState));
+
+/** "2m10s" for 130 seconds. */
+const elapsedWords = (seconds: number): string =>
+  seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+
+/** A request as `approval_wait` and `approval_withdraw` say it, without `next`. */
+export const renderApprovalState = (state: ApprovalState): string => {
+  const request = `Request ${state.approval_id} (${state.tool})`;
+  const because = state.reason === undefined ? "" : `: ${state.reason}`;
+
+  const said = (() => {
+    switch (state.status) {
+      case "pending":
+        return `${request} waits for the owner's answer; it expires ${state.expires_at} if they do not answer.`;
+      case "approved":
+        return state.long === true
+          ? `The owner approved ${request}; cloudpid applies it while the owner has cloudpid open, and approval_wait does not run it.`
+          : `The owner approved ${request}; its change is being applied.`;
+      case "finished":
+        return state.result?.text ?? `The owner approved ${request}, and its change was applied.`;
+      case "declined":
+        return `The owner declined ${request}${because}. Nothing was changed.`;
+      case "changed_since":
+      case "refused":
+        return `The owner approved ${request}, but it was not applied${because}`;
+      case "expired":
+        return `${request} expired before the owner answered: nothing was changed.`;
+      case "withdrawn":
+        return `${request} was withdrawn${because}. Nothing was changed.`;
+      default:
+        return `${request} is ${state.status}${because}`;
+    }
+  })();
+
+  return state.interrupted === true
+    ? `${said} (The wait was cut short, so this is the request as read once after.)`
+    : said;
+};
+
+/** What follows a request's state: another wait while something may still happen to it. */
+const afterState = (state: ApprovalState, enabled: Enabled): string | undefined => {
+  if (!enabled.has("approval_wait") || state.finished) return undefined;
+
+  if (state.status === "pending") {
+    return `Call approval_wait again with approval_id="${state.approval_id}" to keep waiting; only the owner answers, in cloudpid.`;
+  }
+
+  // A long apply (an Environment's delete) is never the wait's to run: the owner's visit or Try again finishes it.
+  return state.long === true
+    ? `cloudpid finishes it when the owner opens cloudpid or presses Try again on its card; call approval_wait again later with approval_id="${state.approval_id}" to see it finished.`
+    : `Call approval_wait again with approval_id="${state.approval_id}" to see its change applied.`;
+};
+
+/** `approval_wait` or `approval_withdraw`, from its declaration, over its own operation. */
+const approvalFollowTool = (name: ApprovalFollowToolName): Tool => {
+  const declaration = APPROVAL_FOLLOW_TOOLS[name];
+  const operation = name === "approval_wait" ? "approvalWait" : "approvalWithdraw";
+
+  return {
+    name,
+    title: TITLES[name],
+    served: (description) => description.operations.includes(operation),
+    maxText: HARNESS_MAX_TEXT_CHARS,
+    describe: () => declaration.endpoint.description,
+    annotations: declaration.annotations,
+    progress:
+      name === "approval_wait"
+        ? (elapsedS) => `Waiting for the owner · ${elapsedWords(elapsedS)}`
+        : undefined,
+    span:
+      name === "approval_wait"
+        ? (value) => {
+            // SAFETY: `value` was decoded with `ApprovalState`.
+            const state = value as ApprovalState;
+
+            return state.interrupted === true
+              ? { status: state.status, interrupted: true }
+              : { status: state.status };
+          }
+        : undefined,
+    input: declaration.endpoint.input,
+    output: declaration.endpoint.output,
+    call: (api, args) => {
+      const run = name === "approval_wait" ? api.approvalWait : api.approvalWithdraw;
+
+      if (run === undefined) {
+        return Promise.resolve(
+          apiFailure("unsupported", "The server does not support this yet: try again shortly."),
+        );
+      }
+
+      // SAFETY: the SDK validated `args` against the tool's input, which the operation's request is.
+      return run(args as never);
+    },
+    // SAFETY: the result's own type is erased here, as `Tool` says.
+    read: (answered) => decodeState(answered) as Exit.Exit<ApiResult<Wire>, Schema.SchemaError>,
+    present: (value, enabled) => {
+      // SAFETY: `value` was decoded with `ApprovalState`.
+      const state = value as ApprovalState;
+      // SAFETY: a state is a flat object of JSON, as `value` is.
+      const flat = value as Readonly<Record<string, Wire>>;
+      const text = renderApprovalState(state);
+      const next = afterState(state, enabled);
+
+      return next === undefined
+        ? { text, structured: flat }
+        : { text: `${text}\n\n${next}`, structured: { ...flat, next } };
+    },
+  };
+};
+
 /** Every management tool `McpServer` knows, in the order `HARNESS_TOOLS` declares them. */
 // SAFETY: the keys of the record are its tools' names.
-export const harnessTools: ReadonlyArray<Tool> = Record.keys(HARNESS_TOOLS).map(harnessTool);
+export const harnessTools: ReadonlyArray<Tool> = Record.keys(HARNESS_TOOLS).map((name) =>
+  isApprovalFollowTool(name) ? approvalFollowTool(name) : harnessTool(name),
+);

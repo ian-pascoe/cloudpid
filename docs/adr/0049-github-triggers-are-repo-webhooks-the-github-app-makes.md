@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (what the Container tokens' list does not stop: amended by ADR-0053)
 ---
 
 # GitHub triggers are repo webhooks the GitHub App makes
@@ -22,4 +22,5 @@ The App gains the repository permission **Webhooks: write** (`repository_hooks`)
 - GitHub allows at most 20 hooks per event per repo; cloudpid shows GitHub's refusal plainly and sets no cap of its own.
 - An installation that hasn't accepted the permission gets a plain message naming the step, not a failed Trigger with no reason.
 - Any permission added to the App later reaches Containers only when it is added to their list, deliberately.
+- The list stops a direct `gh api`, not an agent whose merge deploys `prod` with the App's key, or whose workflow runs in `preview` with `cloudpid-dev`'s, which [ADR-0053](0053-agents-merge-their-own-changes-and-the-github-apps-key-is-within-their-reach.md) accepts.
 - A failed hook delete is retried, with backoff, for up to a day, then logged as a warning.

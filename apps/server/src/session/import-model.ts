@@ -27,8 +27,8 @@ export type ImportAgent = {
 const isThinkingLevel = Schema.is(ThinkingLevel);
 
 /**
- * The agent for an import that asked for `model` (`provider/id`) and `thinking`. A model the owner has (one the proxy
- * serves: `isModelId`, the check `session_start` makes) is used and stays picked; any other is replaced by the
+ * The agent for an import that asked for `model` (`provider/id`) and `thinking`. A model the owner has (one the Model
+ * catalog lists, as the Session's models do: the check `session_start` makes) is used and stays picked; any other is replaced by the
  * default, which the Session keeps following, and the replacement is a warning. A thinking level is clamped to the
  * model's (`clampThinkingLevel`) and stays picked; one that is not a level is left out.
  */
@@ -43,7 +43,7 @@ export const resolveImportAgent = (
   if (requested.model !== undefined) {
     const own = isModelId(requested.model) ? parseModelId(requested.model) : undefined;
 
-    if (own !== undefined) {
+    if (own !== undefined && defaults.catalog.getModel(own.provider, own.modelId) !== undefined) {
       ref = own;
       pick.model = own;
     } else {

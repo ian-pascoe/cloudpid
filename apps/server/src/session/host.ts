@@ -3,6 +3,7 @@
 // opened over the object's SQLite storage and woken by its alarm (ADR-0002). The Harness stays native Promise code,
 // reached through the `Harness` facade and `Effect.tryPromise` (ADR-0003). The object builds both services once, as
 // one Layer kept in a `ManagedRuntime`.
+import { catalogHas, formatModelId, unservedModel } from "@cloudpid/config";
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import {
   type AgentWorkspace,
@@ -171,9 +172,10 @@ import * as Stream from "effect/Stream";
 import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
+import { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import { AgentChangeLog } from "@cloudpid/extensions/environment";
 import { SettingsReload, type SettingsApplied } from "@cloudpid/extensions/settings";
-import { agentChangesNotice, runChanges } from "./agent-changes.ts";
+import { runChanges, runCloudpidReports, runNotice } from "./agent-changes.ts";
 import {
   harnessSettings,
   SessionSettings,
@@ -238,7 +240,7 @@ import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import { admissionLines } from "./admission.ts";
 import { fillingRefusal, sessionForks, type WrittenTranslation } from "./fork-host.ts";
-import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
+import { type AgentPick, PICK_KEY, pickedIn, storedPick, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -572,9 +574,9 @@ export type SessionHostOptions<R = never> = {
   readonly storage: SessionStorage;
   /**
    * The models every conversation's requests go through, or an Effect that builds them from the Session's services
-   * (such as models that scrub requests with its `Secrets`).
+   * (such as models that scrub requests with its `Secrets`, or that list the Model catalog its settings carry).
    */
-  readonly models: Models | Effect.Effect<Models, never, R>;
+  readonly models: Models | Effect.Effect<Models, never, R | SessionSettings>;
   /**
    * Reset the object (`ctx.abort`). Called when a storage error closes the Harness: the next event starts a new
    * instance, which reopens it.
@@ -582,13 +584,14 @@ export type SessionHostOptions<R = never> = {
   readonly reset: (reason: string) => void;
   /**
    * The extensions the Session's conversations run with, installed before any work resumes. Their Agent changes
-   * (`AgentChangeLog`) are kept for the Notification at the end of the Run, and the Settings they change are read
-   * again, and the root conversation's agent brought to the default, through `SettingsReload`.
+   * (`AgentChangeLog`) and cloudpid reports (`CloudpidReportLog`) are kept for the Notification at the end of the Run,
+   * and the Settings they change are read again, and the root conversation's agent brought to the default, through
+   * `SettingsReload`.
    */
   readonly extensions: Effect.Effect<
     readonly Extension[],
     never,
-    Harness | SessionSettings | AgentChangeLog | SettingsReload | R
+    Harness | SessionSettings | AgentChangeLog | CloudpidReportLog | SettingsReload | R
   >;
   /**
    * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
@@ -942,8 +945,13 @@ export type SessionHostService = {
   /**
    * Pick the root agent's model and thinking level (the active branch's), from its next request on: a field left out
    * stays as it is, and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
+   * A model the Model catalog does not list is refused (ADR-0052), or, with `unservedModel: "ignore"` (a Trigger's pick at
+   * its Fire), left out, so the root follows the default.
    */
-  readonly configure: (change: AgentChange) => Effect.Effect<void, SessionError>;
+  readonly configure: (
+    change: AgentChange,
+    options?: { readonly unservedModel?: "refuse" | "ignore" },
+  ) => Effect.Effect<void, SessionError>;
   /**
    * Read the settings now and bring the active branch's agent to the default in force, unless the Session picked its own, so
    * what a client is shown is what the next request runs on.
@@ -1331,12 +1339,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ? Effect.void
       : Effect.provideContext(options.onSettled(newestEntry), services);
 
-  /** The Agent changes of the Run, kept until its end notifies them. */
+  /** The Agent changes and cloudpid reports of the Run, kept until its end notifies them. */
   const changes = runChanges(storage.kv);
+  const reports = runCloudpidReports(storage.kv);
 
   // Before anything resumes, so resumed tool calls find their tools.
   let installed = yield* options.extensions.pipe(
     Effect.provideService(AgentChangeLog, { record: changes.record }),
+    Effect.provideService(CloudpidReportLog, { record: reports.record }),
     Effect.provideService(SettingsReload, { apply: Effect.suspend(() => reloadSettings) }),
   );
 
@@ -1525,7 +1535,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const { kv } = storage;
 
   /** What this Session picked: a field is absent while the Session follows the default. */
-  const picked = (): AgentPick => pickedIn(kv);
+  const picked = (): AgentPick => pickedIn(kv, settings.current().models);
 
   /** The conversations whose `/compact` waits for their Run to end, with the focus asked for. */
   const pendingCompactions = (): Readonly<Record<string, string>> =>
@@ -1985,11 +1995,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Arr.filter(pendingNotices(), (id) => !endedIds.has(id)),
     );
 
-    // Besides the Run's own: one Notification of the Agent changes it made, which wait for the next end if it fails.
+    // Besides the Run's own: one Notification of the Agent changes it made and the cloudpid reports it filed, which wait
+    // for the next end if it fails.
     const changed = yield* changes.pending;
+    const filed = yield* reports.pending;
 
-    if (changed.length > 0 && (yield* notifyOwner(agentChangesNotice(changed)))) {
+    if (
+      (changed.length > 0 || filed.length > 0) &&
+      (yield* notifyOwner(runNotice(changed, filed)))
+    ) {
       yield* changes.drop(changed.length);
+      yield* reports.drop(filed.length);
     }
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("Run notifications failed", cause)),
@@ -4500,10 +4516,34 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     ),
     releaseFork: forks.releaseFork,
-    configure: (change) =>
+    configure: (change, options) =>
       refreshSettings.pipe(
         Effect.andThen(
-          Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), change))).pipe(
+          Effect.suspend(() => {
+            const model = change.model ?? undefined;
+
+            if (
+              model === undefined ||
+              catalogHas(settings.current().models, formatModelId(model))
+            ) {
+              return Effect.succeed(change);
+            }
+
+            const { model: _unserved, ...rest } = change;
+
+            return options?.unservedModel === "ignore"
+              ? Effect.succeed(rest)
+              : Effect.fail(
+                  SessionError.make({
+                    operation: "configure",
+                    message: unservedModel(formatModelId(model)),
+                  }),
+                );
+          }),
+        ),
+        Effect.flatMap((wanted) =>
+          // Applied to the pick as stored: a model ignored for now stays picked unless this change replaces it.
+          Effect.sync(() => kv.put(PICK_KEY, withChange(storedPick(kv), wanted))).pipe(
             Effect.andThen(applyAgent),
             serially,
           ),

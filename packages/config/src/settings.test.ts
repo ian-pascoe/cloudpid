@@ -1,4 +1,5 @@
 import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -13,9 +14,9 @@ import {
   resolveSettings,
   settingsFieldPath,
   settingsFieldValue,
-  SUPPORTED_MODELS,
   type Settings,
 } from "./settings.ts";
+import { catalogHas, FALLBACK_CATALOG } from "./model-catalog.ts";
 
 const resolved = (overrides: Schema.Json): Settings => {
   const result = resolveSettings(overrides);
@@ -34,8 +35,21 @@ const rejected = (overrides: Schema.Json): string => {
 };
 
 describe("the defaults", () => {
-  it("offer only models the proxy serves", () => {
-    expect(SUPPORTED_MODELS).toContain(DEFAULT_SETTINGS.model);
+  it("offer only models the fallback catalog lists", () => {
+    for (const model of [
+      DEFAULT_SETTINGS.model,
+      ...Arr.map(Record.values(DEFAULT_SETTINGS.roles), (role) => role.model),
+    ]) {
+      expect(catalogHas(FALLBACK_CATALOG, model), model).toBe(true);
+    }
+  });
+
+  it("take any model in the provider/id format, and refuse one that is not", () => {
+    expect(resolved({ model: "anthropic/claude-fable-5-2" }).model).toBe(
+      "anthropic/claude-fable-5-2",
+    );
+    expect(rejected({ model: "claude-fable-5-2" })).toContain("model");
+    expect(rejected({ model: "anthropic/" })).toContain("model");
   });
 });
 
@@ -125,13 +139,6 @@ describe("resolving overrides", () => {
 });
 
 describe("rejecting overrides", () => {
-  it("names the setting and what it may be, for a model the proxy does not serve", () => {
-    const message = rejected({ model: "anthropic/claude-nope" });
-
-    expect(message).toContain("model");
-    expect(message).toContain("anthropic/claude-opus-5-5");
-  });
-
   it("names a nested setting by its path", () => {
     expect(rejected({ compaction: { reserveTokens: -5 } })).toContain("compaction.reserveTokens");
     expect(rejected({ roles: { small: { model: "nope" } } })).toContain("roles.small.model");
@@ -211,10 +218,10 @@ describe("resolving stale overrides leniently", () => {
 
   it("drops only the override that no longer resolves, and keeps its siblings", () => {
     const { settings, dropped } = resolveLeniently({
-      model: "anthropic/retired-model",
+      model: "retired-model",
       thinkingLevel: "low",
       compaction: { enabled: false, reserveTokens: -1 },
-      roles: { xlarge: { model: "anthropic/retired-model", hint: "Mine" } },
+      roles: { xlarge: { model: "retired-model", hint: "Mine" } },
     });
 
     expect(settings.model).toBe(DEFAULT_SETTINGS.model);
@@ -427,7 +434,7 @@ describe("the MCP servers of the settings", () => {
 
   it("are read leniently an entry at a time: an entry with a problem goes whole", () => {
     const { settings, dropped } = resolveLeniently({
-      model: SUPPORTED_MODELS[1],
+      model: "anthropic/claude-opus-5-5",
       mcp: {
         servers: {
           linear: LINEAR,
@@ -438,7 +445,7 @@ describe("the MCP servers of the settings", () => {
     });
 
     expect(settings.mcp.servers).toEqual({ linear: LINEAR });
-    expect(settings.model).toBe(SUPPORTED_MODELS[1]);
+    expect(settings.model).toBe("anthropic/claude-opus-5-5");
     expect(dropped).toEqual([
       expect.stringMatching(/^mcp\.servers\.bad\.auth: /),
       expect.stringMatching(/^mcp\.servers\.adjust: Global holds no MCP server adjustment/),

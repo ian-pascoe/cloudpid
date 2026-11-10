@@ -13,6 +13,7 @@ import {
   type BrowserHandoffs,
   type OwnerTabDrivers,
 } from "@cloudpid/extensions/browser";
+import { type CloudpidReportLog, CloudpidReports } from "@cloudpid/extensions/cloudpid-report";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import {
   type AgentChangeLog,
@@ -126,6 +127,7 @@ export class TestWorkspaceSession extends TestSession {
     | BrowserHandoffs
     | OwnerTabDrivers
     | AgentChangeLog
+    | CloudpidReportLog
     | SettingsReload
     | Approvals
   > {
@@ -134,12 +136,15 @@ export class TestWorkspaceSession extends TestSession {
       Effect.provideService(EnvironmentRemoval, unusedRemoval),
       // Nor a Trigger.
       Effect.provideService(TriggerAccess, unusedTriggers),
+      // Nor file a cloudpid report.
+      Effect.provideService(CloudpidReports, { file: () => Effect.die("No cloudpid reports") }),
       Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
       // The tests of the Workspace call no `settings_*` tool.
       Effect.provideService(SettingsAccess, {
         get: () => Effect.die("No Settings"),
         own: Effect.die("No Settings"),
         change: () => Effect.die("No Settings"),
+        models: Effect.die("No Settings"),
       }),
       // Nor a `settings_mcp_*` tool, which reaches no MCP host.
       Effect.provideService(SettingsMcpAccess, {

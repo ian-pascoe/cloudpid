@@ -15,6 +15,8 @@ import { type RemovalObjects, removals } from "../registry/removal.ts";
 import { type Spares, upkeepAfterStart } from "../registry/rpc.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
+import { approvalWait, approvalWithdraw } from "../harness/approval-follow.ts";
+import { approvalRunner } from "../harness/approval-runner.ts";
 import { harnessDispatch } from "../harness/dispatch.ts";
 import { harnessServices } from "../harness/services.ts";
 import { mcpApiService, type McpBackend } from "./api.ts";
@@ -49,7 +51,10 @@ export interface McpEndpoint<R = never> {
   readonly mcpHosts: Pick<Cloudflare.DurableObject<McpHost>, "getByName">;
   /** `APP_ORIGIN_VAR`: this stage's own origin, set on live stages only; the management tools' Self-use rule reads it. */
   readonly appOrigin: string | undefined;
-  /** What deleting an import's Session wipes besides its records, as the owner's delete does (`registry/removal.ts`). */
+  /**
+   * What deleting an import's Session wipes besides its records, as the owner's delete does (`registry/removal.ts`), and
+   * an approved Environment's delete (`harness/services.ts`).
+   */
   readonly objects: RemovalObjects;
   /** `McpWorker`'s `McpServer` entrypoint (`MCP_SERVER`). */
   readonly server: McpServerBinding;
@@ -101,21 +106,27 @@ const backendOf = (
     | "objects"
   >,
   background: (effect: Effect.Effect<void>) => Effect.Effect<void>,
+  origin: string,
 ): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
 
-  const dispatch = harnessDispatch(
-    harnessServices({
-      registry,
-      mcpHosts: endpoint.mcpHosts,
-      appOrigin: endpoint.appOrigin,
-      builds: endpoint.builds,
-      spares: endpoint.spares,
-      mcp: endpoint.mcp,
-      background,
-      credentials: endpoint.credentials,
-    }),
-  );
+  const services = harnessServices({
+    registry,
+    mcpHosts: endpoint.mcpHosts,
+    appOrigin: endpoint.appOrigin,
+    builds: endpoint.builds,
+    spares: endpoint.spares,
+    mcp: endpoint.mcp,
+    objects: endpoint.objects,
+    background,
+    credentials: endpoint.credentials,
+    origin,
+  });
+
+  const dispatch = harnessDispatch(services);
+
+  // An approved request no run is applying is applied by the caller's `approval_wait`, as by the owner's Approve.
+  const runner = approvalRunner(services);
 
   // A failed RPC is a defect here: `McpApiService` answers every one as `unavailable`, which may heal.
   return {
@@ -128,6 +139,7 @@ const backendOf = (
       Effect.map(({ settings }) => settings.model),
       Effect.orDie,
     ),
+    models: Effect.suspend(() => registry.getModelCatalog()).pipe(Effect.orDie),
     status: (id, after) =>
       endpoint.sessions
         .getByName(id)
@@ -184,6 +196,8 @@ const backendOf = (
       ),
     // The management tools over the Registry and the hosts, with no Session.
     harness: (request, caller) => dispatch(request, caller),
+    approvalWait: approvalWait({ registry: services.registry, runner }),
+    approvalWithdraw: approvalWithdraw(services),
   };
 };
 
@@ -209,8 +223,10 @@ export const serveMcpRoute = <R = never>(endpoint: McpEndpoint<R>) =>
     const background = (effect: Effect.Effect<void>) =>
       Effect.provideContext(endpoint.background(effect), services);
 
-    const service = mcpApiService(backendOf(endpoint, background), {
-      origin: new URL(source.url).origin,
+    const origin = new URL(source.url).origin;
+
+    const service = mcpApiService(backendOf(endpoint, background, origin), {
+      origin,
       caller,
       version: endpoint.version,
       withinRate: (key) => {

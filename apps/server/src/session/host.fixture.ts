@@ -35,6 +35,7 @@ import {
   type VisualCheckResult,
 } from "@cloudpid/extensions/browser";
 import { readingOwnerTabPages } from "@cloudpid/extensions/browser/pages.testing";
+import type { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import {
   type AgentChangeLog,
   DeployCredentials,
@@ -732,6 +733,7 @@ export class TestSession extends DurableObject {
     | OwnerTabDrivers
     | SessionSettings
     | AgentChangeLog
+    | CloudpidReportLog
     | SettingsReload
     | Approvals
     | SessionRuns
@@ -3267,6 +3269,7 @@ export class TestSession extends DurableObject {
       // The test Registry holds no MCP servers.
       mcpServerNames: () => Effect.succeed(null),
       sessionSettings: ({ session }) => Effect.promise(() => registry().sessionSettings(session)),
+      getModelCatalog: () => Effect.promise(() => registry().modelCatalog()),
       changeSettings: ({ environment, changes, author }) =>
         Effect.promise(
           // SAFETY: the stub's RPC result is the plain data the test Registry returned.

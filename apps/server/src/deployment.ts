@@ -5,6 +5,15 @@
 /** The one person allowed through Access: the owner of this single-user deployment. */
 export const OWNER_EMAIL = "ian.g.pascoe@gmail.com";
 
+/**
+ * cloudpid's own repo, `owner/name` on GitHub, where every stage files its cloudpid reports (ADR-0051): a constant, never
+ * a setting, so the agent, which changes settings, cannot point public posts at another repo.
+ */
+export const CLOUDPID_REPO = "ian-pascoe/cloudpid";
+
+/** The label every cloudpid report is filed under, which the owner makes on {@link CLOUDPID_REPO} once. */
+export const CLOUDPID_REPORT_LABEL = "cloudpid-report";
+
 /** The Access team (`<team>.cloudflareaccess.com`): the issuer of every assertion, and where its signing keys are. */
 export const ACCESS_TEAM_DOMAIN = "spirit-led-software.cloudflareaccess.com";
 

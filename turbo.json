@@ -29,12 +29,9 @@
       ],
       "env": ["CI"]
     },
-    // `@cloudpid/pi-cloudpid` builds the commit it was made from into its bundle (`PI_CLOUDPID_SHA`, else `git rev-parse
-    // HEAD`, which turbo's hash does not see): the `pi-cloudpid` CI job runs the build itself, not through turbo.
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
-      "env": ["PI_CLOUDPID_SHA"],
       "outputs": ["dist/**"]
     }
   }

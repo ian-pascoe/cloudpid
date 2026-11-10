@@ -8,7 +8,6 @@
 // a lookup failing before any write, the `approval:` prefix), the Registry's refusals (one that heals is `unavailable`),
 // the author recorded, and the upkeep and the notice after the answer.
 // @effect-diagnostics globalJsonInEffect:off preferEffectArray:off missedPipeableOpportunity:off preferTypedSchemaDecoder:off schemaSync:off schemaSyncInEffect:off
-import { SUPPORTED_MODELS } from "@cloudpid/config";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { APPROVAL_REQUEST_PREFIX, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
@@ -737,23 +736,109 @@ describe("the lifecycle, Skill and reset tools", () => {
       }),
     ));
 
+  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, and
+  // Global keeps grill-me, so the ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's
+  // change answer and no probe.
   it.each([
+    [
+      "settings_reset of a Limit",
+      "settings_reset",
+      { scope: "*", field: "spendLimit.perSession", reason },
+      { changes: [], changes_truncated: false },
+    ],
+    [
+      "environment_setting_reset of the size limit",
+      "environment_setting_reset",
+      { id: "default", setting: "maxInstance", reason },
+      { changes: [], changes_truncated: false, global: null },
+    ],
+    ["settings_mcp_enable", "settings_mcp_enable", { scope: "default", name: "docs", reason }, {}],
+    // S3b-3: a Skill change at Global asks the owner; its answer has the keys of the tool's change answer.
     [
       "a Skill install at Global",
       "environment_skill_install",
-      { id: "*", source: "o/skills", reason },
+      { id: "*", source: "o/skills", skills: ["grill-me"], reason },
+      { changes: [], changed: false, installed: [], refused: [], listed: [], source: null },
     ],
-    ["a Skill update at Global", "environment_skill_update", { id: "*", reason }],
-    ["a Skill removal at Global", "environment_skill_remove", { id: "*", name: "a", reason }],
+    [
+      "a Skill update at Global",
+      "environment_skill_update",
+      { id: "*", reason },
+      { changes: [], changed: false, updated: [], refused: [], nothing_marked: false },
+    ],
+  ] as const)(
+    "hands %s to the ask for the owner's Approval, writing nothing",
+    (_, tool, input, keys) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, registryCalls, ledger } = changing({ globalSkills: ["grill-me"] });
+
+          const result = yield* call(tool, input);
+
+          expect(result).toMatchObject({
+            ok: true,
+            value: { structured: { status: "unchanged", ...keys } },
+          });
+          expect(registryCalls).not.toContain("agentChangeFeatures");
+          expect(ledger.changes).toEqual([]);
+        }),
+      ),
+  );
+
+  // S3b-3: a Skill change at Global that needs the owner answers `pending`, its value the tool's endpoint output (read with
+  // its schema, so every key `asChangeAnswer` adds is there), with no change made. Global keeps grill-me, so an install of
+  // tdd adds a Skill, and an update or a removal of grill-me changes one.
+  it.each([
+    [
+      "environment_skill_install",
+      { id: "*", source: "o/skills", skills: ["tdd"], reason },
+      { installed: [], refused: [], listed: [], source: null },
+    ],
+    ["environment_skill_update", { id: "*", names: ["grill-me"], reason }, { updated: [] }],
+    [
+      "environment_skill_remove",
+      { id: "*", name: "grill-me", reason },
+      { skill: "grill-me", global_served: false },
+    ],
+  ] as const)(
+    "answers %s at Global pending, with its change's keys and no change",
+    (tool, input, own) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger } = changing({ globalSkills: ["grill-me"] });
+
+          const value = valueOf(HARNESS_TOOLS[tool].endpoint.output, yield* call(tool, input));
+
+          expect(value).toMatchObject({
+            status: "pending",
+            approval_id: "approval-1",
+            scope: { id: "*", name: "Global" },
+            changes: [],
+            changed: false,
+            ...own,
+          });
+          expect(ledger.changes).toEqual([]);
+        }),
+      ),
+  );
+
+  it("refuses the removal at Global of a Skill Global does not keep as not_found, writing nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing();
+
+        const result = yield* call("environment_skill_remove", { id: "*", name: "a", reason });
+
+        expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
+  it.each([
     [
       "a Test Build of proposed changes",
       "environment_rebuild",
       { id: "default", reason, proposed: { setup_script: "echo hi" } },
-    ],
-    [
-      "the reset of the size limit",
-      "environment_setting_reset",
-      { id: "default", setting: "maxInstance", reason },
     ],
   ] as const)(
     "answers %s as unsupported, before the Registry is asked anything",
@@ -774,6 +859,8 @@ describe("the lifecycle, Skill and reset tools", () => {
   it.each([
     ["environment_rename", { id: "*", name: "X", reason }],
     ["environment_setting_reset", { id: "*", setting: "setupScript", reason }],
+    // The size limit's reset asks the owner, and its ask refuses Global as the reset of any other setting does.
+    ["environment_setting_reset", { id: "*", setting: "maxInstance", reason }],
   ] as const)("refuses %s at Global as invalid_argument", (tool, input) =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -875,8 +962,8 @@ describe("a change to the Settings or an MCP server", () => {
       ),
   );
 
-  /** `settings_mcp_disable` of `docs` over a host that takes the set, or (`applyFails`) fails to. */
-  const disabling = (applyFails: boolean) => {
+  /** `tool` (with `more` input) at `docs` over a host that would take the set: the main Worker pushes it, after the answer. */
+  const changingDocs = (tool: string, more: Readonly<Record<string, string>>) => {
     const hostCalls: HostCalls = [];
     const registryCalls: RegistryCalls = [];
     const { registry, ledger } = changingRegistry(registryCalls);
@@ -885,24 +972,30 @@ describe("a change to the Settings or an MCP server", () => {
     const dispatch = harnessDispatch(
       harnessServices({
         registry,
-        mcpHosts: harnessHosts(hostCalls, { applyFails }),
+        mcpHosts: harnessHosts(hostCalls, { applyFails: false }),
         appOrigin: "https://cloudpid.test",
         ...upkeep.deps,
       }),
     );
 
     const result = dispatch(
-      { tool: "settings_mcp_disable", input: { scope: "default", name: "docs", reason }, via },
+      { tool, input: { scope: "default", name: "docs", reason, ...more }, via },
       caller,
     );
 
     return { result, hostCalls, registryCalls, ledger, upkeep };
   };
 
-  it("settings_mcp_disable is recorded as the caller and its set pushed to the host before the answer, with nothing left to sync", () =>
+  it("settings_mcp_disable is recorded as the caller, and its set is pushed by the main Worker with one sync of each Environment it reaches, after the answer", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { result: answered, hostCalls, registryCalls, ledger, upkeep } = disabling(false);
+        const {
+          result: answered,
+          hostCalls,
+          ledger,
+          upkeep,
+        } = changingDocs("settings_mcp_disable", {});
+
         const result = yield* answered;
 
         expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -924,31 +1017,40 @@ describe("a change to the Settings or an MCP server", () => {
           reason,
         });
 
-        expect(hostCalls).toContainEqual({ host: "mcp:default", method: "apply" });
-        // The push is before the answer; it took, so nothing is handed on.
-        expect(registryCalls).toContain("mcpPushed");
+        // The host is asked nothing before the answer; the push is the main Worker's, under `background`.
+        expect(hostCalls).toEqual([]);
+        expect(upkeep.calls).toEqual([]);
 
         yield* upkeep.runBackground;
 
-        expect(upkeep.calls).toEqual([]);
+        expect(upkeep.calls).toEqual(["mcp.sync:default"]);
       }),
     ));
 
-  it("settings_mcp_disable over a host that fails the push names the Environment, and schedules one sync of it after the answer", () =>
+  // The routing of a tool that asks only when it widens: the stand-in's check widens nothing, so the ask finds a narrowing
+  // change and the tool's own change is made at once (no request), as it was before the endpoint asked.
+  it("settings_mcp_exposure_set that widens nothing is made at once, not asked, and synced after the answer", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { result: answered, registryCalls, ledger, upkeep } = disabling(true);
+        const {
+          result: answered,
+          ledger,
+          upkeep,
+        } = changingDocs("settings_mcp_exposure_set", {
+          exposure: "hidden",
+        });
+
         const result = yield* answered;
 
-        // The change stands and the call does not fail for the host.
         expect(result.ok, JSON.stringify(result)).toBe(true);
-        expect(ledger.changes).toHaveLength(1);
-        expect(registryCalls).not.toContain("mcpPushed");
+        expect(ledger.changes[0]?.change).toMatchObject({
+          field: "mcp.servers.docs.exposure",
+          after: "hidden",
+        });
 
-        if (result.ok) expect(result.value.text).toContain("Default");
-
-        // Under `background`, so after the answer, and once.
-        expect(upkeep.calls).toEqual([]);
+        if (result.ok) {
+          expect(result.value.structured).not.toHaveProperty("approval_id");
+        }
 
         yield* upkeep.runBackground;
 
@@ -962,9 +1064,11 @@ describe("a change to the Settings or an MCP server", () => {
       Effect.gen(function* () {
         const { call, ledger, registryCalls, upkeep } = changing();
 
-        const result = yield* call("settings_reset", {
+        const result = yield* call("settings_extension_set", {
           scope: "*",
-          field: "spendLimit.perSession",
+          extension: "subagents",
+          key: "maxSubagentDepth",
+          value: 2,
           reason,
         });
 
@@ -985,7 +1089,7 @@ describe("a change to the Settings or an MCP server", () => {
         const result = yield* call("settings_role_set", {
           scope: "default",
           role: "small",
-          model: SUPPORTED_MODELS[0],
+          model: "anthropic/claude-fable-5-1",
           hint: "Pick it when s3cret-value is needed",
           reason,
         });

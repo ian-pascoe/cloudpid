@@ -4,11 +4,13 @@
 // reachable: `settings_mcp_disable`, `_exposure_set`, `_tool_exposure_set` and `_remove`. The in-session descriptions,
 // parameters and output schemas stay as they were (the snapshot in `packages/extensions/src/harness-session.test.ts` pins
 // them). A change that would make something reachable (switching on, taking something out of hidden, a removal that falls
-// back to a switched-on server) is refused on the endpoint as `unsupported`, with nothing changed; the endpoint's words
-// name the owner, and no tool the endpoint does not serve (`settings_mcp_enable`, `_add`, `_update`).
+// back to a switched-on server) asks the owner on the endpoint, as the definition tools do (`./approvals.ts`): it answers
+// `pending`, so these tools' endpoint output gains the request's optional keys (`McpChangeAskOutput`); one that narrows is
+// made at once. The endpoint's words name the owner.
 // @effect-diagnostics missingPipeableSignature:off
 import { MCP_EXPOSURES } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
+import { ApprovalRequestFields } from "./approvals.ts";
 import { ChangeEndpointOutput, ChangeOutput } from "./change-output.ts";
 import { NextField } from "./field-page.ts";
 import { RequestIdField, settingsReason } from "./reason.ts";
@@ -47,8 +49,26 @@ const SCOPE_AND_HOSTS =
 /** What the descriptions of the tools that change one MCP key say of the record and the Approval. */
 export const MCP_CHANGE_NOTE = `The change is recorded with your reason, and the user can see and revert it on the Settings page. A change that would make something reachable that is not (switch a server on, take it or a tool out of hidden, loosen or remove a hidden toolExposure key, put another key ahead of one) waits for the user's Approval: the call waits for their answer on a card in the Session, with no deadline, and a decline changes nothing; one that narrows (switching off, hiding, moves among codemode, deferred and direct) is made at once. ${SCOPE_AND_HOSTS} The new set is handed to the MCP hosts the change reaches.`;
 
-/** The same on the endpoint: a change that widens is not made here. */
-export const MCP_CHANGE_NOTE_ENDPOINT = `The change is recorded with your reason, and the owner can see and revert it on the Settings page. Only a change that narrows what is reachable is made here (switching off, hiding, moves among codemode, deferred and direct): one that would make something reachable that is not (switch a server on, take it or a tool out of hidden, loosen or remove a hidden toolExposure key, put another key ahead of one) is refused as unsupported, and nothing is changed. ${SCOPE_AND_HOSTS} The new set is handed to the MCP host of each Environment the change reaches before the answer; one that could not be reached takes it at its next pull.`;
+/**
+ * The endpoint's answer to a change of an MCP server's keys: a change's, or, for one that widens what is reachable, the
+ * ask's (`status` "pending" with the request), with no changes made yet.
+ */
+export const McpChangeAskOutput = Schema.Struct({
+  ...ChangeEndpointOutput.fields,
+  status: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        '"pending" when the change would make something reachable that is not, so the owner was asked (approval_wait follows the request); "unchanged" when the field has the value already; absent for a change that narrows, which is made at once',
+    }),
+  ),
+  ...ApprovalRequestFields,
+});
+
+/**
+ * The same on the endpoint: a change that widens asks the owner. The Approval's words are the Limit tools' (`./approvals.ts`):
+ * the call does not wait.
+ */
+export const MCP_CHANGE_NOTE_ENDPOINT = `The change is recorded with your reason, and the owner can see and revert it on the Settings page. A change that narrows what is reachable is made at once (switching off, hiding, moves among codemode, deferred and direct). One that would make something reachable that is not (switch a server on, take it or a tool out of hidden, loosen or remove a hidden toolExposure key, put another key ahead of one) waits for the owner's Approval, in cloudpid: the call does not wait for them, but answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires (7 days); follow it with approval_wait. On Approve the change is made only while the key still has the value the owner saw, and is recorded as approved. ${SCOPE_AND_HOSTS} The new set is sent to the MCP host of each Environment the change reaches by cloudpid, after the answer.`;
 
 // ─── settings_mcp_disable ────────────────────────────────────────────────────
 
@@ -63,7 +83,7 @@ export const settingsMcpDisable = {
     output: ChangeOutput,
   },
   endpoint: {
-    description: `Switch an MCP server off at one Scope: its connection and streams are closed and its tools are no longer reachable (its inventory is kept). ${MCP_CHANGE_NOTE_ENDPOINT} Switching a server on again is the owner's to do on the Settings page. A Repo's .pi/mcp.json is edited as a file, in a pull request, and is no Agent change; its servers run without Approval but get no Secrets.`,
+    description: `Switch an MCP server off at one Scope: its connection and streams are closed and its tools are no longer reachable (its inventory is kept). ${MCP_CHANGE_NOTE_ENDPOINT} settings_mcp_enable asks the owner to switch it on again. A Repo's .pi/mcp.json is edited as a file, in a pull request, and is no Agent change; its servers run without Approval but get no Secrets.`,
     input: Schema.Struct({ ...disableFields, reason: ReasonEndpoint, ...RequestIdField }),
     output: ChangeEndpointOutput,
   },
@@ -85,7 +105,7 @@ export const settingsMcpExposureSet = {
     output: ChangeOutput,
   },
   endpoint: {
-    description: `Set how an MCP server's tools reach the model, at one Scope: codemode (called from a script; the default), deferred (found when the model looks for a tool), direct (offered by name) or hidden (unreachable). A tool the server's toolExposure names keeps its own exposure. ${MCP_CHANGE_NOTE_ENDPOINT} Taking a server out of hidden is the owner's to do on the Settings page.`,
+    description: `Set how an MCP server's tools reach the model, at one Scope: codemode (called from a script; the default), deferred (found when the model looks for a tool), direct (offered by name) or hidden (unreachable). A tool the server's toolExposure names keeps its own exposure. ${MCP_CHANGE_NOTE_ENDPOINT} Taking a server out of hidden waits for the owner's Approval.`,
     input: Schema.Struct({
       scope: SettingsScope,
       name: ServerName,
@@ -93,7 +113,7 @@ export const settingsMcpExposureSet = {
       reason: ReasonEndpoint,
       ...RequestIdField,
     }),
-    output: ChangeEndpointOutput,
+    output: McpChangeAskOutput,
   },
 } as const;
 
@@ -128,14 +148,14 @@ export const settingsMcpToolExposureSet = {
   },
   endpoint: {
     description: toolExposureLine(
-      `${MCP_CHANGE_NOTE_ENDPOINT} Hiding is made at once; removing or loosening a hidden key, or putting another key ahead of one, is the owner's to do on the Settings page.`,
+      `${MCP_CHANGE_NOTE_ENDPOINT} Hiding is made at once; removing or loosening a hidden key, or putting another key ahead of one, waits for the owner's Approval.`,
     ),
     input: Schema.Struct({
       ...toolExposureFields(ExposureValueEndpoint),
       reason: ReasonEndpoint,
       ...RequestIdField,
     }),
-    output: ChangeEndpointOutput,
+    output: McpChangeAskOutput,
   },
 } as const;
 
@@ -152,9 +172,9 @@ export const settingsMcpRemove = {
     output: ChangeOutput,
   },
   endpoint: {
-    description: `Remove an MCP server where it is defined: Global's at "*" (every Environment loses it, but those with an entry of their own), an Environment's own entry at its id (the server then falls back to Global's of the name, or the Repo's it shadowed). A Global server at an Environment is not removed there: settings_mcp_disable switches it off for that Environment. Its MCP sign-in stays, listed as unused, until the owner signs out. A removal that falls back to a server that is switched on or a tool that is not hidden is refused as unsupported, and nothing is changed: the owner makes it on the Settings page. The change is recorded with your reason, and the owner can see and revert it on the Settings page. The new set is handed to the MCP host of each Environment the change reaches before the answer; one that could not be reached takes it at its next pull. A Repo's .pi/mcp.json is edited as a file in a pull request.`,
+    description: `Remove an MCP server where it is defined: Global's at "*" (every Environment loses it, but those with an entry of their own), an Environment's own entry at its id (the server then falls back to Global's of the name, or the Repo's it shadowed). A Global server at an Environment is not removed there: settings_mcp_disable switches it off for that Environment. Its MCP sign-in stays, listed as unused, until the owner signs out. A removal that falls back to a server that is switched on or a tool that is not hidden waits for the owner's Approval, as settings_mcp_enable does: the call does not wait for them, but answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires (7 days); follow it with approval_wait. Any other removal is made at once. The change is recorded with your reason, and the owner can see and revert it on the Settings page. The new set is sent to the MCP host of each Environment the change reaches by cloudpid, after the answer. A Repo's .pi/mcp.json is edited as a file in a pull request.`,
     input: Schema.Struct({ ...removeFields, reason: ReasonEndpoint, ...RequestIdField }),
-    output: ChangeEndpointOutput,
+    output: McpChangeAskOutput,
   },
 } as const;
 

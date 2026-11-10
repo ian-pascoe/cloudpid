@@ -1,9 +1,12 @@
 // docs/architecture/mcp-endpoint.md → Environment and Settings tools → The tools, Approvals with no Session: the Settings'
 // and the MCP servers' changing tools as the endpoint serves them (`settingsEndpointCores`). Each makes its change as the
-// Session's tool does, in the endpoint's words (the owner, no Session; `harness-tools.test.ts` keeps unserved tools out); a Limit, the
-// Instructions and a change that would make something reachable that is not answer `unsupported` with nothing asked,
-// saved or recorded. The world is the MCP fixture's: Settings at two Scopes, the real widening check, a fake host.
+// Session's tool does, in the endpoint's words (the owner, no Session; `harness-tools.test.ts` keeps unserved tools out); a Limit
+// (whose reset the dispatcher asks for before the core) answers `unsupported`, and a reset of the Instructions `invalid_argument`;
+// a change that would make something reachable that is not (which the dispatcher asks the owner for before the core, so one
+// that reaches it widens only because the state changed since) `unavailable`; with nothing asked, saved or recorded. The world is
+// the MCP fixture's: Settings at two Scopes, the real widening check, a fake host.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+import { WIDENING_REFUSAL_TAIL } from "@cloudpid/protocol";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
@@ -17,11 +20,13 @@ const SESSION_WORDS = ["this Session", "the user"];
 
 const world = async (start: Parameters<typeof setup>[0] = {}) => {
   const harness = await setup(start);
+  const synced: Array<string> = [];
 
   const cores = settingsEndpointCores({
     settings: harness.settings,
     settingsMcp: harness.access,
     holdsSecret: () => Effect.succeed(false),
+    sync: (environment) => Effect.sync(() => void synced.push(environment)),
   });
 
   /** A core's answer or its refusal, as the dispatcher reads them. */
@@ -33,7 +38,7 @@ const world = async (start: Parameters<typeof setup>[0] = {}) => {
       ),
     );
 
-  return { ...harness, cores, call };
+  return { ...harness, cores, call, synced };
 };
 
 const noSessionWords = (text: string) => {
@@ -106,11 +111,11 @@ describe("settings_reset on the endpoint", () => {
   });
 
   it.each([
-    ["spendLimit.perSession"],
-    ["extensions.subagents.maxSubagentDepth"],
-    ["extensions.subagents.maxSubagentWorkspaces"],
-    ["instructions"],
-  ])("answers a reset of %s as unsupported", async (name) => {
+    ["spendLimit.perSession", "unsupported"],
+    ["extensions.subagents.maxSubagentDepth", "unsupported"],
+    ["extensions.subagents.maxSubagentWorkspaces", "unsupported"],
+    ["instructions", "invalid_argument"],
+  ])("refuses a reset of %s as %s, with nothing saved", async (name, code) => {
     const { cores, call, recorded } = await world();
 
     const refused = await call(
@@ -120,7 +125,7 @@ describe("settings_reset on the endpoint", () => {
       ),
     );
 
-    expect(refused).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(refused).toMatchObject({ ok: false, error: { code } });
     expect(recorded).toEqual([]);
   });
 
@@ -134,7 +139,7 @@ describe("settings_reset on the endpoint", () => {
     expect(refused).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
   });
 
-  it("answers a reset of an MCP adjustment that would make a hidden tool reachable as unsupported", async () => {
+  it("answers a reset of an MCP adjustment that would make a hidden tool reachable as unavailable", async () => {
     const { cores, call, recorded, asked } = await world({
       global: { mcp: { servers: { files: FILES } } },
       overrides: { [DEFAULT]: { mcp: { servers: { files: { enabled: false } } } } },
@@ -144,15 +149,15 @@ describe("settings_reset on the endpoint", () => {
       cores.settings_reset({ scope: DEFAULT, field: field("enabled"), reason: REASON }, "endpoint"),
     );
 
-    expect(refused).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(refused).toMatchObject({ ok: false, error: { code: "unavailable" } });
     expect(asked).toEqual([]);
     expect(recorded).toEqual([]);
   });
 });
 
 describe("the MCP servers' tools on the endpoint", () => {
-  it("settings_mcp_disable switches the server off, pushes the set and asks nobody", async () => {
-    const { cores, call, recorded, events, asked } = await world({
+  it("settings_mcp_disable switches the server off, leaves the push to the main Worker and asks nobody", async () => {
+    const { cores, call, recorded, events, asked, synced } = await world({
       global: { mcp: { servers: { files: FILES } } },
     });
 
@@ -163,7 +168,9 @@ describe("the MCP servers' tools on the endpoint", () => {
     expect(done.ok).toBe(true);
     expect(asked).toEqual([]);
     expect(recorded).toHaveLength(1);
-    expect(events).toContain(`pushes ${DEFAULT}`);
+    // The host is asked nothing: each Environment the change reaches is handed to `mcp.sync`, after the answer.
+    expect(synced).toEqual([DEFAULT]);
+    expect(events).not.toContain(`pushes ${DEFAULT}`);
 
     if (done.ok) {
       noSessionWords(done.answer.text);
@@ -173,7 +180,7 @@ describe("the MCP servers' tools on the endpoint", () => {
     }
   });
 
-  it("settings_mcp_exposure_set narrows at once and answers a widening as unsupported", async () => {
+  it("settings_mcp_exposure_set narrows at once and answers a widening as unavailable", async () => {
     const {
       cores,
       call,
@@ -191,7 +198,7 @@ describe("the MCP servers' tools on the endpoint", () => {
       ),
     );
 
-    expect(widening).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(widening).toMatchObject({ ok: false, error: { code: "unavailable" } });
 
     expect(asked).toEqual([]);
     expect(recorded).toEqual([]);
@@ -207,7 +214,39 @@ describe("the MCP servers' tools on the endpoint", () => {
     expect(narrowing.ok).toBe(true);
   });
 
-  it("settings_mcp_tool_exposure_set hides a tool at once and answers loosening a hidden key as unsupported", async () => {
+  // The Registry's own words name the Session's user; the endpoint's answer to its guard's refusal is its own. Any other
+  // rejection of the write (a bound, a name clash) is the Registry's, as it was.
+  it.each([
+    {
+      name: "the guard's refusal, because the change widens now, as unavailable in the owner's words",
+      rejects: `it needs the user's Approval, ${WIDENING_REFUSAL_TAIL}`,
+      code: "unavailable",
+    },
+    {
+      name: "any other rejection as invalid_argument",
+      rejects: "an entry may be at most 16 KiB",
+      code: "invalid_argument",
+    },
+  ])("answers a narrowing change the Registry rejected with $name", async ({ rejects, code }) => {
+    const { cores, call, changeCalls } = await world({
+      global: { mcp: { servers: { files: FILES } } },
+      rejects,
+    });
+
+    const refused = await call(
+      cores.settings_mcp_exposure_set(
+        { scope: GLOBAL_SETTINGS_SCOPE, name: "files", exposure: "hidden", reason: REASON },
+        "endpoint",
+      ),
+    );
+
+    expect(refused).toMatchObject({ ok: false, error: { code } });
+    expect(changeCalls).toMatchObject([{ guard: { name: "files", widening: true } }]);
+
+    if (!refused.ok && code === "unavailable") noSessionWords(refused.error.message);
+  });
+
+  it("settings_mcp_tool_exposure_set hides a tool at once and answers loosening a hidden key as unavailable", async () => {
     const { cores, call, recorded } = await world({
       global: { mcp: { servers: { docs: DOCS } } },
     });
@@ -241,11 +280,11 @@ describe("the MCP servers' tools on the endpoint", () => {
       ),
     );
 
-    expect(loosening).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(loosening).toMatchObject({ ok: false, error: { code: "unavailable" } });
     expect(recorded).toHaveLength(1);
   });
 
-  it("settings_mcp_remove removes the server at once, and answers a removal that falls back to a wider server as unsupported", async () => {
+  it("settings_mcp_remove removes the server at once, and answers a removal that falls back to a wider server as unavailable", async () => {
     const {
       cores,
       call,
@@ -272,7 +311,7 @@ describe("the MCP servers' tools on the endpoint", () => {
       wide.cores.settings_mcp_remove({ scope: DEFAULT, name: "files", reason: REASON }, "endpoint"),
     );
 
-    expect(refused).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(refused).toMatchObject({ ok: false, error: { code: "unavailable" } });
     expect(wide.recorded).toEqual([]);
     expect(wide.asked).toEqual([]);
   });

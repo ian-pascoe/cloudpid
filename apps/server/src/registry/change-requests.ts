@@ -118,6 +118,37 @@ export const claimChangeRequest = (
   }
 };
 
+/**
+ * Claim `claim.id` for a write that records no Agent change of its own: an ask for the owner's Approval
+ * (`./approvals.ts`), whose answer the caller settles as it would a change's. A claim the same attempt holds already
+ * stays as it is. Throws `ChangeRequestConflict` as `claimChangeRequest` does.
+ */
+export const claimChangeRequestAlone = (sql: Sql, claim: ChangeClaim, at: number): void => {
+  prune(sql, at);
+
+  const [row] = sql
+    .exec<{ id: string }>(
+      `INSERT INTO change_requests (id, tool, digest, attempt, at, answer, changes)
+       VALUES (?, ?, ?, ?, ?, NULL, json_array())
+       ON CONFLICT (id) DO UPDATE SET at = change_requests.at
+       WHERE change_requests.attempt = excluded.attempt AND change_requests.digest = excluded.digest
+       RETURNING id`,
+      claim.id,
+      claim.tool,
+      claim.digest,
+      claim.attempt,
+      at,
+    )
+    .toArray();
+
+  if (row === undefined) {
+    throw ChangeRequestConflict.make({
+      id: claim.id,
+      message: `The request_id ${JSON.stringify(claim.id)} is held by another call`,
+    });
+  }
+};
+
 const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(ChangeAnswer));
 
 const decodeIds = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.Finite)));

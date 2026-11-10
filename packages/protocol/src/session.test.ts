@@ -54,10 +54,9 @@ describe("the Session socket messages", () => {
     }
   });
 
-  it("reject a configure for a model the proxy does not serve or a thinking level pi does not have", async () => {
-    expect(await readClient('{"type":"configure","model":"anthropic/nope"}')).toEqual(
-      Option.none(),
-    );
+  // Whether the proxy serves a model is the Session's check, against the Model catalog: the message checks its format.
+  it("reject a configure for a model not written as provider/id or a thinking level pi does not have", async () => {
+    expect(await readClient('{"type":"configure","model":"nope"}')).toEqual(Option.none());
     expect(await readClient('{"type":"configure","thinkingLevel":"extreme"}')).toEqual(
       Option.none(),
     );

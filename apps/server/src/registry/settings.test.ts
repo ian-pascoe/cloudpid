@@ -1,9 +1,13 @@
-import { DEFAULT_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_SETTINGS, FALLBACK_CATALOG } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { MODEL_CATALOG_DOCUMENT } from "./model-catalog.ts";
 import { type DocumentStore, readSettings, SETTINGS_DOCUMENT, writeSettings } from "./settings.ts";
+
+/** A Model catalog read from the proxy, listing the built-in models: a saved model it lacks is left out on read. */
+const FETCHED_CATALOG = JSON.stringify({ ...FALLBACK_CATALOG, fetchedAt: 1 });
 
 /** An in-memory document table, as the Registry store's. */
 const documents = (
@@ -51,8 +55,9 @@ describe("reading the settings", () => {
   });
 
   it("drops only the saved overrides that no longer resolve, keeps the others, and says which", () => {
-    // A model a later release dropped, beside overrides that are still valid.
+    // A model the proxy no longer lists, beside overrides that are still valid.
     const store = documents({
+      [MODEL_CATALOG_DOCUMENT]: FETCHED_CATALOG,
       [SETTINGS_DOCUMENT]:
         '{"model":"anthropic/retired-model","thinkingLevel":"low","roles":{"xlarge":{"model":"anthropic/retired-model","hint":"Mine"}}}',
     });
@@ -91,6 +96,7 @@ describe("reading the settings", () => {
 
   it("saves the survivors, and nothing of what was dropped, when the form saves them back", () => {
     const store = documents({
+      [MODEL_CATALOG_DOCUMENT]: FETCHED_CATALOG,
       [SETTINGS_DOCUMENT]: '{"model":"anthropic/retired-model","thinkingLevel":"low"}',
     });
 

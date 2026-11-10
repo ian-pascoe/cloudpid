@@ -5,6 +5,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off schemaSync:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { type AgentChange, type PreviewedSkill, skillField } from "@cloudpid/protocol";
+import type { GlobalSkillToolName } from "@cloudpid/protocol/harness-tools";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type JsonObject,
@@ -25,6 +26,7 @@ import {
   AgentChangeLog,
   DeployCredentials,
   describeEnvironment,
+  type EnvironmentsError,
   Environments,
   type EnvironmentsService,
   EnvironmentTools,
@@ -41,6 +43,9 @@ import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import { expectEndpointWords } from "./endpoint-words.fixture.ts";
 import { endpointTextCheck } from "./environment-changes.ts";
 import { SKILL_REPLAYED, skillCores } from "./environment-skill-changes.ts";
+import { type GlobalSkillCores, globalSkillCores } from "./environment-skill-approvals.ts";
+import type { SkillRemoved } from "./environment-skill-results.ts";
+import type { HarnessAnswer } from "./harness.ts";
 import { answerRequests, runProgram, runSized } from "./program.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { fakeFolderEnv, fakeSkills } from "./environment-skills.fixture.ts";
@@ -3007,5 +3012,711 @@ describe("the Skill cores on the endpoint", () => {
         ),
       ).toMatchObject({ skill: "a", changed: true, replayed: true });
     });
+  });
+});
+
+// #693 S3b-3: a change to the Skills kept Global over the endpoint waits for the owner's Approval, which the Registry keeps.
+// These are the cores' parts the ask and the approved apply run (`apps/server/src/harness/approval-tools.ts`).
+describe("the Skill cores at Global, on the endpoint", () => {
+  const NEW_COMMIT = "dec0de0000000000000000000000000000000002";
+  /** What `prepare` knows of Global, as a core reads it back. */
+  const GLOBAL_KNOWN = { id: "*", name: "Global" } as const;
+
+  const author = {
+    tool: "environment_skill_install",
+    reason: "Every project should grill the plan",
+  };
+
+  /** The cores over fake Skills as the endpoint runs them: no Session, and a check that knows no Session's Secrets. */
+  const globalCores = async () => {
+    const skills = fakeSkills();
+
+    const holdsSecret = await Effect.runPromise(
+      endpointTextCheck.pipe(Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] })),
+    );
+
+    return {
+      cores: globalSkillCores({
+        environments: {
+          ...skills.service,
+          global: Effect.sync(() => ({
+            settings: DEFAULT_CONTAINER_SETTINGS,
+            overriddenIn: {},
+            secrets: [],
+            skills: skills.listed("*"),
+          })),
+        },
+        holdsSecret,
+      }),
+      ...skills,
+    };
+  };
+
+  const decodeInstall = Schema.decodeUnknownSync(
+    HARNESS_TOOLS.environment_skill_install.endpoint.output,
+  );
+
+  const decodeUpdate = Schema.decodeUnknownSync(
+    HARNESS_TOOLS.environment_skill_update.endpoint.output,
+  );
+
+  const ARGS = {
+    id: "*",
+    source: "mattpocock/skills",
+    skills: ["grill-me", "tdd"],
+    reason: author.reason,
+  };
+
+  /** The pin of an install of `names` as the preview showed them. */
+  const pinOf = (names: ReadonlyArray<string>) => ({
+    commit: GRILL_COMMIT,
+    skills: Arr.map(names, (name) => ({
+      name,
+      path: `skills/${name}`,
+      digest: `digest-of-${name}`,
+      savedAt: null,
+    })),
+  });
+
+  /** A change an earlier run of the same approved request recorded under its claim, for Skill `name`. */
+  const earlierChange = (id: number, name: string): AgentChange => ({
+    ...installChange(id, name),
+    scope: "*",
+    session: null,
+    conversation: null,
+  });
+
+  describe("an install", () => {
+    it("asks with each Skill's files on the card and keeps only the pin as expected, telling the caller what it left out", async () => {
+      const { cores, answerPreview, previews } = await globalCores();
+
+      answerPreview(
+        previewOf(
+          [previewedSkill("grill-me"), { ...previewedSkill("tdd"), unchanged: true }],
+          [{ name: "pr", path: "skills/pr", message: "the user's key is in it" }],
+        ),
+      );
+
+      const prepared = await Effect.runPromise(cores.environment_skill_install.prepare(ARGS));
+
+      expect(previews).toEqual([
+        { environment: "*", source: "mattpocock/skills", skills: ["grill-me", "tdd"] },
+      ]);
+      expect(prepared.card).toMatchObject({
+        tool: "environment_skill_install",
+        target: "Global",
+        change: 'Install the Skill "grill-me" from mattpocock/skills at c0ffee0',
+        before: "grill-me: not kept Global",
+        reason: author.reason,
+      });
+      expect(prepared.card.after).toContain("Ask one question at a time.");
+      // The pin only: never a file's text (#685 L6).
+      expect(prepared.expected).toEqual(pinOf(["grill-me"]));
+      expect(JSON.stringify(prepared.expected)).not.toContain("Ask one question");
+      expect(prepared.unchanged).toBeUndefined();
+      // The note names each Skill the request leaves out; the Registry's reason is told in the owner's words (the contract:
+      // the owner, never the user).
+      expect(prepared.note).toContain("tdd");
+      expect(prepared.note).toContain("- pr (skills/pr): the owner's key is in it");
+      expectEndpointWords(prepared.note ?? "");
+    });
+
+    it.each([
+      [
+        "more Skills than one request shows",
+        {
+          status: "refused" as const,
+          message: "o/skills holds 11 Skills, more than the 10 one request may take",
+        },
+      ],
+      [
+        "more files than one request holds",
+        {
+          status: "refused" as const,
+          message:
+            "These Skills are 9000000 bytes together, more than the 8388608 a Skill set may hold",
+        },
+      ],
+      [
+        "Skills the checks all refuse",
+        previewOf([], [{ name: "pr", path: "skills/pr", message: "a binary file" }]),
+      ],
+    ])("refuses %s, asking nothing", async (_, preview) => {
+      const { cores, answerPreview } = await globalCores();
+
+      answerPreview(preview);
+
+      const refused = await Effect.runPromise(
+        cores.environment_skill_install.prepare(ARGS).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expectEndpointWords(refused.message);
+    });
+
+    it("refuses a repo that holds several Skills, none named, listing each with its description as the repo writes it", async () => {
+      const { cores, answerPreview } = await globalCores();
+      // A repo's text: quoted as it is, never reworded as cloudpid's own sentences are.
+      const description = "Helps the user write the test first.";
+
+      answerPreview({
+        status: "listed",
+        environment: GLOBAL_SCOPE,
+        repo: "mattpocock/skills",
+        ref: null,
+        commit: GRILL_COMMIT,
+        available: [{ name: "tdd", description, path: "skills/tdd" }],
+      });
+
+      const refused = await Effect.runPromise(
+        cores.environment_skill_install.prepare(ARGS).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expect(refused.message).toContain(description);
+    });
+
+    const WITH_TOKEN = `use ${GITHUB_TOKEN}`;
+
+    it.each<[string, (cores: GlobalSkillCores) => Effect.Effect<object, EnvironmentsError>]>([
+      [
+        "environment_skill_install",
+        (cores) => cores.environment_skill_install.prepare({ ...ARGS, reason: WITH_TOKEN }),
+      ],
+      [
+        "environment_skill_update",
+        (cores) =>
+          cores.environment_skill_update.prepare({
+            id: "*",
+            names: ["grill-me"],
+            reason: WITH_TOKEN,
+          }),
+      ],
+      [
+        "environment_skill_remove",
+        (cores) =>
+          cores.environment_skill_remove.prepare({ id: "*", name: "grill-me", reason: WITH_TOKEN }),
+      ],
+    ])("refuses %s with a credential in the reason, reading nothing", async (_, prepare) => {
+      const { cores, previews, updatePreviews, keep } = await globalCores();
+
+      keep("*", "grill-me", GRILL_FILES);
+
+      const refused = await Effect.runPromise(prepare(cores).pipe(Effect.flip));
+
+      expect(refused.code).toBe("invalid_argument");
+      expect(previews).toEqual([]);
+      expect(updatePreviews).toEqual([]);
+    });
+
+    it("answers unchanged, asking nothing, when Global keeps every Skill so already", async () => {
+      const { cores, answerPreview } = await globalCores();
+
+      answerPreview(previewOf([{ ...previewedSkill("grill-me"), unchanged: true }]));
+
+      const prepared = await Effect.runPromise(cores.environment_skill_install.prepare(ARGS));
+
+      expect(prepared.expected).toBeNull();
+      expect(decodeInstall(prepared.unchanged?.structured)).toMatchObject({
+        scope: GLOBAL_SCOPE,
+        unchanged: ["skills.grill-me"],
+        changed: false,
+      });
+    });
+
+    it("installs on Approve against the pin, as approved, keeping each Skill only while its pin holds and naming each it skipped", async () => {
+      const { cores, answerInstall, installs } = await globalCores();
+      const core = cores.environment_skill_install;
+      const installed = installedAtGlobal(["grill-me"]);
+
+      answerInstall({
+        ...installed,
+        results: [
+          ...installed.results,
+          {
+            name: "tdd",
+            path: "skills/tdd",
+            outcome: "rejected",
+            message:
+              "the Skill of the name was saved again since the user was asked: nothing was installed. Ask again",
+          },
+        ],
+      });
+
+      const applied = await Effect.runPromise(core.apply(ARGS, pinOf(["grill-me", "tdd"]), author));
+
+      expect(installs).toEqual([
+        {
+          environment: "*",
+          source: "mattpocock/skills",
+          skills: ["grill-me", "tdd"],
+          reason: author.reason,
+          approved: true,
+          pin: pinOf(["grill-me", "tdd"]),
+        },
+      ]);
+      expect(core.outcome(applied.result, [])).toBe("wrote");
+
+      const answer = await Effect.runPromise(core.render(ARGS, null, applied, { earlier: [] }));
+
+      // The Registry's reason a Skill was skipped is told in the owner's words (the contract: the owner, never the user).
+      expect(answer.text).toContain(
+        "- tdd (skills/tdd): the Skill of the name was saved again since the owner was asked",
+      );
+      expectEndpointWords(answer.text);
+      expect(decodeInstall(answer.structured)).toMatchObject({
+        scope: GLOBAL_SCOPE,
+        changed: true,
+        installed: [{ name: "grill-me" }],
+        refused: [{ name: "tdd" }],
+        changes: [{ field: "skills.grill-me" }],
+      });
+    });
+
+    it("ends changed_since, naming each Skill, when none is still as the owner was shown it", async () => {
+      const { cores, answerInstall } = await globalCores();
+      const core = cores.environment_skill_install;
+
+      answerInstall({
+        ...installedAtGlobal([]),
+        results: [
+          {
+            name: "grill-me",
+            path: "skills/grill-me",
+            outcome: "rejected",
+            message: "its files are not the ones the user was shown",
+          },
+        ],
+      });
+
+      const applied = await Effect.runPromise(core.apply(ARGS, pinOf(["grill-me"]), author));
+
+      expect(core.outcome(applied.result, [])).toBe("changed_since");
+
+      const refused = await Effect.runPromise(
+        core.render(ARGS, null, applied, { earlier: [] }).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expect(refused.message).toContain("grill-me");
+      expectEndpointWords(refused.message);
+    });
+
+    it("ends changed_since when the repo lists Skills to choose from at the pinned commit, so it holds none it showed", async () => {
+      const { cores, answerInstall } = await globalCores();
+      const core = cores.environment_skill_install;
+
+      answerInstall({
+        status: "listed",
+        environment: GLOBAL_SCOPE,
+        repo: "mattpocock/skills",
+        ref: null,
+        commit: GRILL_COMMIT,
+        available: [{ name: "tdd", description: "Test first.", path: "skills/tdd" }],
+      });
+
+      const applied = await Effect.runPromise(core.apply(ARGS, pinOf(["grill-me"]), author));
+
+      expect(core.outcome(applied.result, [])).toBe("changed_since");
+
+      const refused = await Effect.runPromise(
+        core.render(ARGS, null, applied, { earlier: [] }).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expectEndpointWords(refused.message);
+    });
+
+    it("refuses a request kept with no pin, installing nothing", async () => {
+      const { cores, installs } = await globalCores();
+
+      const refused = await Effect.runPromise(
+        cores.environment_skill_install.apply(ARGS, null, author).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expect(installs).toEqual([]);
+    });
+
+    // #685 L18: an approved install cut after some Skills committed is applied again under the same attempt.
+    it("tells the Skills an earlier run of the request kept as installed, with their changes, when the rerun finds them kept", async () => {
+      const { cores, answerInstall } = await globalCores();
+      const core = cores.environment_skill_install;
+      const installed = installedAtGlobal(["tdd"]);
+
+      answerInstall({
+        ...installed,
+        results: [
+          { name: "grill-me", path: "skills/grill-me", outcome: "unchanged" },
+          ...installed.results,
+        ],
+      });
+
+      const applied = await Effect.runPromise(core.apply(ARGS, pinOf(["grill-me", "tdd"]), author));
+      const earlier = [earlierChange(7, "grill-me")];
+
+      expect(core.outcome(applied.result, earlier)).toBe("wrote");
+
+      const answer = await Effect.runPromise(core.render(ARGS, null, applied, { earlier }));
+
+      expect(decodeInstall(answer.structured)).toMatchObject({
+        installed: [{ name: "grill-me" }, { name: "tdd" }],
+        unchanged: [],
+        changes: [{ id: 7 }, { id: 20 }],
+      });
+
+      // A rerun that finds every Skill kept, all by the earlier run, still settles the claim with them.
+      answerInstall({
+        ...installedAtGlobal([]),
+        results: [{ name: "grill-me", path: "skills/grill-me", outcome: "unchanged" }],
+      });
+
+      const again = await Effect.runPromise(core.apply(ARGS, pinOf(["grill-me"]), author));
+
+      expect(core.outcome(again.result, earlier)).toBe("wrote");
+      expect(core.outcome(again.result, [])).toBe("found");
+    });
+  });
+
+  describe("an update", () => {
+    const from = {
+      repo: "mattpocock/skills",
+      path: "skills/grill-me",
+      ref: null,
+      commit: GRILL_COMMIT,
+    };
+
+    const to = { ...from, commit: NEW_COMMIT };
+
+    const UPDATE = {
+      id: "*",
+      names: ["grill-me", "tdd"],
+      reason: "The owner wants the latest grill-me",
+    };
+
+    const PIN = {
+      name: "grill-me",
+      savedAt: 1_234,
+      commit: NEW_COMMIT,
+      folderHash: "folder-hash-1",
+    };
+
+    const ready = {
+      name: "grill-me",
+      outcome: "ready" as const,
+      from,
+      to,
+      description: "Interview me.",
+      files: GRILL_FILES,
+      folderHash: "folder-hash-1",
+      savedAt: 1_234,
+      overwrites: false,
+      current: { description: "Interview me.", files: ["SKILL.md"] },
+    };
+
+    it("asks with the files each Skill would take and keeps only the pins as expected, naming the Skills left out", async () => {
+      const { cores, answerUpdatePreview, updatePreviews } = await globalCores();
+
+      answerUpdatePreview({
+        status: "done",
+        environment: GLOBAL_SCOPE,
+        results: [
+          ready,
+          { name: "tdd", outcome: "modified", message: "it was edited since it was installed" },
+        ],
+      });
+
+      const prepared = await Effect.runPromise(cores.environment_skill_update.prepare(UPDATE));
+
+      expect(updatePreviews).toEqual([
+        { environment: "*", names: ["grill-me", "tdd"], overwrite: false },
+      ]);
+      expect(prepared.card.change).toBe(
+        'Update the Skill "grill-me" to their refs\' latest commits',
+      );
+      expect(prepared.card.after).toContain("Not part of this update:\n- tdd (modified)");
+      expect(prepared.card.after).toContain("Ask one question at a time.");
+      expect(prepared.expected).toEqual({ pins: [PIN] });
+      expect(prepared.note).toContain("tdd");
+      expectEndpointWords(prepared.note ?? "");
+    });
+
+    it("marks on the card a Skill whose edits the update replaces, and keeps overwrite for the apply", async () => {
+      const { cores, answerUpdatePreview, updatePreviews } = await globalCores();
+
+      answerUpdatePreview({
+        status: "done",
+        environment: GLOBAL_SCOPE,
+        results: [{ ...ready, overwrites: true }],
+      });
+
+      const prepared = await Effect.runPromise(
+        cores.environment_skill_update.prepare({ ...UPDATE, overwrite: true }),
+      );
+
+      expect(updatePreviews).toEqual([
+        { environment: "*", names: ["grill-me", "tdd"], overwrite: true },
+      ]);
+      // The card's warning is what the owner approves the edits away by.
+      expect(prepared.card.before).toContain("(edited since installed)");
+      expect(prepared.card.after).toContain("EDITED since it was installed");
+    });
+
+    it("refuses a preview of more Skills than one request shows, and answers unchanged when nothing would move", async () => {
+      const { cores, answerUpdatePreview } = await globalCores();
+
+      answerUpdatePreview({
+        status: "refused",
+        message:
+          "11 Skills would be updated, and one request for the user's Approval shows at most 10",
+      });
+
+      const refused = await Effect.runPromise(
+        cores.environment_skill_update.prepare(UPDATE).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expectEndpointWords(refused.message);
+
+      answerUpdatePreview({
+        status: "done",
+        environment: GLOBAL_SCOPE,
+        results: [{ name: "grill-me", outcome: "unchanged", message: "its folder is the same" }],
+      });
+
+      const prepared = await Effect.runPromise(cores.environment_skill_update.prepare(UPDATE));
+
+      expect(decodeUpdate(prepared.unchanged?.structured)).toMatchObject({
+        unchanged: ["skills.grill-me"],
+        changed: false,
+      });
+    });
+
+    it("updates on Approve at the pinned commits, telling a Skill an earlier run moved as updated, and names each skipped", async () => {
+      const { cores, answerUpdate, updates } = await globalCores();
+      const core = cores.environment_skill_update;
+
+      answerUpdate({
+        status: "done",
+        environment: GLOBAL_SCOPE,
+        results: [
+          {
+            name: "grill-me",
+            outcome: "unchanged",
+            message: "it is at the commit and files the user approved already",
+          },
+          {
+            name: "tdd",
+            outcome: "changed-since",
+            message: "it was saved again since the user was asked",
+          },
+        ],
+        handed: false,
+      });
+
+      const applied = await Effect.runPromise(
+        core.apply(
+          UPDATE,
+          { pins: [PIN] },
+          { tool: "environment_skill_update", reason: UPDATE.reason },
+        ),
+      );
+
+      expect(updates).toEqual([
+        {
+          environment: "*",
+          names: ["grill-me"],
+          overwrite: false,
+          pins: [PIN],
+          reason: UPDATE.reason,
+          approved: true,
+        },
+      ]);
+
+      const earlier: ReadonlyArray<AgentChange> = [
+        {
+          ...earlierChange(8, "grill-me"),
+          before: { files: { "SKILL.md": "h1" }, source: from },
+          after: { files: { "SKILL.md": "h2" }, source: to },
+        },
+      ];
+
+      expect(core.outcome(applied.result, earlier)).toBe("wrote");
+      expect(core.outcome(applied.result, [])).toBe("found");
+
+      const answer = await Effect.runPromise(core.render(UPDATE, null, applied, { earlier }));
+
+      expectEndpointWords(answer.text);
+      expect(decodeUpdate(answer.structured)).toMatchObject({
+        changed: true,
+        updated: [{ name: "grill-me", to: { commit: NEW_COMMIT } }],
+        refused: [{ name: "tdd", outcome: "changed-since" }],
+        changes: [{ id: 8 }],
+      });
+    });
+
+    it("refuses an apply the Registry finds nothing to update for, the request's Skills gone", async () => {
+      const { cores } = await globalCores();
+      const core = cores.environment_skill_update;
+
+      const applied = {
+        known: GLOBAL_KNOWN,
+        result: { status: "nothing" as const, environment: GLOBAL_KNOWN },
+      };
+
+      expect(core.outcome(applied.result, [])).toBe("refused");
+
+      const refused = await Effect.runPromise(
+        core.render(UPDATE, null, applied, { earlier: [] }).pipe(Effect.flip),
+      );
+
+      expect(refused.code).toBe("invalid_argument");
+      expectEndpointWords(refused.message);
+    });
+  });
+
+  describe("a removal", () => {
+    const REMOVE = { id: "*", name: "grill-me", reason: "Nobody grills any more" };
+
+    it("asks against when the Skill was last saved, and refuses one not kept Global, asking nothing", async () => {
+      const { cores, keep } = await globalCores();
+
+      const absent = await Effect.runPromise(
+        cores.environment_skill_remove.prepare(REMOVE).pipe(Effect.flip),
+      );
+
+      expect(absent.code).toBe("not_found");
+      expectEndpointWords(absent.message);
+
+      keep("*", "grill-me", GRILL_FILES);
+
+      const prepared = await Effect.runPromise(cores.environment_skill_remove.prepare(REMOVE));
+
+      expect(prepared.card).toMatchObject({
+        change: 'Remove the Skill "grill-me"',
+        before: "grill-me: Interview me.",
+        target: "Global",
+      });
+      expect(prepared.expected).toEqual({ savedAt: expect.any(Number) });
+    });
+
+    it("removes on Approve only while the Skill was last saved as the owner saw it", async () => {
+      const { cores, keep, kept } = await globalCores();
+      const core = cores.environment_skill_remove;
+      const removing = { tool: "environment_skill_remove", reason: REMOVE.reason };
+
+      keep("*", "grill-me", GRILL_FILES);
+
+      const { expected } = await Effect.runPromise(core.prepare(REMOVE));
+
+      // Saved again since the ask: nothing is removed.
+      const stale = await Effect.runPromise(core.apply(REMOVE, { savedAt: 1 }, removing));
+
+      expect(core.outcome(stale.result, [])).toBe("changed_since");
+      expect(kept.has("*:grill-me")).toBe(true);
+
+      const applied = await Effect.runPromise(core.apply(REMOVE, expected, removing));
+
+      expect(core.outcome(applied.result, [])).toBe("wrote");
+      expect(kept.has("*:grill-me")).toBe(false);
+
+      const answer = await Effect.runPromise(
+        core.render(REMOVE, expected, applied, { earlier: [] }),
+      );
+
+      expectEndpointWords(answer.text);
+      expect(
+        Schema.decodeUnknownSync(HARNESS_TOOLS.environment_skill_remove.endpoint.output)(
+          answer.structured,
+        ),
+      ).toMatchObject({ scope: GLOBAL_SCOPE, changed: true, skill: "grill-me" });
+    });
+
+    const decodeRemove = Schema.decodeUnknownSync(
+      HARNESS_TOOLS.environment_skill_remove.endpoint.output,
+    );
+
+    it("answers a Skill found gone already as approved, with nothing removed", async () => {
+      const { cores } = await globalCores();
+      const core = cores.environment_skill_remove;
+
+      const applied = {
+        known: GLOBAL_KNOWN,
+        result: { status: "absent" as const, environment: GLOBAL_KNOWN },
+      };
+
+      expect(core.outcome(applied.result, [])).toBe("found");
+
+      const answer = await Effect.runPromise(core.render(REMOVE, null, applied, { earlier: [] }));
+
+      expectEndpointWords(answer.text);
+      expect(decodeRemove(answer.structured)).toMatchObject({
+        changed: false,
+        unchanged: ["skills.grill-me"],
+        skill: "grill-me",
+      });
+    });
+
+    it.each<[string, SkillRemoved]>([
+      [
+        "refused",
+        { status: "rejected", message: "Removing it would serve a Skill the user cannot fit." },
+      ],
+      ["changed_since", { status: "changed-since", environment: GLOBAL_KNOWN }],
+    ])(
+      "ends %s, removing nothing, for a removal the Registry did not make",
+      async (end, result) => {
+        const { cores } = await globalCores();
+        const core = cores.environment_skill_remove;
+        const applied = { known: GLOBAL_KNOWN, result };
+
+        expect(core.outcome(result, [])).toBe(end);
+
+        const refused = await Effect.runPromise(
+          core.render(REMOVE, null, applied, { earlier: [] }).pipe(Effect.flip),
+        );
+
+        expect(refused.code).toBe("invalid_argument");
+        expectEndpointWords(refused.message);
+      },
+    );
+  });
+
+  // A Session's request is the one declined to a caller; the endpoint's caller reads the Registry's request. Each core still
+  // says what a Decline means, with the owner's reason, in its tool's output.
+  const DECLINED = { approved: false, reason: "Not this one", expected: null } as const;
+
+  it.each<[GlobalSkillToolName, (cores: GlobalSkillCores) => HarnessAnswer]>([
+    [
+      "environment_skill_install",
+      (cores) => cores.environment_skill_install.declined(ARGS, GLOBAL_KNOWN, DECLINED),
+    ],
+    [
+      "environment_skill_update",
+      (cores) =>
+        cores.environment_skill_update.declined(
+          { id: "*", names: ["grill-me"], reason: "Latest" },
+          GLOBAL_KNOWN,
+          DECLINED,
+        ),
+    ],
+    [
+      "environment_skill_remove",
+      (cores) =>
+        cores.environment_skill_remove.declined(
+          { id: "*", name: "grill-me", reason: "Unused" },
+          GLOBAL_KNOWN,
+          DECLINED,
+        ),
+    ],
+  ])("has %s's declined change nothing, giving the owner's reason", async (tool, declined) => {
+    const { cores } = await globalCores();
+    const answer = declined(cores);
+
+    expect(answer.text).toContain(DECLINED.reason);
+    expectEndpointWords(answer.text);
+    expect(
+      Schema.decodeUnknownSync(HARNESS_TOOLS[tool].endpoint.output)(answer.structured),
+    ).toMatchObject({ changed: false, changes: [] });
   });
 });

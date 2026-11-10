@@ -9,6 +9,7 @@ import {
   browserSessionLayer,
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
+import { CloudpidReports } from "@cloudpid/extensions/cloudpid-report";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import { TriggerAccess } from "@cloudpid/extensions/triggers";
@@ -30,7 +31,6 @@ import { WebConfig } from "@cloudpid/extensions/web";
 import { telemetryLayer, tracingModels, tracingTools, workersTelemetry } from "@cloudpid/telemetry";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
-import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as HttpBody from "effect/http/HttpBody";
@@ -44,6 +44,7 @@ import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
+import { ModelProxyConfig } from "../model-proxy.ts";
 import { APP_ORIGIN_VAR, LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
@@ -66,6 +67,7 @@ import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { triggerObjects, triggersOfEnvironment } from "../trigger/objects.ts";
 import { sessionTriggers } from "./triggers.ts";
+import { cloudpidReportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpRecords } from "./mcp-records.ts";
@@ -92,6 +94,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import {
   instructionsSettings,
   reloadSessionExtensions,
+  SessionSettings,
   sessionSettingsLayer,
   subagentSettings,
   toolSearchSettings,
@@ -170,21 +173,6 @@ const NAME_KEY = "session-name";
  * to Environments (ADR-0016), and until then are not listed, so they never read one.
  */
 const PLACEMENT_KEY = "workspace-placement";
-
-/** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
-export class ModelProxyConfig extends Context.Service<
-  ModelProxyConfig,
-  { readonly url: Redacted.Redacted<string>; readonly apiKey: Redacted.Redacted<string> }
->()("@cloudpid/server/session/Session/ModelProxyConfig") {}
-
-/** Reads `MODEL_PROXY_URL` and `MODEL_PROXY_API_KEY`: from the deploying environment, then from the Worker's secrets. */
-export const ModelProxyConfigLive = Layer.effect(
-  ModelProxyConfig,
-  Config.all({
-    url: Config.Redacted("MODEL_PROXY_URL"),
-    apiKey: Config.Redacted("MODEL_PROXY_API_KEY"),
-  }),
-);
 
 /**
  * What the Session DO answers: its alarm, and its clients' sockets (`docs/architecture/client-and-protocol.md`). `fetch`
@@ -354,11 +342,6 @@ export const SessionLive = Session.make(
             Effect.provideService(Tracer.Tracer, telemetry.tracer),
           );
 
-        const models = proxyModels({
-          url: Redacted.value(proxy.url),
-          apiKey: Redacted.value(proxy.apiKey),
-        });
-
         // The Session's name is its ID in the Registry. Instances are told it when addressed by name, as every Session
         // is; it is kept so one that is not, such as an alarm's, still has it.
         const { kv } = state.raw.storage;
@@ -517,11 +500,25 @@ export const SessionLive = Session.make(
           objects: triggers,
         });
 
+        // `cloudpid_report`'s reports, which the Registry posts as the GitHub App: this stage and version in their footer.
+        const cloudpidReports = sessionCloudpidReports({
+          registry: registryObject,
+          session: name,
+          stage: cloudpidReportStage({
+            label: Predicate.isString(worker[STAGE_LABEL_VAR])
+              ? worker[STAGE_LABEL_VAR]
+              : undefined,
+            local: worker[LOCAL_MODE_VAR] === "true",
+          }),
+          // SAFETY: the deploy binds the version metadata as `CF_VERSION_METADATA` (an `{ id }`); `alchemy dev` may lack it.
+          version: (worker["CF_VERSION_METADATA"] as { readonly id?: string } | undefined)?.id,
+        });
+
         // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
         // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
         const environmentRemoval = sessionEnvironmentRemoval({
           registry: registryObject,
-          session: name,
+          author: sessionSource(name),
           objects: {
             workspaces: workspaceObjects,
             sessions: { destroy: destroySessionObject(sessions) },
@@ -1021,11 +1018,27 @@ export const SessionLive = Session.make(
                 storage: state.raw.storage,
                 // Every model call (generations, summaries) is scrubbed of the Secrets this Session holds.
                 // Each request is a span too, measured where it leaves for the proxy.
-                models: Effect.map(Effect.service(Secrets), (held) =>
-                  tracingModels(
-                    scrubbingModels(absentToolFlatteningModels(imageLimitedModels(models)), held),
-                    telemetry.context,
-                  ),
+                // The models are the Model catalog's the Session last read with its settings (ADR-0052).
+                models: Effect.map(
+                  Effect.all([Effect.service(Secrets), Effect.service(SessionSettings)]),
+                  ([held, sessionSettings]) =>
+                    tracingModels(
+                      scrubbingModels(
+                        absentToolFlatteningModels(
+                          imageLimitedModels(
+                            proxyModels(
+                              {
+                                url: Redacted.value(proxy.url),
+                                apiKey: Redacted.value(proxy.apiKey),
+                              },
+                              () => sessionSettings.current().models,
+                            ),
+                          ),
+                        ),
+                        held,
+                      ),
+                      telemetry.context,
+                    ),
                 ),
                 reset: (reason) => state.raw.abort(reason),
                 // Read where the Session and its Subagent Workspaces work, without readying them: it starts nothing.
@@ -1065,56 +1078,63 @@ export const SessionLive = Session.make(
                   return id === null ? [] : workspaces.getByName(object).containerHeldStops(after);
                 },
                 subagentWorkspaces,
-                extensions: sessionExtensions.pipe(
-                  // After every other extension, so each of their tools is named and its call is a span, and the
-                  // Changes are listed again after each writing call.
-                  // A deleted subagent's drafts are deleted with it.
-                  Effect.flatMap((installed) =>
-                    Effect.map(
-                      Effect.all([
-                        Effect.service(SessionChanges),
-                        Effect.service(AnnotationStore),
-                        Effect.service(SessionRuns),
-                      ]),
-                      ([changes, annotations, runs]) => {
-                        const tools = Arr.flatMap(installed, (extension) => extension.tools ?? []);
+                extensions: sessionExtensions
+                  .pipe(
+                    // After every other extension, so each of their tools is named and its call is a span, and the
+                    // Changes are listed again after each writing call.
+                    // A deleted subagent's drafts are deleted with it.
+                    Effect.flatMap((installed) =>
+                      Effect.map(
+                        Effect.all([
+                          Effect.service(SessionChanges),
+                          Effect.service(AnnotationStore),
+                          Effect.service(SessionRuns),
+                        ]),
+                        ([changes, annotations, runs]) => {
+                          const tools = Arr.flatMap(
+                            installed,
+                            (extension) => extension.tools ?? [],
+                          );
 
-                        return [
-                          ...installed,
-                          tracingTools(telemetry.context, tools, toolSpans),
-                          runsOpeningTools(tools, runs),
-                          changesRefreshingTools(tools, changes),
-                          annotationsPruningTools(tools, annotations),
-                        ];
-                      },
+                          return [
+                            ...installed,
+                            tracingTools(telemetry.context, tools, toolSpans),
+                            runsOpeningTools(tools, runs),
+                            changesRefreshingTools(tools, changes),
+                            annotationsPruningTools(tools, annotations),
+                          ];
+                        },
+                      ),
                     ),
+                    Effect.provideService(WebConfig, web),
+                    Effect.provideService(WorkspaceFiles, workspace.files),
+                    Effect.provideService(WorkspaceContainer, workspace.container),
+                    Effect.provideService(SubagentWorkspaces, subagentWorkspaces),
+                    Effect.provideService(Environments, environments),
+                    Effect.provideService(EnvironmentRemoval, environmentRemoval),
+                    Effect.provideService(TriggerAccess, triggerAccess),
+                    Effect.provideService(CloudpidReports, cloudpidReports),
+                    Effect.provideService(SettingsAccess, settingsAccess),
+                    // The `settings_mcp_*` tools: the Registry's MCP servers, and the hosts of the Environments they name.
+                    Effect.provideService(SettingsMcpAccess, settingsMcp),
+                    Effect.provideService(DeployCredentials, {
+                      values: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
+                    }),
+                    Effect.provideService(Images, images),
+                    // `visual_show` hands each page it prepared to the Session's Visuals.
+                    Effect.provideService(VisualRecorder, visuals),
+                    // This Session's spans of its running calls, which its tools add their counts to (`annotateToolSpan`).
+                    Effect.provideService(ToolSpans, toolSpans),
+                    // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
+                    Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
+                    Effect.provideService(CodemodeSandbox, sandbox),
+                    Effect.provideService(BrowserHost, browser),
+                  )
+                  .pipe(
+                    Effect.provideServiceEffect(SubagentSettings, subagentSettings),
+                    Effect.provideServiceEffect(ToolSearchSettings, toolSearchSettings),
+                    Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),
                   ),
-                  Effect.provideService(WebConfig, web),
-                  Effect.provideService(WorkspaceFiles, workspace.files),
-                  Effect.provideService(WorkspaceContainer, workspace.container),
-                  Effect.provideService(SubagentWorkspaces, subagentWorkspaces),
-                  Effect.provideService(Environments, environments),
-                  Effect.provideService(EnvironmentRemoval, environmentRemoval),
-                  Effect.provideService(TriggerAccess, triggerAccess),
-                  Effect.provideService(SettingsAccess, settingsAccess),
-                  // The `settings_mcp_*` tools: the Registry's MCP servers, and the hosts of the Environments they name.
-                  Effect.provideService(SettingsMcpAccess, settingsMcp),
-                  Effect.provideService(DeployCredentials, {
-                    values: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
-                  }),
-                  Effect.provideService(Images, images),
-                  // `visual_show` hands each page it prepared to the Session's Visuals.
-                  Effect.provideService(VisualRecorder, visuals),
-                  // This Session's spans of its running calls, which its tools add their counts to (`annotateToolSpan`).
-                  Effect.provideService(ToolSpans, toolSpans),
-                  // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
-                  Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
-                  Effect.provideService(CodemodeSandbox, sandbox),
-                  Effect.provideService(BrowserHost, browser),
-                  Effect.provideServiceEffect(SubagentSettings, subagentSettings),
-                  Effect.provideServiceEffect(ToolSearchSettings, toolSearchSettings),
-                  Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),
-                ),
                 reload: reloadSessionExtensions,
                 mcp: mcpTools,
                 apps: mcpApps.service,

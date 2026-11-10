@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); plain functions over values, called directly.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- native array methods over plain values (the extension carries no Effect runtime); plain functions over values, called directly.
 /**
  * The `/cloudpid` command line (docs/architecture/mcp-endpoint.md → Session import → The `/cloudpid` command → Command):
  * one command with subcommands, parsed here as a pure function so the verbs are tested without pi. `import` takes

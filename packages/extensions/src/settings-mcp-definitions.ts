@@ -49,6 +49,7 @@ import {
   type McpCall,
   McpCommit,
   type McpCommitService,
+  type McpPlan,
   NOTHING,
   refuse,
 } from "./settings-mcp-commit.ts";
@@ -619,7 +620,7 @@ export const mcpDefinitions = (engine: McpCommitService) => {
   };
 
   /** `settings_mcp_add`: an `entry`, or a copy of a Repo's server. */
-  const add = (input: {
+  const addPlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly entry: Schema.JsonObject | undefined;
@@ -648,147 +649,149 @@ export const mcpDefinitions = (engine: McpCommitService) => {
         );
       }
 
-      const rerun = yield* engine.rerun(input.api);
       const field = entryField(input.name);
 
-      return yield* engine.run<never>({
-        rerun,
-        prepare: Effect.gen(function* () {
-          const view = yield* settings.get(input.scope);
-          const all = yield* access.view({ scope: input.scope });
-          const named = yield* access.view({ scope: input.scope, name: input.name });
+      return {
+        tool,
+        api: input.api,
+        scope: input.scope,
+        name: input.name,
+        field,
+        reason: input.reason,
+        status: true,
+        prepare: (_rerun: boolean) =>
+          Effect.gen(function* () {
+            const view = yield* settings.get(input.scope);
+            const all = yield* access.view({ scope: input.scope });
+            const named = yield* access.view({ scope: input.scope, name: input.name });
 
-          // 4. The name and the layers.
-          const problem = nameProblem(input.name);
+            // 4. The name and the layers.
+            const problem = nameProblem(input.name);
 
-          if (problem !== undefined) return yield* refuse(`${ASKED}${problem}.`);
+            if (problem !== undefined) return yield* refuse(`${ASKED}${problem}.`);
 
-          const existing = Option.getOrUndefined(Arr.head(named.servers));
-          const same = ownLayer(view, all.servers);
+            const existing = Option.getOrUndefined(Arr.head(named.servers));
+            const same = ownLayer(view, all.servers);
 
-          const clash = nameClash({ view, name: input.name, same, others: all.servers, named });
+            const clash = nameClash({ view, name: input.name, same, others: all.servers, named });
 
-          if (clash !== undefined) return yield* refuse(`${ASKED}${clash}`);
+            if (clash !== undefined) return yield* refuse(`${ASKED}${clash}`);
 
-          if (existing !== undefined && Arr.some(same, (each) => each.server.name === input.name)) {
-            return yield* refuse(
-              `${ASKED}MCP server ${JSON.stringify(input.name)} is defined ${where(view)} already: settings_mcp_update changes its definition${
-                isGlobalView(view) ? "" : ", settings_mcp_remove removes it"
-              }.`,
-            );
-          }
-
-          const adjusted = Arr.findFirst(named.orphans, (each) => each.name === input.name);
-
-          const held =
-            existing?.resetFields ??
-            (Option.isSome(adjusted)
-              ? Arr.map(adjusted.value.keys, (key) => `mcp.servers.${input.name}.${key}`)
-              : []);
-
-          if (held.length > 0) {
-            return yield* refuse(
-              `${ASKED}${environmentName(view)} holds an adjustment of ${JSON.stringify(input.name)} (${Arr.join(held, ", ")}): an Environment holds either its own entry or an adjustment for a name. Remove the adjustment first with settings_reset of each of those fields, then add.`,
-            );
-          }
-
-          // The entry: given, or copied from the Repo's last good read.
-          let candidate: Schema.JsonObject;
-
-          let provenance:
-            | { readonly repo: SettingsMcpRepo; readonly cwd: string | null }
-            | undefined;
-
-          if (input.entry !== undefined) {
-            candidate = input.entry;
-          } else {
-            const found = yield* repoEntry(named, input.name, input.from_repo ?? "");
-            const copied = copiedEntry(found.value, found.repo.repo);
-
-            if ("problem" in copied) {
+            if (
+              existing !== undefined &&
+              Arr.some(same, (each) => each.server.name === input.name)
+            ) {
               return yield* refuse(
-                `${ASKED}${input.from_repo}'s entry ${JSON.stringify(input.name)}: ${copied.problem}.`,
+                `${ASKED}MCP server ${JSON.stringify(input.name)} is defined ${where(view)} already: settings_mcp_update changes its definition${
+                  isGlobalView(view) ? "" : ", settings_mcp_remove removes it"
+                }.`,
               );
             }
 
-            candidate = copied.entry;
-            provenance = { repo: found.repo, cwd: copied.cwd };
-          }
+            const adjusted = Arr.findFirst(named.orphans, (each) => each.name === input.name);
 
-          if (!isMcpFullEntry(candidate)) {
-            return yield* refuse(
-              `${ASKED}the entry defines no server: give it a command (stdio) or a url (Streamable HTTP). enabled, exposure and toolExposure alone are an adjustment, which settings_mcp_enable and the exposure tools make.`,
+            const held =
+              existing?.resetFields ??
+              (Option.isSome(adjusted)
+                ? Arr.map(adjusted.value.keys, (key) => `mcp.servers.${input.name}.${key}`)
+                : []);
+
+            if (held.length > 0) {
+              return yield* refuse(
+                `${ASKED}${environmentName(view)} holds an adjustment of ${JSON.stringify(input.name)} (${Arr.join(held, ", ")}): an Environment holds either its own entry or an adjustment for a name. Remove the adjustment first with settings_reset of each of those fields, then add.`,
+              );
+            }
+
+            // The entry: given, or copied from the Repo's last good read.
+            let candidate: Schema.JsonObject;
+
+            let provenance:
+              | { readonly repo: SettingsMcpRepo; readonly cwd: string | null }
+              | undefined;
+
+            if (input.entry !== undefined) {
+              candidate = input.entry;
+            } else {
+              const found = yield* repoEntry(named, input.name, input.from_repo ?? "");
+              const copied = copiedEntry(found.value, found.repo.repo);
+
+              if ("problem" in copied) {
+                return yield* refuse(
+                  `${ASKED}${input.from_repo}'s entry ${JSON.stringify(input.name)}: ${copied.problem}.`,
+                );
+              }
+
+              candidate = copied.entry;
+              provenance = { repo: found.repo, cwd: copied.cwd };
+            }
+
+            if (!isMcpFullEntry(candidate)) {
+              return yield* refuse(
+                `${ASKED}the entry defines no server: give it a command (stdio) or a url (Streamable HTTP). enabled, exposure and toolExposure alone are an adjustment, which settings_mcp_enable and the exposure tools make.`,
+              );
+            }
+
+            // 5-7. Plain values, credential literals, the strict decode.
+            const decoded = yield* entryChecks({
+              view,
+              reason: input.reason,
+              entry: candidate,
+              base: undefined,
+              texts: [input.name, ...entryTexts(candidate)],
+            }).pipe(
+              Effect.mapError((error) =>
+                provenance === undefined
+                  ? error
+                  : refuse(
+                      `${error.message} The Repo's entry cannot be copied as it is: write the server with entry instead, keeping any value as a Secret.`,
+                    ),
+              ),
             );
-          }
 
-          // 5-7. Plain values, credential literals, the strict decode.
-          const decoded = yield* entryChecks({
-            view,
-            reason: input.reason,
-            entry: candidate,
-            base: undefined,
-            texts: [input.name, ...entryTexts(candidate)],
-          }).pipe(
-            Effect.mapError((error) =>
-              provenance === undefined
-                ? error
-                : refuse(
-                    `${error.message} The Repo's entry cannot be copied as it is: write the server with entry instead, keeping any value as a Secret.`,
-                  ),
-            ),
-          );
+            // 8. A 51st server.
+            if (same.length >= MCP_LIMITS.servers) {
+              return yield* refuse(
+                `${ASKED}${environmentName(view)} already has ${MCP_LIMITS.servers} servers of its own, the most a Scope may hold: remove one first.`,
+              );
+            }
 
-          // 8. A 51st server.
-          if (same.length >= MCP_LIMITS.servers) {
-            return yield* refuse(
-              `${ASKED}${environmentName(view)} already has ${MCP_LIMITS.servers} servers of its own, the most a Scope may hold: remove one first.`,
-            );
-          }
+            const { notes, extra } = addNotes({
+              name: input.name,
+              view,
+              decoded,
+              existing,
+              definedIn: named.definedIn ?? [],
+              provenance,
+              now: yield* Clock.currentTimeMillis,
+            });
 
-          const { notes, extra } = addNotes({
-            name: input.name,
-            view,
-            decoded,
-            existing,
-            definedIn: named.definedIn ?? [],
-            provenance,
-            now: yield* Clock.currentTimeMillis,
-          });
-
-          return yield* entryChange({
-            tool,
-            api: input.api,
-            view,
-            name: input.name,
-            after: entryJson(decoded),
-            entry: decoded,
-            was: existing,
-            reason: input.reason,
-            card: provenance === undefined ? "add" : `copy from Repo ${provenance.repo.repo}`,
-            lead:
-              provenance === undefined
-                ? `Added MCP server ${input.name} ${where(view)}.`
-                : `Copied MCP server ${input.name} from ${provenance.repo.repo} ${where(view)}.`,
-            notes,
-            extra,
-            status: true,
-          });
-        }),
-        resume: engine.resumeOf({
-          tool,
-          api: input.api,
-          scope: input.scope,
-          name: input.name,
-          field,
-          reason: input.reason,
-          texts: [],
-          status: true,
-        }),
-      });
+            return yield* entryChange({
+              tool,
+              api: input.api,
+              view,
+              name: input.name,
+              after: entryJson(decoded),
+              entry: decoded,
+              was: existing,
+              reason: input.reason,
+              card: provenance === undefined ? "add" : `copy from Repo ${provenance.repo.repo}`,
+              lead:
+                provenance === undefined
+                  ? `Added MCP server ${input.name} ${where(view)}.`
+                  : `Copied MCP server ${input.name} from ${provenance.repo.repo} ${where(view)}.`,
+              notes,
+              extra,
+              status: true,
+            });
+          }),
+      } satisfies McpPlan<never>;
     });
 
+  const add = (input: Parameters<typeof addPlan>[0]) =>
+    Effect.flatMap(addPlan(input), (planned) => engine.runPlan<never>(planned));
+
   /** `settings_mcp_update`. */
-  const update = (input: {
+  const updatePlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly set: Schema.JsonObject;
@@ -805,77 +808,77 @@ export const mcpDefinitions = (engine: McpCommitService) => {
 
       yield* engine.plain(input.reason, []);
 
-      const rerun = yield* engine.rerun(input.api);
+      return {
+        tool,
+        api: input.api,
+        scope: input.scope,
+        name: input.name,
+        field: entryField(input.name),
+        reason: input.reason,
+        status: true,
+        prepare: (rerun: boolean) =>
+          Effect.gen(function* () {
+            const view = yield* settings.get(input.scope);
+            const located = yield* definedHere(view, input.name, "update");
+            const stored = storedEntry(view, input.name);
 
-      return yield* engine.run<ReturnType<typeof unchanged>>({
-        rerun,
-        prepare: Effect.gen(function* () {
-          const view = yield* settings.get(input.scope);
-          const located = yield* definedHere(view, input.name, "update");
-          const stored = storedEntry(view, input.name);
+            if (!isJsonObject(stored)) {
+              return yield* refuse(
+                `${NOTHING}MCP server ${JSON.stringify(input.name)} has no entry here to update.`,
+              );
+            }
 
-          if (!isJsonObject(stored)) {
-            return yield* refuse(
-              `${NOTHING}MCP server ${JSON.stringify(input.name)} has no entry here to update.`,
-            );
-          }
+            const merged = entryWithSet(stored, input.set);
 
-          const merged = entryWithSet(stored, input.set);
+            if ("problem" in merged) return yield* refuse(`${ASKED}${merged.problem}.`);
 
-          if ("problem" in merged) return yield* refuse(`${ASKED}${merged.problem}.`);
+            const decoded = yield* entryChecks({
+              view,
+              reason: input.reason,
+              entry: merged.entry,
+              base: stored,
+              texts: entryTexts(input.set),
+            });
 
-          const decoded = yield* entryChecks({
-            view,
-            reason: input.reason,
-            entry: merged.entry,
-            base: stored,
-            texts: entryTexts(input.set),
-          });
+            const after = entryJson(decoded);
 
-          const after = entryJson(decoded);
+            if (sameJson(stored, after) && !rerun) {
+              return {
+                kind: "done",
+                result: unchanged(
+                  view,
+                  entryField(input.name),
+                  `MCP server ${input.name} has that definition ${where(view)} already: nothing was asked, changed or recorded.`,
+                ),
+              } as const;
+            }
 
-          if (sameJson(stored, after) && !rerun) {
-            return {
-              kind: "done",
-              result: unchanged(
-                view,
-                entryField(input.name),
-                `MCP server ${input.name} has that definition ${where(view)} already: nothing was asked, changed or recorded.`,
-              ),
-            } as const;
-          }
-
-          return yield* entryChange({
-            tool,
-            api: input.api,
-            view,
-            name: input.name,
-            after,
-            entry: decoded,
-            was: located.server,
-            reason: input.reason,
-            card: "edit",
-            lead: `Edited the definition of MCP server ${input.name} ${where(view)}. The keys set: ${Arr.join(
-              Arr.map(Record.toEntries(input.set), ([key]) => key),
-              ", ",
-            )}.`,
-            notes: updateNotes({ decoded, stored, was: located.server }),
-            extra: [],
-            status: true,
-          });
-        }),
-        resume: engine.resumeOf({
-          tool,
-          api: input.api,
-          scope: input.scope,
-          name: input.name,
-          field: entryField(input.name),
-          reason: input.reason,
-          texts: [],
-          status: true,
-        }),
-      });
+            return yield* entryChange({
+              tool,
+              api: input.api,
+              view,
+              name: input.name,
+              after,
+              entry: decoded,
+              was: located.server,
+              reason: input.reason,
+              card: "edit",
+              lead: `Edited the definition of MCP server ${input.name} ${where(view)}. The keys set: ${Arr.join(
+                Arr.map(Record.toEntries(input.set), ([key]) => key),
+                ", ",
+              )}.`,
+              notes: updateNotes({ decoded, stored, was: located.server }),
+              extra: [],
+              status: true,
+            });
+          }),
+      } satisfies McpPlan<ReturnType<typeof unchanged>>;
     });
+
+  const update = (input: Parameters<typeof updatePlan>[0]) =>
+    Effect.flatMap(updatePlan(input), (planned) =>
+      engine.runPlan<ReturnType<typeof unchanged>>(planned),
+    );
 
   /** The server `name` where it is defined: Global's at `*`, the Environment's own at an Environment; or why it is not (D2). */
   const definedHere = (view: SettingsView, name: string, verb: "update" | "remove") =>
@@ -915,7 +918,7 @@ export const mcpDefinitions = (engine: McpCommitService) => {
     });
 
   /** `settings_mcp_remove`. */
-  const remove = (input: {
+  const removePlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly reason: string;
@@ -926,58 +929,63 @@ export const mcpDefinitions = (engine: McpCommitService) => {
 
       yield* engine.plain(input.reason, []);
 
-      const rerun = yield* engine.rerun(input.api);
+      return {
+        tool,
+        api: input.api,
+        scope: input.scope,
+        name: input.name,
+        field: entryField(input.name),
+        reason: input.reason,
+        status: false,
+        prepare: (_rerun: boolean) =>
+          Effect.gen(function* () {
+            const view = yield* settings.get(input.scope);
+            const located = yield* definedHere(view, input.name, "remove");
+            const server = located.server;
 
-      return yield* engine.run<never>({
-        rerun,
-        prepare: Effect.gen(function* () {
-          const view = yield* settings.get(input.scope);
-          const located = yield* definedHere(view, input.name, "remove");
-          const server = located.server;
+            const fallback = server.server.replacesGlobal
+              ? "It falls back to Global's server of that name for this Environment's Sessions."
+              : server.server.shadowed.length > 0
+                ? `It un-shadows ${Arr.join(
+                    Arr.map(server.server.shadowed, (each) =>
+                      each.source.kind === "repo" ? each.source.directory : each.source.kind,
+                    ),
+                    ", ",
+                  )}'s entry, which runs again (a Repo's server gets no Secrets).`
+                : "Nothing takes its place.";
 
-          const fallback = server.server.replacesGlobal
-            ? "It falls back to Global's server of that name for this Environment's Sessions."
-            : server.server.shadowed.length > 0
-              ? `It un-shadows ${Arr.join(
-                  Arr.map(server.server.shadowed, (each) =>
-                    each.source.kind === "repo" ? each.source.directory : each.source.kind,
-                  ),
-                  ", ",
-                )}'s entry, which runs again (a Repo's server gets no Secrets).`
-              : "Nothing takes its place.";
-
-          return yield* entryChange({
-            tool,
-            api: input.api,
-            view,
-            name: input.name,
-            after: null,
-            entry: undefined,
-            was: server,
-            reason: input.reason,
-            card: "remove",
-            lead: `Removed MCP server ${input.name} ${where(view)}. ${fallback}`,
-            notes: [`Removes the definition ${where(view)}; ${fallback}`],
-            extra: [
-              `Its MCP sign-in, if any, stays, listed as unused, until the ${owner} signs out on the Settings page; a new server of that name and URL would use it again.`,
-            ],
-            status: false,
-          });
-        }),
-        resume: engine.resumeOf({
-          tool,
-          api: input.api,
-          scope: input.scope,
-          name: input.name,
-          field: entryField(input.name),
-          reason: input.reason,
-          texts: [],
-          status: false,
-        }),
-      });
+            return yield* entryChange({
+              tool,
+              api: input.api,
+              view,
+              name: input.name,
+              after: null,
+              entry: undefined,
+              was: server,
+              reason: input.reason,
+              card: "remove",
+              lead: `Removed MCP server ${input.name} ${where(view)}. ${fallback}`,
+              notes: [`Removes the definition ${where(view)}; ${fallback}`],
+              extra: [
+                `Its MCP sign-in, if any, stays, listed as unused, until the ${owner} signs out on the Settings page; a new server of that name and URL would use it again.`,
+              ],
+              status: false,
+            });
+          }),
+      } satisfies McpPlan<never>;
     });
 
-  return { add, update, remove, engine };
+  const remove = (input: Parameters<typeof removePlan>[0]) =>
+    Effect.flatMap(removePlan(input), (planned) => engine.runPlan<never>(planned));
+
+  return {
+    add,
+    update,
+    remove,
+    /** The calls before they run, which the endpoint's cores for an Approval prepare alone (`./settings-mcp-approvals.ts`). */
+    plans: { addPlan, updatePlan, removePlan },
+    engine,
+  };
 };
 
 /** The definition tools in a Session. */

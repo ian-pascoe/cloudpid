@@ -1,8 +1,10 @@
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- a fake backend is cut down to what a case reads. */
 // docs/architecture/mcp-endpoint.md → The `api` target, Limits and errors: the service over a fake Registry and Sessions.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
+import { FALLBACK_CATALOG } from "@cloudpid/config";
 import {
   apiFailure,
+  apiOk,
   decodeCursor,
   DEFAULT_ENVIRONMENT,
   encodeCursor,
@@ -86,6 +88,7 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
       createdAt: 1,
     }),
   defaultModel: Effect.succeed("anthropic/claude-opus"),
+  models: Effect.succeed(FALLBACK_CATALOG),
   status: () =>
     Effect.succeed({
       ok: true as const,
@@ -134,8 +137,19 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
     Effect.succeed({ ok: true as const, value: { cancelled: true as const } }),
   deleteSession: () => Effect.void,
   harness: () => Effect.succeed({ ok: true as const, value: { text: "ok", structured: {} } }),
+  approvalWait: () => Effect.succeed(apiOk(APPROVAL_STATE)),
+  approvalWithdraw: () => Effect.succeed(apiOk(APPROVAL_STATE)),
   ...overrides,
 });
+
+/** A request as `approval_wait` reads it: waiting. */
+const APPROVAL_STATE = {
+  approval_id: "a-1",
+  tool: "settings_spend_limit_set",
+  status: "pending",
+  finished: false,
+  expires_at: "2026-01-08T00:00:00.000Z",
+};
 
 const service = (overrides: Partial<McpBackend> = {}, context: Partial<McpApiContext> = {}) =>
   mcpApiService(backend(overrides), {
@@ -192,7 +206,65 @@ describe("describe", () => {
       "settings_mcp_exposure_set",
       "settings_mcp_tool_exposure_set",
       "settings_mcp_remove",
+      "settings_spend_limit_set",
+      "settings_subagent_depth_set",
+      "settings_subagent_workspaces_set",
+      "settings_instructions_set",
+      "settings_mcp_add",
+      "settings_mcp_update",
+      "settings_mcp_enable",
+      "environment_container_size_limit_set",
+      "environment_delete",
+      "environment_secret_delete",
     ]);
+  });
+
+  it("lists the operations of approval_wait and approval_withdraw, which harness does not serve", () => {
+    const described = service().describe();
+
+    expect(described.operations).toEqual(
+      expect.arrayContaining(["harness", "approvalWait", "approvalWithdraw"]),
+    );
+    expect(described.harness).not.toContain("approval_wait");
+    expect(described.harness).not.toContain("approval_withdraw");
+  });
+});
+
+describe("approvalWait and approvalWithdraw", () => {
+  it("hand the backend the request, and approvalWait the verified caller's auth, never an argument's", async () => {
+    const asked: Array<unknown> = [];
+
+    const waited = await run(
+      service(
+        {
+          approvalWait: (request, caller) => {
+            asked.push([request, caller]);
+
+            return Effect.succeed(apiOk(APPROVAL_STATE));
+          },
+        },
+        { caller: { kind: "local" } },
+      ).approvalWait({ approval_id: "a-1", timeout_s: 0 }),
+    );
+
+    expect(asked).toEqual([[{ approval_id: "a-1", timeout_s: 0 }, { auth: "local" }]]);
+    expect(waited).toEqual({ ok: true, value: APPROVAL_STATE });
+  });
+
+  it("answer unavailable when the backend dies", async () => {
+    const api = service({
+      approvalWait: () => Effect.die("rpc cut"),
+      approvalWithdraw: () => Effect.die("rpc cut"),
+    });
+
+    expect(await run(api.approvalWait({ approval_id: "a-1" }))).toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
+    expect(await run(api.approvalWithdraw({ approval_id: "a-1" }))).toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
   });
 });
 
@@ -634,6 +706,8 @@ describe("start", () => {
 
     const bad = await Promise.all([
       run(api.start({ text: "go", model: "gpt-nope", via: VIA })),
+      // Well formed, but not one the Model catalog lists.
+      run(api.start({ text: "go", model: "anthropic/claude-nope", via: VIA })),
       run(api.start({ text: "go", thinking: "turbo", via: VIA })),
       run(api.start({ text: "go", branch: "a..b", via: VIA })),
       run(api.start({ text: "go", branch: "cloudpid/spare", via: VIA })),
@@ -654,6 +728,19 @@ describe("start", () => {
     expect(large).toMatchObject({ ok: false, error: { code: "input_too_large" } });
     expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("checks a model against the fallback catalog when the Registry can't say, as environments_list lists it", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession, models: Effect.die(new Error("Registry is down")) });
+
+    expect(
+      await run(api.start({ text: "go", model: "anthropic/claude-fable-5-2", via: VIA })),
+    ).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(
+      await run(api.start({ text: "go", model: "anthropic/claude-opus-5-5", via: VIA })),
+    ).toMatchObject({ ok: true });
   });
 
   it("answers the cap, a taken branch and a missing Environment with their codes, and sends nothing", async () => {

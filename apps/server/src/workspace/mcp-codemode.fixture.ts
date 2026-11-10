@@ -8,6 +8,7 @@
 import type { Harness } from "@cloudpid/effect-durable";
 import type { Approvals } from "@cloudpid/extensions/approvals";
 import type { BrowserHandoffs, OwnerTabDrivers } from "@cloudpid/extensions/browser";
+import type { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import type { AgentChangeLog } from "@cloudpid/extensions/environment";
 import {
   HostLost,
@@ -199,6 +200,7 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
     | BrowserHandoffs
     | OwnerTabDrivers
     | AgentChangeLog
+    | CloudpidReportLog
     | SettingsReload
     | Approvals
   > {

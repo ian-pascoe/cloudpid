@@ -112,7 +112,7 @@ describe("an Environment's settings", () => {
   });
 
   it("refuse an Override the settings do not take, naming it", () => {
-    const result = resolveOverrides({}, { model: "openai/gpt-1" });
+    const result = resolveOverrides({}, { model: "gpt-1" });
 
     expect(Result.isFailure(result) && result.failure.message).toContain("model");
   });
@@ -169,7 +169,7 @@ describe("resolving an Environment's stale Overrides leniently", () => {
   it("drops only the Override that no longer resolves, which then follows Global", () => {
     const { settings, overrides, dropped } = resolveOverridesLeniently(
       { model: SONNET },
-      { model: "anthropic/claude-retired-1", thinkingLevel: "low", retired: true },
+      { model: "claude-retired-1", thinkingLevel: "low", retired: true },
     );
 
     expect(settings.model).toBe(SONNET);
@@ -181,7 +181,7 @@ describe("resolving an Environment's stale Overrides leniently", () => {
   it("drops a stale Role whole, which then follows Global", () => {
     const { settings } = resolveOverridesLeniently(
       { roles: { small: { model: SONNET } } },
-      { roles: { small: { model: "anthropic/claude-retired-1", hint: "old" } } },
+      { roles: { small: { model: "claude-retired-1", hint: "old" } } },
     );
 
     expect(settings.roles.small).toEqual({
@@ -202,7 +202,7 @@ describe("resolving an Environment's stale Overrides leniently", () => {
     const before = {
       model: SONNET,
       thinkingLevel: "minimal",
-      roles: { small: { model: OPUS }, medium: { model: "anthropic/claude-retired-1" } },
+      roles: { small: { model: OPUS }, medium: { model: "claude-retired-1" } },
       tools: { offered: ["read", "restart_container"] },
       spendLimit: { perSession: 4 },
       extensions: { subagents: { maxSubagentDepth: 3 } },

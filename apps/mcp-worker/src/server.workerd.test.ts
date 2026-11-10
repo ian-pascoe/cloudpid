@@ -105,12 +105,23 @@ const CHANGED = {
 };
 
 /** Canned answers for the `api` target of one request, as the main Worker's `McpApi` would give. */
+/** What an applied request's change says, as the server's answer carries it: the endpoint shows it as it is. */
+const APPLIED_TEXT = "The owner approved, and the change was made.";
+
 class FakeApi extends RpcTarget {
   readonly calls: Array<string> = [];
   /** What `limited` answers: over the rate when set. */
   over: { readonly retryAfterS: number } | undefined;
   // The Server's operations are read once per isolate (`toolGate`), so every case sees the same tools.
-  operations = ["environments", "sessions", "session", "transcript", "wait", "harness"];
+  operations = [
+    "environments",
+    "sessions",
+    "session",
+    "transcript",
+    "wait",
+    "harness",
+    "approvalWait",
+  ];
 
   describe() {
     return {
@@ -184,6 +195,22 @@ class FakeApi extends RpcTarget {
     });
   }
 
+  /** `approval_wait`'s operation: the request approved and applied, after a moment, as a real wait answers it. */
+  async approvalWait(request: { readonly approval_id: string; readonly timeout_s?: number }) {
+    this.calls.push(`approvalWait ${JSON.stringify(request)}`);
+
+    await new Promise((resolve) => setTimeout(resolve, this.waitMs));
+
+    return apiOk({
+      approval_id: request.approval_id,
+      tool: "settings_spend_limit_set",
+      status: "finished",
+      finished: true,
+      result: { text: APPLIED_TEXT, structured: {} },
+      expires_at: "2026-01-08T00:00:00.000Z",
+    });
+  }
+
   get limited() {
     return this.over;
   }
@@ -239,6 +266,7 @@ describe("McpServer", () => {
         "session_wait",
         "session_transcript",
         "environment_variable_set",
+        "approval_wait",
       ]);
 
       for (const tool of tools.filter(({ name }) => name !== "environment_variable_set")) {
@@ -353,7 +381,7 @@ describe("McpServer", () => {
       // The tool never ran.
       expect(api.calls).not.toContain("environments");
       // Listing is no call: it is not limited.
-      expect(await client.listTools()).toHaveLength(6);
+      expect(await client.listTools()).toHaveLength(7);
     } finally {
       await client.close();
     }
@@ -389,6 +417,37 @@ describe("McpServer", () => {
         type: "text",
         text: expect.stringContaining("Agent change #7"),
       });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves approval_wait over its own operation, with progress, and says the applied change", async () => {
+    const api = new FakeApi();
+    const client = await connected(api);
+
+    try {
+      const seen: Array<{ progress: number; message?: string }> = [];
+
+      const waited = await client.callTool(
+        "approval_wait",
+        { approval_id: "a-1", timeout_s: 30 },
+        {
+          onProgress: (progress) => {
+            seen.push(progress);
+          },
+        },
+      );
+
+      expect(api.calls).toContain('approvalWait {"approval_id":"a-1","timeout_s":30}');
+      expect(api.calls).not.toContain("harness approval_wait");
+      expect(waited.isError).not.toBe(true);
+      expect(waited.structuredContent).toMatchObject({ status: "finished", finished: true });
+      expect(waited.content[0]).toMatchObject({
+        type: "text",
+        text: expect.stringContaining(APPLIED_TEXT),
+      });
+      expect(seen[0]).toMatchObject({ progress: 0 });
     } finally {
       await client.close();
     }

@@ -104,6 +104,19 @@ export const apiTarget = async (
       return answer;
     }
 
+    /** A wait may apply an approved request: its promise is kept alive too, so the apply's settle may finish. */
+    approvalWait(request: Parameters<McpApi["approvalWait"]>[0]) {
+      const answer = this.#run(this.#service.approvalWait(request));
+
+      this.#keep(answer);
+
+      return answer;
+    }
+
+    approvalWithdraw(request: Parameters<McpApi["approvalWithdraw"]>[0]) {
+      return this.#run(this.#service.approvalWithdraw(request));
+    }
+
     /** Over RPC `await api.limited`: counts the call, and is present only when the caller is over its rate. */
     get limited() {
       return this.#run(this.#service.limited);

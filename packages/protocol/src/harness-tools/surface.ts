@@ -18,10 +18,10 @@ export const whoWords = (surface: Surface): Who => (surface === "session" ? "use
 /**
  * Why a core refused a call, which the endpoint's dispatcher maps to its error codes (`mcp-endpoint.md` → The
  * dispatcher): `not_found` (an id or name that names nothing), `invalid_argument` (an argument that cannot be
- * served), `unsupported` (a change the endpoint does not make: it would widen what an MCP server reaches, a Limit, or a
- * call a later stage serves, such as the reset of the size limit, which waits for the owner's Approval; nothing was
+ * served), `unsupported` (a change the endpoint does not make: a Limit, or a call a later stage serves; nothing was
  * changed: the dispatcher answers it before it claims anything, and a core gives it behind that) and `unavailable` (a
- * refusal that heals: a try again later may be made, its message says so). A refusal without a code is `unavailable` to
+ * refusal that heals: a try again later may be made, its message says so; a change made without asking that the Registry
+ * found widening in its transaction is one). A refusal without a code is `unavailable` to
  * the caller too, with a fixed sentence in place of its own.
  */
 export type HarnessErrorCode = "not_found" | "invalid_argument" | "unsupported" | "unavailable";
@@ -59,8 +59,8 @@ export const DESTRUCTIVE_IDEMPOTENT: HarnessAnnotations = {
 };
 
 /**
- * W: a write that a repeat may change again (a reset, a move among keys, a new Environment, a Build asked for), reaching
- * nothing outside cloudpid.
+ * W: a write that a repeat may change again (a reset, a move among keys, a new Environment, a Build asked for, an ask
+ * for the owner's Approval, which a repeat may ask again), reaching nothing outside cloudpid.
  */
 export const WRITE: HarnessAnnotations = {
   readOnlyHint: false,

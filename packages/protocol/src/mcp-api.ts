@@ -6,7 +6,9 @@
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { ModelId, ThinkingLevel } from "@cloudpid/config";
+import { ApprovalStateOutput } from "./harness-tools/approvals.ts";
 import { openLiterals } from "./open-literals.ts";
 import { WhenBusy } from "./session.ts";
 
@@ -204,6 +206,7 @@ export const ApiErrorCode = openLiterals(
     "input_too_large",
     "too_many_running",
     "too_many_waits",
+    "too_many_approvals",
     "rate_limited",
     "offset_mismatch",
     "import_too_large",
@@ -323,6 +326,8 @@ export const MCP_API_OPERATIONS = [
   "importFinish",
   "importCancel",
   "harness",
+  "approvalWait",
+  "approvalWithdraw",
 ] as const;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -351,6 +356,27 @@ export const HarnessAnswer = Schema.Struct({
 });
 
 export type HarnessAnswer = typeof HarnessAnswer.Type;
+
+/**
+ * `approvalWait`'s argument (`approval_wait`'s input): the request, and how long to wait for it to change, in seconds (0
+ * to 300, 45 when not given; the target clamps it again).
+ */
+export const ApprovalWaitRequest = Schema.Struct({
+  approval_id: Schema.String,
+  timeout_s: Schema.optionalKey(Schema.Finite),
+});
+
+export type ApprovalWaitRequest = typeof ApprovalWaitRequest.Type;
+
+/** `approvalWithdraw`'s argument (`approval_withdraw`'s input). */
+export const ApprovalWithdrawRequest = Schema.Struct({ approval_id: Schema.String });
+
+export type ApprovalWithdrawRequest = typeof ApprovalWithdrawRequest.Type;
+
+/** What `approvalWait` and `approvalWithdraw` answer: `approval_wait`'s output without `next`, which `McpServer` adds. */
+export const ApprovalState = ApprovalStateOutput.mapFields(Struct.omit(["next"]));
+
+export type ApprovalState = typeof ApprovalState.Type;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Cursors
@@ -1013,6 +1039,10 @@ export interface McpApi {
   importCancel(request: ImportCancelRequest): Promise<ApiResult<ImportCancelResult>>;
   /** The management tools `describe().harness` lists. */
   harness(request: HarnessRequest): Promise<ApiResult<HarnessAnswer>>;
+  /** `approval_wait`: a request asked over the endpoint, read once or waited for (`docs/architecture/mcp-endpoint.md` → Approvals with no Session). */
+  approvalWait(request: ApprovalWaitRequest): Promise<ApiResult<ApprovalState>>;
+  /** `approval_withdraw`: a waiting request taken back. */
+  approvalWithdraw(request: ApprovalWithdrawRequest): Promise<ApiResult<ApprovalState>>;
   /**
    * Present when the caller is over its rate; `McpServer` answers `rate_limited` with it. A getter of the `RpcTarget`,
    * read once per `tools/call` (and counted then): over RPC it is awaited, so an older `Server` that has none reads as

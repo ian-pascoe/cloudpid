@@ -1,7 +1,7 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import { isModelId, THINKING_LEVELS } from "@cloudpid/config";
+import { isModelId, type ModelCatalog, THINKING_LEVELS } from "@cloudpid/config";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
@@ -18,7 +18,8 @@ import { forkChooserAtom } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button, buttonVariants } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
-import { isLevel, modelChoices, modelName } from "../models.ts";
+import { isLevel, modelChoices, modelLabel, modelName } from "../models.ts";
+import { modelCatalogStateAtom } from "../settings.ts";
 import { navigate } from "../router.ts";
 import {
   configureAtom,
@@ -212,6 +213,7 @@ const treeCommands = ({ archived, openTree, choose }: TreeCommands): ComposerCom
 const sessionCommands = ({
   live,
   view,
+  catalog,
   picker,
   rename,
   actions,
@@ -219,13 +221,15 @@ const sessionCommands = ({
 }: {
   live: boolean;
   view: SessionView;
+  /** The Model catalog, whose models `/model` offers (ADR-0052). */
+  catalog: ModelCatalog;
   picker: RefObject<PickerHandle | null>;
   rename: Rename | undefined;
   actions: SessionCommandActions;
   onConfigure: (change: ConfigureChange) => void;
 }): ComposerCommand[] => {
   const model = view.model === null ? null : `${view.model.provider}/${view.model.modelId}`;
-  const models = modelChoices(model);
+  const models = modelChoices(catalog, model);
 
   const commands: ComposerCommand[] = [
     {
@@ -237,7 +241,8 @@ const sessionCommands = ({
         { value: "default", description: "Follow the settings" },
         ...Arr.map(models, (id) => ({
           value: modelName(id),
-          description: id === model ? "In use" : undefined,
+          description:
+            id === model ? `${modelLabel(catalog, id)}, in use` : modelLabel(catalog, id),
         })),
       ],
       run: (args) => {
@@ -379,6 +384,7 @@ export const Thread = ({
   const sending = useAtomValue(sessionSendingAtom(sessionId));
   const failure = useAtomValue(sessionFailureAtom(sessionId));
   const picked = useAtomValue(sessionPickedAtom(sessionId));
+  const catalog = useAtomValue(modelCatalogStateAtom);
   const onConfigure = useAtomSet(configureAtom(sessionId));
   const live = status === "live";
   const problem = failure ?? view.error;
@@ -393,6 +399,7 @@ export const Thread = ({
     ...sessionCommands({
       live,
       view,
+      catalog,
       picker,
       rename,
       actions: commandActions,

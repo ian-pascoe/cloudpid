@@ -10,6 +10,12 @@
 // for the same request or takes its answer, and applies the `after` it holds without reading the state again, so a change
 // that went through before the eviction is reported as approved and done. The result carries the server's status after an
 // `add`, `update` or `enable` that reaches this Session's Environment (`./settings-mcp-status.ts`).
+//
+// On the endpoint (`docs/architecture/mcp-endpoint.md` → Approvals with no Session) the same change is three steps over the
+// same input (`McpCommitInput`, what a tool's `prepare` reads): its card and `expected` (`asked`), the write of exactly
+// `expected`'s `after` under the Registry's guard, as the Settings' cores write (`applyAsked`), and its words (`renderAsked`).
+// The main Worker carries the push of the new set to each host the change reaches (`sync`, which is `mcp.sync`), after the
+// answer, and the status of an add, update or enable is `not_checked`: no host is asked.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off -- builders over plain values.
 import {
   isMcpToolName,
@@ -23,6 +29,7 @@ import { GLOBAL_SETTINGS_SCOPE, type Surface, whoWords } from "@cloudpid/protoco
 import { entryReferences, entryTexts } from "./settings-mcp-entry.ts";
 import type {
   AgentChange,
+  ApprovalCardContent,
   McpChangeGuard,
   McpFieldChange,
   SettingsMcpChangeCheck,
@@ -45,11 +52,15 @@ import {
   Approvals,
   type ApprovalsService,
   type ApprovalChange,
+  changedSince,
   MAX_APPROVAL_NOTE,
   MAX_APPROVAL_NOTES,
   withApproval,
   declinedWith,
 } from "./approvals.ts";
+import type { Applied } from "./approval-cores.ts";
+import type { ChangeAuthor } from "./environment.ts";
+import { cutNote, cutText, type HarnessAnswer } from "./harness.ts";
 import {
   pushMcpSet,
   readInventory,
@@ -59,6 +70,8 @@ import {
 import { settingsChangeOutput } from "./settings-outputs.ts";
 import {
   agentChangeDetails,
+  type AppliedSettingsChange,
+  inheritedWords,
   isGlobalView,
   recordedFor,
   SettingsAccess,
@@ -69,6 +82,7 @@ import {
   type SettingsFieldChange,
   settingsTarget,
   type SettingsView,
+  shown,
 } from "./settings.ts";
 import {
   detailsOf,
@@ -309,22 +323,114 @@ export type McpCommitServices = {
   /** Where the change is made from: a Session's words say "this Session" and "the user"; the endpoint's neither. */
   readonly surface: Surface;
   readonly access: SettingsMcpAccessService;
-  readonly settings: SettingsAccessService;
+  readonly settings: Pick<SettingsAccessService, "get" | "change">;
   /** The Settings' change machinery over the same surface (`settingsChanges`). */
   readonly changes: Pick<ReturnType<typeof settingsChanges>, "apply" | "plain">;
-  /** The owner's Approvals: none on the endpoint, which makes only the changes that ask nobody. */
+  /** The owner's Approvals: none on the endpoint, whose Approvals the Registry keeps (`applyAsked`). */
   readonly approvals: ApprovalsService | undefined;
   /**
-   * Told of an Environment whose host the push of the new set failed for, so the set is sent again after the answer (the
-   * endpoint's dispatcher schedules one sync of it). None in a Session, whose words say the host takes it at its next pull.
+   * The endpoint's push of an Environment's new set to its host: the main Worker's `mcp.sync`, run after the answer, which
+   * asks the Registry what the host was not handed. The endpoint hands it every Environment a change reaches and waits for
+   * no host; a Session pushes its own change's sets itself (`pushMcpSet`), and has none.
    */
-  readonly pushFailed?: ((environment: string) => Effect.Effect<void>) | undefined;
+  readonly sync?: ((environment: string) => Effect.Effect<void>) | undefined;
+};
+
+/** What the status of an add, update or enable says on the endpoint, where no host is asked (D11). */
+export const ENDPOINT_NOT_CHECKED =
+  "not checked: settings_mcp_get shows its status later, and the owner signs in on the Settings page if the server asks for a sign-in";
+
+/** What a change that asks, once prepared, is made of: its input, and what the Registry said of where it reaches. */
+export type McpAsked = {
+  readonly input: McpCommitInput;
+  /** Where the change reaches, as checked just before the write (or, for one made already, as the Registry lists it now). */
+  readonly checked: SettingsMcpChangeCheck;
+  readonly field: SettingsFieldChange;
+  /**
+   * The change is made already (a rerun's, or an answer rebuilt from the changes it recorded): which Environments it reached
+   * can no longer be told, so each Environment `checked` lists is sent the set again, and the words say it may reach them.
+   */
+  readonly everywhere?: boolean;
+};
+
+/** What `expected` is: the value the owner saw at the Scope, whether it was inherited, and `after`, the value to write. */
+export type McpExpected = {
+  readonly value: Schema.Json | null;
+  readonly inherited?: boolean;
+  readonly after: Schema.Json | null;
+};
+
+/** What the owner is asked to approve for `input`: the value at the Scope now, whether it is inherited, and `after`. */
+export const expectedOf = (input: McpCommitInput): McpExpected => {
+  const seen = input.field.expected;
+  const value = seen?.value ?? null;
+  const after = input.field.reset === true ? null : input.field.value;
+
+  return seen?.inherited === undefined
+    ? { value, after }
+    : { value, inherited: seen.inherited, after };
+};
+
+/** Whether a Registry check found the change widening some Environment's set. */
+const wideningIn = (check: SettingsMcpChangeCheck): boolean =>
+  Arr.some(check.environments, (each) => each.widening.length > 0);
+
+/**
+ * Whether `input`'s change waits for the owner (the one rule, for the Session's call and the endpoint's ask alike): a
+ * definition, or a change the Registry's check found widening. An input with no check (one that could not read the state
+ * again: a rerun's) is not known to narrow, so it asks.
+ */
+export const asksFor = (input: McpCommitInput): boolean =>
+  input.always || input.check === null || wideningIn(input.check);
+
+/** The card the owner is shown for `input`, with `expected`. */
+export const cardOf = (input: McpCommitInput, expected: McpExpected): ApprovalCardContent => ({
+  tool: input.tool,
+  target: settingsTarget(input.view),
+  change: input.card.change,
+  before: pretty(input.card.before),
+  after: pretty(expected.after),
+  reason: input.reason,
+  notes: boundedNotes(input.card.notes),
+});
+
+/**
+ * The field an approved change writes: exactly `after`, against what the owner saw (`value`, and whether it was `inherited`).
+ * A null `after` resets the field.
+ */
+const approvedField = (input: McpCommitInput, shown: McpExpected): SettingsFieldChange => {
+  const { value, inherited, after } = shown;
+  const seen = inherited === undefined ? { value } : { value, inherited };
+
+  return after === null
+    ? { field: input.field.field, value: null, reset: true, expected: seen }
+    : { field: input.field.field, value: after, expected: seen };
+};
+
+/** `field` as the Registry's check reads a change. */
+const asFieldChange = (field: SettingsFieldChange): McpFieldChange =>
+  field.reset === true
+    ? { field: field.field, value: null, reset: true }
+    : { field: field.field, value: field.value };
+
+/** The Registry's check of the entry an approved change writes, which says each `${NAME}` it reads still resolves. */
+const readsOf = (
+  input: McpCommitInput,
+  written: Schema.Json | null,
+): ReadonlyArray<string> | undefined => {
+  if (input.scope === GLOBAL_SETTINGS_SCOPE || written === null) return undefined;
+
+  const entry = decodeMcpServerValue(written);
+
+  return Result.isSuccess(entry)
+    ? Arr.dedupe(Arr.map(entryReferences(entry.success), ({ name }) => name))
+    : undefined;
 };
 
 /**
- * The shared ending of the tools that change servers, over `services`. On the endpoint's surface a change that would ask
- * the owner (a definition, or a widening) is refused as `unsupported` with nothing changed, and one that narrows is made
- * and pushed to the hosts it reaches before the answer; the words say the owner and name no Session.
+ * The shared ending of the tools that change servers, over `services`. On the endpoint's surface `commit` makes only the
+ * change that narrows (the Registry's own Approvals ask for the rest: `applyAsked`), and the main Worker pushes the new set to
+ * each host the change reaches after the answer; the words say the owner and name no Session.
  */
 export const mcpCommit = ({
   surface,
@@ -332,20 +438,28 @@ export const mcpCommit = ({
   settings,
   changes: { apply, plain },
   approvals,
-  pushFailed,
+  sync,
 }: McpCommitServices) => {
-  /** Send each Environment the change reaches its new set; the names of those it could not be sent to. */
+  /**
+   * Send each Environment the change reaches its new set; the names of those it could not be sent to. A Session carries the
+   * push itself, before its answer; the endpoint hands each Environment to the main Worker's `mcp.sync`, after it.
+   */
   const push = (reached: ReadonlyArray<{ readonly id: string; readonly name: string }>) =>
     Effect.gen(function* () {
+      if (surface === "endpoint") {
+        yield* Effect.forEach(reached, (environment) => sync?.(environment.id) ?? Effect.void, {
+          discard: true,
+        });
+
+        return Arr.empty<string>();
+      }
+
       const unsent: Array<string> = [];
 
       for (const environment of reached) {
         const made = yield* pushMcpSet(access, environment.id);
 
-        if (made === "failed") {
-          unsent.push(environment.name);
-          yield* pushFailed?.(environment.id) ?? Effect.void;
-        }
+        if (made === "failed") unsent.push(environment.name);
       }
 
       return unsent;
@@ -360,6 +474,8 @@ export const mcpCommit = ({
     input: McpCommitInput,
     made: {
       readonly check: SettingsMcpChangeCheck;
+      /** The change was made before this answer: every Environment `check` lists is sent the set, as it may have reached it. */
+      readonly everywhere?: boolean;
       readonly changes: ReadonlyArray<AgentChange>;
       readonly approved: boolean;
       /** The running details a status wait sends before it waits, from the status it starts at. */
@@ -369,12 +485,19 @@ export const mcpCommit = ({
     },
   ) =>
     Effect.gen(function* () {
-      const reached = Arr.map(reachedOf(made.check), (each) => each.environment);
+      const everywhere = made.everywhere === true;
 
-      const missed = Arr.map(
-        Arr.filter(made.check.environments, (each) => !each.reached),
+      const reached = Arr.map(
+        everywhere ? made.check.environments : reachedOf(made.check),
         (each) => each.environment,
       );
+
+      const missed = everywhere
+        ? []
+        : Arr.map(
+            Arr.filter(made.check.environments, (each) => !each.reached),
+            (each) => each.environment,
+          );
 
       const unsent = yield* push(reached);
 
@@ -393,18 +516,23 @@ export const mcpCommit = ({
       const recorded = Option.getOrUndefined(Arr.head(made.changes));
 
       const reach =
-        input.scope === GLOBAL_SETTINGS_SCOPE
-          ? `It reaches ${reached.length === 0 ? "no Environment" : listed(reached)}${
-              missed.length === 0
-                ? ""
-                : `; not ${listed(missed)}, where an entry or an adjustment of its own overrides it`
-            }.`
-          : `It reaches ${listed(reached)}.`;
+        everywhere && input.scope === GLOBAL_SETTINGS_SCOPE
+          ? `It reaches ${reached.length === 0 ? "no Environment" : listed(reached)}, except where an entry or an adjustment of its own overrides it: it was made before this answer, so which of them it reached cannot be told now, and each is sent the set again.`
+          : input.scope === GLOBAL_SETTINGS_SCOPE
+            ? `It reaches ${reached.length === 0 ? "no Environment" : listed(reached)}${
+                missed.length === 0
+                  ? ""
+                  : `; not ${listed(missed)}, where an entry or an adjustment of its own overrides it`
+              }.`
+            : `It reaches ${listed(reached)}.`;
 
       let status: McpStatus | null = null;
 
       if (input.status) {
-        if (!reachesOwn || own === null || now === undefined) {
+        if (surface === "endpoint") {
+          // No host is asked: the push is the main Worker's, after the answer, and the owner signs in on the Settings page.
+          status = notChecked(input.name, ENDPOINT_NOT_CHECKED);
+        } else if (!reachesOwn || own === null || now === undefined) {
           status = notChecked(
             input.name,
             "not checked: the change does not reach this Session's Environment, and no other Environment's host is woken to ask",
@@ -440,17 +568,16 @@ export const mcpCommit = ({
             ? "This Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request."
             : "This Session's Environment is not one of them, so the change does not reach this Session; the Sessions of the Environments it reaches get it at their next request.";
 
-      const unsentWords =
-        pushFailed === undefined
-          ? "it takes it at its next pull."
-          : "it is being sent again, after this answer.";
-
       const handed =
-        unsent.length > 0
-          ? `The new set could not be handed to the MCP host of ${Arr.join(unsent, ", ")} now: ${unsentWords}`
-          : reached.length === 0
-            ? "No MCP host was sent anything."
-            : "The new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).";
+        surface === "endpoint"
+          ? reached.length === 0
+            ? "No MCP host is sent anything."
+            : "cloudpid sends the new set to the MCP host of each Environment it reaches, after this answer (one that never had a server and has none is not woken)."
+          : unsent.length > 0
+            ? `The new set could not be handed to the MCP host of ${Arr.join(unsent, ", ")} now: it takes it at its next pull.`
+            : reached.length === 0
+              ? "No MCP host was sent anything."
+              : "The new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).";
 
       const words = Arr.join(
         [
@@ -461,7 +588,7 @@ export const mcpCommit = ({
           ...(status === null ? [] : [status.note]),
           ...input.extra,
           made.approved
-            ? "The change is recorded as approved, with your reason; the user can see and revert it on the Settings page."
+            ? `The change is recorded as approved, with your reason; the ${whoWords(surface)} can see and revert it on the Settings page.`
             : recordedFor(surface),
         ],
         "\n",
@@ -509,13 +636,12 @@ export const mcpCommit = ({
     Effect.gen(function* () {
       const { api, check } = input;
 
-      const widens =
-        check !== null && Arr.some(check.environments, (each) => each.widening.length > 0);
-
-      const asks = input.always || widens || rerunning || check === null;
+      const widens = check !== null && wideningIn(check);
+      const asks = asksFor(input) || rerunning;
       const held: HeldStatus = { status: null };
 
-      // Nothing on the endpoint asks the owner: a change that would is not made there, and says so.
+      // A call on the endpoint asks nobody: the Registry's Approvals ask for a change that widens (the dispatcher asked first,
+      // as it read the change), so one that reaches here widens only because something changed since, and says so.
       const asking =
         surface === "session" && approvals !== undefined && api !== undefined
           ? { approvals, api }
@@ -524,13 +650,13 @@ export const mcpCommit = ({
       const notHere = SettingsAccessError.make({
         message: `${NOTHING}${
           check !== null && widens
-            ? `it would make something reachable that is not (${Arr.join(
+            ? `it would now make something reachable that is not (${Arr.join(
                 Arr.flatMap(check.environments, (each) => Arr.map(each.widening, wideningWords)),
                 "; ",
-              )}), which waits for the owner's Approval and is not made here`
-            : "it waits for the owner's Approval, which is not asked here"
-        }. The owner makes it on the Settings page.`,
-        code: "unsupported",
+              )})`
+            : "it would now wait for the owner's Approval"
+        }, which this call does not ask: something changed since it was read as narrowing. Call again.`,
+        code: "unavailable",
       });
 
       if (asks && asking === undefined) return yield* notHere;
@@ -569,14 +695,9 @@ export const mcpCommit = ({
 
         // An entry written at an Environment: the Registry checks again as it writes that every `${NAME}` it reads resolves there.
         const written = field.value;
+        const reads = approved ? readsOf(input, written) : undefined;
 
-        if (input.scope !== GLOBAL_SETTINGS_SCOPE && approved && written !== null) {
-          const entry = decodeMcpServerValue(written);
-
-          if (Result.isSuccess(entry)) {
-            guard.reads = Arr.dedupe(Arr.map(entryReferences(entry.success), ({ name }) => name));
-          }
-        }
+        if (reads !== undefined) guard.reads = reads;
 
         return apply({
           tool: input.tool,
@@ -620,7 +741,8 @@ export const mcpCommit = ({
         });
       };
 
-      if (!asks) {
+      // `asksFor` asks for an input with no check, so a call that asks nobody has one.
+      if (!asks && check !== null) {
         const result = yield* make(false, input.field, check);
 
         return withStatus(result, held.status);
@@ -628,27 +750,10 @@ export const mcpCommit = ({
 
       if (asking === undefined) return yield* notHere;
 
-      const expected: Mutable<{
-        value: Schema.Json | null;
-        inherited?: boolean;
-        after: Schema.Json | null;
-      }> = {
-        value: input.field.expected?.value ?? null,
-        after: input.field.reset === true ? null : input.field.value,
-      };
-
-      if (input.field.expected?.inherited !== undefined) {
-        expected.inherited = input.field.expected.inherited;
-      }
+      const expected = expectedOf(input);
 
       const asked: ApprovalChange = {
-        tool: input.tool,
-        target: settingsTarget(input.view),
-        change: input.card.change,
-        before: pretty(input.card.before),
-        after: pretty(expected.after),
-        reason: input.reason,
-        notes: boundedNotes(input.card.notes),
+        ...cardOf(input, expected),
         notice: `MCP server ${input.name}, ${isGlobalView(input.view) ? "Global" : `Environment ${JSON.stringify(input.view.name)}`}`,
         expected,
       };
@@ -661,30 +766,17 @@ export const mcpCommit = ({
             );
           }
 
-          const shown = decodeExpected(answer.expected);
+          const seen = decodeExpected(answer.expected);
 
-          if (Option.isNone(shown)) {
+          if (Option.isNone(seen)) {
             return yield* refuse(
               "The user approved, but what they were shown was lost: nothing was saved. Ask again.",
             );
           }
 
-          const { value, inherited, after } = shown.value;
-
           // What the owner saw: applied exactly, and only while the Scope still has the value they saw.
-          const seen: Mutable<NonNullable<SettingsFieldChange["expected"]>> = { value };
-
-          if (inherited !== undefined) seen.inherited = inherited;
-
-          const field: SettingsFieldChange =
-            after === null
-              ? { field: input.field.field, value: null, reset: true, expected: seen }
-              : { field: input.field.field, value: after, expected: seen };
-
-          const asChange: McpFieldChange =
-            after === null
-              ? { field: field.field, value: null, reset: true }
-              : { field: field.field, value: after };
+          const field = approvedField(input, seen.value);
+          const asChange = asFieldChange(field);
 
           // A rerun that could not read the state again takes what the Registry says now of where the server is.
           const checked =
@@ -702,6 +794,137 @@ export const mcpCommit = ({
       );
 
       return withStatus(result, held.status);
+    });
+
+  /**
+   * Apply an approved change on the endpoint: exactly `expected`'s `after`, only while the Scope still has the `value` the
+   * owner saw, under the Registry's guard (`name`, and the `${NAME}`s an Environment's entry reads), as `author` with the
+   * Approval's claim. Answers how the write went; `renderAsked` words it. A change that was not made is the Registry's
+   * `changed-since` or `rejected`, as it answers the Settings' cores. Where the input could not be read again (`check` null)
+   * the Registry says where the server is now.
+   */
+  const applyAsked = (input: McpCommitInput, expected: Schema.Json | null, author: ChangeAuthor) =>
+    Effect.gen(function* () {
+      // Where the change reaches is read before it is written: after, the entry in force no longer changes anywhere.
+      const asked = yield* askedOf(input, expected, false);
+      const guard: Mutable<McpChangeGuard> = { name: input.name };
+      const reads = readsOf(input, asked.field.value);
+
+      if (reads !== undefined) guard.reads = reads;
+
+      const result = yield* settings.change({
+        scope: input.view.scope,
+        changes: [asked.field],
+        author: { ...author, approved: true },
+        guard,
+      });
+
+      return { known: asked, result };
+    });
+
+  /**
+   * What an approved change is made of: the field it writes (exactly `expected`'s `after`, against what the owner saw) and where
+   * it reaches. `made`: the change is made already (a rerun's, or an answer rebuilt from the changes it recorded), so every
+   * Environment the Registry lists for it counts as reached, as its push may not have been made.
+   */
+  const askedOf = (input: McpCommitInput, expected: Schema.Json | null, made: boolean) =>
+    Effect.gen(function* () {
+      const seen = decodeExpected(expected);
+
+      if (Option.isNone(seen)) {
+        return yield* SettingsAccessError.make({
+          message:
+            "The owner approved, but what they were shown was lost: nothing was saved. Ask again.",
+          code: "invalid_argument",
+        });
+      }
+
+      const field = approvedField(input, seen.value);
+
+      const checked: SettingsMcpChangeCheck =
+        input.check === null || made
+          ? yield* access.check({
+              scope: input.scope,
+              name: input.name,
+              changes: [asFieldChange(field)],
+            })
+          : input.check;
+
+      return { input, checked, field, everywhere: made } satisfies McpAsked;
+    });
+
+  /**
+   * The words of an approved change on the endpoint, from how its write went: what changed, whom it reaches, the push the
+   * main Worker makes to each host, and the status (`not_checked`). A write that was not made is the refusal the request
+   * ends with (`changed-since`, `rejected`), as the Settings' cores say it.
+   */
+  const renderAsked = ({
+    known,
+    result,
+  }: Applied<McpAsked, AppliedSettingsChange>): Effect.Effect<HarnessAnswer, SettingsAccessError> =>
+    Effect.gen(function* () {
+      const { input, checked, field } = known;
+
+      switch (result.status) {
+        case "rejected":
+          return yield* SettingsAccessError.make({
+            message: `The owner approved, but nothing was saved: ${result.message}`,
+            code: "invalid_argument",
+          });
+        case "changed-since":
+          return yield* SettingsAccessError.make({
+            message: changedSince(
+              result.field,
+              `${shown(result.current)}${inheritedWords(result.inherited)}`,
+              surface,
+            ),
+          });
+        case "unchanged":
+        case "changed": {
+          const made = result.status === "changed" ? result.changes : [];
+
+          // A write that found the change made already may follow a run cut before its push: every Environment gets it again.
+          const done = yield* finish(input, {
+            check: checked,
+            everywhere: result.status === "unchanged" || known.everywhere === true,
+            changes: made,
+            approved: true,
+            running: () => Effect.void,
+            waitless: result.status === "unchanged",
+          });
+
+          const words =
+            result.status === "changed"
+              ? done.words
+              : `${approvedAlready(`MCP server ${input.name} has the approved change`, surface)}\n${done.words}`;
+
+          const output = settingsChangeOutput({
+            view: input.view,
+            changes: made,
+            unchanged: result.status === "changed" ? [] : [field.field],
+            approval: null,
+            surface,
+          });
+
+          const withDetails = withStatus(
+            {
+              structuredOutput: output,
+              details: {
+                scope: input.view.scope,
+                approval: { approved: true },
+                agentChanges: agentChangeDetails(input.view, made),
+              },
+            },
+            done.status,
+          );
+
+          return {
+            text: cutText(words, cutNote("settings_mcp_get shows the server as it is now")),
+            structured: withDetails.structuredOutput,
+            details: withDetails.details,
+          };
+        }
+      }
     });
 
   /** Whether the call is a rerun that asked already: none on the endpoint, which never asks. */
@@ -740,9 +963,11 @@ export const mcpCommit = ({
         always: true,
         card: { change: "", before: null, notes: [] },
         was: undefined,
-        wording: () => [`Made the change the user approved to MCP server ${resumed.name}.`],
+        wording: () => [
+          `Made the change the ${whoWords(surface)} approved to MCP server ${resumed.name}.`,
+        ],
         extra: [],
-        alreadySo: approvedAlready(`MCP server ${resumed.name} has the approved change`),
+        alreadySo: approvedAlready(`MCP server ${resumed.name} has the approved change`, surface),
         status: resumed.status,
         declined: `the change to MCP server ${resumed.name}`,
       } satisfies McpCommitInput;
@@ -802,9 +1027,6 @@ export const mcpCommit = ({
     readonly view: SettingsMcpView | undefined;
   }) =>
     Effect.gen(function* () {
-      // The card's notes: the endpoint asks nobody, so it has no card.
-      if (surface === "endpoint") return Arr.empty<string>();
-
       const { check } = input;
       const reached = Arr.filter(check.environments, (each) => each.reached);
       const missed = Arr.filter(check.environments, (each) => !each.reached);
@@ -853,6 +1075,27 @@ export const mcpCommit = ({
       return [reaches, ...widening];
     });
 
+  /** Run a tool's call: its `plan`, with the rerun the call's own request says it is. */
+  const runPlan = <D>(plan: McpPlan<D>) =>
+    Effect.gen(function* () {
+      const again = yield* rerun(plan.api);
+
+      return yield* run({
+        rerun: again,
+        prepare: plan.prepare(again),
+        resume: resumeOf({
+          tool: plan.tool,
+          api: plan.api,
+          scope: plan.scope,
+          name: plan.name,
+          field: plan.field,
+          reason: plan.reason,
+          texts: plan.texts ?? [],
+          status: plan.status,
+        }),
+      });
+    });
+
   /** The plain-value check of a call that refuses before it asks: every refusal says nothing was asked either. */
   const plainBeforeAsking = (reason: string, texts: ReadonlyArray<string>) =>
     plain(reason, texts, "Nothing was asked or saved");
@@ -864,9 +1107,13 @@ export const mcpCommit = ({
     settings,
     plain: plainBeforeAsking,
     commit,
+    applyAsked,
+    askedOf,
+    renderAsked,
     rerun,
     resumeOf,
     run,
+    runPlan,
     reachNotes,
   };
 };
@@ -887,3 +1134,21 @@ export type McpCommitService = ReturnType<typeof mcpCommit>;
 export type Prepared<D> =
   | { readonly kind: "done"; readonly result: D }
   | { readonly kind: "commit"; readonly input: McpCommitInput };
+
+/**
+ * A tool's call before it is run: what it changes (`field`), and the `prepare` that reads the state and gives the change to
+ * make. A Session's tool runs it (`runPlan`); the endpoint's core for an Approval runs `prepare` alone (`./settings-mcp-approvals.ts`).
+ */
+export type McpPlan<D> = {
+  readonly tool: string;
+  readonly api: McpCall;
+  readonly scope: string;
+  readonly name: string;
+  /** The field written: `mcp.servers.<name>` or one of its keys. */
+  readonly field: string;
+  readonly reason: string;
+  readonly texts?: ReadonlyArray<string> | undefined;
+  /** Wait for the server's status afterwards (an add, update or enable). */
+  readonly status: boolean;
+  readonly prepare: (rerun: boolean) => Effect.Effect<Prepared<D>, SettingsAccessError>;
+};

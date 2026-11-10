@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off globalConsole:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as `fetch` gives them; runs on node, on the owner's machine; replaces `console.warn` to check what the SDK writes there.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off globalConsole:off -- native array methods over plain values (the extension carries no Effect runtime); plain Promises, as `fetch` gives them; runs on node, on the owner's machine; replaces `console.warn` to check what the SDK writes there.
 /**
  * `/cloudpid`'s OAuth client against a stub authorization server and protected resource (docs/architecture/mcp-endpoint.md
  * → Access and identity; The `/cloudpid` command → The connection): a 401 refreshes and retries, a rotated refresh token

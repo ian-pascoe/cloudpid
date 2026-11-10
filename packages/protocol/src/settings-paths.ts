@@ -21,6 +21,13 @@ export const settingsPath = (scope: string, section?: string): string =>
   `${SETTINGS_PATH}/${scopeSegment(scope)}${section === undefined ? "" : `/${section}`}`;
 
 /**
+ * Where an Approval asked over the MCP endpoint is shown (#685 L3): its Scope's Settings page at `section`, which
+ * scrolls to its card (`/settings/<all|id>/<section>?request=<id>`).
+ */
+export const approvalPath = (scope: string, section: string, id: string): string =>
+  `${settingsPath(scope, section)}?request=${encodeURIComponent(id)}`;
+
+/**
  * The Agent changes section of Scope `scope`, scrolled to change `id` (`#agent-change-<id>`, the row's element id) when
  * one is named.
  */

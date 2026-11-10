@@ -249,7 +249,7 @@ The file a tool writes the whole of its output to when more came back than one r
 _Avoid_: Temp file, full output, truncation file, overflow
 
 **GitHub App**:
-cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from.
+cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from. `prod`'s is `cloudpid`; previews and dev stages have their own, `cloudpid-dev`, installed only on the repos they work on.
 _Avoid_: Bot account, PAT
 
 **GitHub token**:
@@ -277,7 +277,7 @@ What the owner opened, collapsed and picked on a Session's page (its Panes, the 
 _Avoid_: View state, UI state
 
 **Offered tool**:
-A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, and `secret_ask` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
+A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, `secret_ask` and `cloudpid_report` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
 _Avoid_: Enabled tool, active tool
 
 **Deferred tool**:
@@ -325,12 +325,16 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session; when a Trigger's Fire fails or cloudpid pauses a Trigger for its Fire rate; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session, with one more at a Run's end listing the Agent changes it made and the cloudpid reports it filed; when a Trigger's Fire fails or cloudpid pauses a Trigger for its Fire rate; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
 The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options), kept Global and as an Environment's Overrides. Each Session reads its Environment's, resolved over Global and the defaults, before its next request.
 _Avoid_: Config, preferences
+
+**Model catalog**:
+The models the model proxy serves, each with its display name and who serves it, as the Registry last read them from the proxy (every 15 minutes at most), or a built-in fallback of four Claude models before it ever has. A model the Settings, a pick or a Trigger names must be one it lists when it is written; one it stops listing is ignored where it is read.
+_Avoid_: Supported models, model list, Catalog (alone)
 
 **Settings page**:
 The one page where the owner configures cloudpid, for the Scope picked at its top: the Settings, Environments, Workspaces, Triggers, Skills, Variables, Secrets, Notifications and Agent changes, each in a Settings section.
@@ -353,7 +357,7 @@ What a Session has spent on model requests: tokens by kind and the cost in US do
 _Avoid_: Billing, tokens (for the whole figure)
 
 **Spend limit**:
-The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on. A Sampling request at the limit is refused, and the Run goes on.
+The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on. A Sampling request at the limit is refused, and the Run goes on. A model the Model catalog lists that cloudpid knows no price for is counted at zero cost.
 _Avoid_: Budget, quota, cap
 
 ## The agent's changes to its harness
@@ -367,8 +371,12 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; making a Trigger, or widening one (its message, Schedule or options changed, its match taking more, taking Own-bot deliveries, or resuming it); or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; making a Trigger, or widening one (its message, Schedule or options changed, its match taking more, taking Own-bot deliveries, or resuming it); or one no revert can undo (deleting an Environment or a kept Secret). A Session's agent waits for it on a card in the Session. An agent through the MCP endpoint does not wait: the Registry keeps its request, which the owner answers in the "Waiting for you" area of the Settings page section the change is in, and the agent follows it with `approval_wait`; on Approve the main Worker applies the change.
 _Avoid_: Confirmation, permission, consent
+
+**cloudpid report**:
+An issue an agent writes about cloudpid itself (a bug, friction with one of its tools, prompts or docs, or a capability a task lacked) for cloudpid's own public GitHub repo, under a label of its own. It never concerns the project the agent works on, even when that project is cloudpid's code, and it changes nothing, so it is no Agent change.
+_Avoid_: Feedback (nor is a Review), bug report (one kind only), harness report, issue (alone), report (alone: a subagent's report is its answer to its parent)
 
 ## Triggers
 

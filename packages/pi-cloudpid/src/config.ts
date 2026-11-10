@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off processEnv:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; reads the build's commit.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain functions over values, called directly.
 /**
  * Where the endpoint is (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Configuration): the
  * `cloudpid.baseUrl` pi setting, read with `defineLayeredSettings` (`@ian-pascoe/pi-utils`): `~/.pi/agent/settings.json`,
@@ -117,12 +117,3 @@ export const readConfig = (source: SettingsSource): Config => {
 
   return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
 };
-
-/**
- * The commit `dist/index.js` was built from (`build.ts` defines it), for `X-Cloudpid-Client`; `dev` when pi runs the
- * source (`pi -e packages/pi-cloudpid/src/index.ts`).
- */
-export const BUILD_SHA: string = process.env.PI_CLOUDPID_SHA ?? "dev";
-
-/** The `X-Cloudpid-Client` value: the endpoint shows it as the Session's client, trimmed to 40 characters. */
-export const clientName = (sha: string = BUILD_SHA): string => `pi-cloudpid/${sha.slice(0, 12)}`;

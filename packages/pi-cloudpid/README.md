@@ -6,11 +6,13 @@ The design is [`docs/architecture/mcp-endpoint.md`](https://github.com/ian-pasco
 
 ## Set up
 
-1. **Install it** (once; `pi update` follows the branch after each deploy):
+1. **Install it** (once; `pi update` follows `main`):
 
    ```sh
-   pi install git:github.com/ian-pascoe/cloudpid@pi-cloudpid
+   pi install git:github.com/ian-pascoe/cloudpid
    ```
+
+   pi clones the repo, runs npm's production install at its root and loads this package's TypeScript source, as the root `package.json`'s `pi` manifest names it. If you installed it from the old `pi-cloudpid` branch, `pi remove git:github.com/ian-pascoe/cloudpid@pi-cloudpid` first.
 
 2. **Tell it where cloudpid is.** Put the `cloudpid.baseUrl` setting in `~/.pi/agent/settings.json`, or, for one project, in its `.pi/settings.json` (pi reads a project's settings only once you trust the project; the project's value wins):
 
@@ -57,7 +59,7 @@ Everything after `import` is the instruction, sent to the new Session when the i
 ```sh
 pi -e packages/pi-cloudpid/src/index.ts      # the dev loop, from the repo root
 bun run --cwd packages/pi-cloudpid test      # includes an import against a stub endpoint behind a stub authorization server
-bun run --cwd packages/pi-cloudpid build     # dist/index.js and dist/package.json
+bun run --cwd packages/pi-cloudpid git-install:check  # installs a copy of the repo as pi does, and loads /cloudpid from it
 ```
 
-It is the one package with a build: `bun build --target=node --format=esm` makes a single `dist/index.js` with the pi host packages (`@earendil-works/pi-*`, `typebox`) external as peer dependencies, and `dist/package.json` carries `pi.extensions` and nothing to install. `build.ts` fails the build if the bundle reaches Workers code (`cloudflare:*`, workerd, alchemy, pi-durable, `@cloudpid/extensions`). `PI_CLOUDPID_SHA` (CI sets it to the `main` commit, else `git rev-parse HEAD`) is built in and sent as `X-Cloudpid-Client: pi-cloudpid/<sha>`. After `Deploy prod` succeeds, CI appends a commit with `dist/` to the orphan branch `pi-cloudpid` ([`docs/development/infra.md`](https://github.com/ian-pascoe/cloudpid/blob/main/docs/development/infra.md) → _CI_).
+There is no build: pi loads `src/index.ts` itself. So the repo must stay installable by npm's production install at its root (no `workspace:*` versions; a root `prepare` that does nothing without the development tools), which `git-install:check` and its CI job hold. `X-Cloudpid-Client: pi-cloudpid/<sha>` names the commit of the clone pi installed (`git rev-parse HEAD`), or `dev` outside one.

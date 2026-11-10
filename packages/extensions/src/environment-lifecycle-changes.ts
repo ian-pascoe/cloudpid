@@ -26,6 +26,7 @@ import {
   type HARNESS_TOOLS,
   RebuildEndpointOutput,
   RecordChangeEndpointOutput,
+  type SessionHarnessToolName,
   type Surface,
 } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
@@ -75,7 +76,7 @@ export type LifecycleChangeServices = {
 };
 
 /** The arguments of tool `Name`, as a Session's call decodes them (the endpoint's add only `request_id`). */
-type ArgsOf<Name extends keyof typeof HARNESS_TOOLS> =
+type ArgsOf<Name extends SessionHarnessToolName> =
   (typeof HARNESS_TOOLS)[Name]["session"]["input"]["Type"];
 
 /** A name or address a change holds before or after, as text; none for a change that had none. */

@@ -3,21 +3,22 @@
 // `_tool_offer`, `_tool_defer`, `_compaction_set`, `_branch_summary_set`, `_extension_set` and `settings_reset`. The
 // in-session descriptions, parameters and output schemas stay as they were (the snapshot in
 // `packages/extensions/src/harness-session.test.ts` pins them). The endpoint's sentences name the owner and no Session,
-// and no tool the endpoint does not serve (`tool_search`, the Limit tools, `settings_instructions_set`); every endpoint
-// input takes `request_id`, and every endpoint output is a flat object. A Limit, the Instructions and a change that would
-// widen what an MCP server reaches are answered `unsupported` there, with nothing changed.
+// and no tool the endpoint does not serve (`tool_search`); every endpoint input takes `request_id`, and every endpoint
+// output is a flat object. A Limit's reset asks the owner there, as the Limit tools do (`./approvals.ts`), and answers
+// `pending`, as does a reset of an MCP field that would widen what a server reaches; `settings_reset` does not take the
+// Instructions (`settings_instructions_set` clears them).
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
   ModelId,
   OVERRIDE_FIELD_NAMES,
   ROLE_NAMES,
-  SUPPORTED_MODELS,
   THINKING_LEVELS,
   ThinkingLevel,
 } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
+import { ApprovalRequestFields } from "./approvals.ts";
 import { ChangeEndpointOutput, ChangeOutput } from "./change-output.ts";
 import { RequestIdField, settingsReason } from "./reason.ts";
 import { GLOBAL_SETTINGS_SCOPE, SettingsScope } from "./scope.ts";
@@ -38,7 +39,11 @@ export const SPEND_LIMIT_FIELD = "spendLimit.perSession";
 export const DEPTH_LIMIT_FIELD = extensionField("subagents", "maxSubagentDepth");
 export const WORKSPACES_LIMIT_FIELD = extensionField("subagents", "maxSubagentWorkspaces");
 
-/** The fields that are Limits: their tools, and a reset of one, wait for the owner's Approval. */
+/**
+ * The fields that are Limits, as the tools' descriptions name them: their tools, and a reset of one, wait for the owner's
+ * Approval. Which field a call names is a Limit is decided by `limitOfField` (`@cloudpid/extensions/approval-cores`, built
+ * over these fields), for the Session's tools and the endpoint's routing alike.
+ */
 export const SETTINGS_LIMIT_FIELDS: ReadonlyArray<string> = [
   SPEND_LIMIT_FIELD,
   DEPTH_LIMIT_FIELD,
@@ -60,7 +65,16 @@ export const CHANGE_NOTE =
 export const CHANGE_NOTE_ENDPOINT =
   "The change is recorded with your reason, and the owner can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it when it next admits input.";
 
-const MODEL_LIST = Arr.join(SUPPORTED_MODELS, ", ");
+/**
+ * What the descriptions say of the models: the Model catalog changes without a release, so it is never listed in a
+ * description (ADR-0052), which must stay as it is for the prompt cache; the agent lists it with `models_list`.
+ */
+const MODEL_NOTE =
+  "Models: any id models_list lists (provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused";
+
+/** The same on the endpoint, where `environments_list` lists the models. */
+const MODEL_NOTE_ENDPOINT =
+  "Models: any of environments_list's models.available (as provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused";
 
 const Reason = settingsReason("user", "this task is small and cheap");
 
@@ -94,7 +108,7 @@ export const settingsModelSet = {
   annotations: WRITE_IDEMPOTENT,
   session: {
     description: paragraphs([
-      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: ${MODEL_LIST}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
+      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. ${MODEL_NOTE}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
       "A Session that picked its own model or thinking level keeps its pick; the result says whether this Session did. Subagents keep the agent they started with: their models come from the roles (settings_role_set).",
       SCOPE_NOTE,
       CHANGE_NOTE,
@@ -104,7 +118,7 @@ export const settingsModelSet = {
   },
   endpoint: {
     description: paragraphs([
-      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: ${MODEL_LIST}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
+      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. ${MODEL_NOTE_ENDPOINT}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
       "A Session that picked its own model or thinking level keeps its pick. Subagents keep the agent they started with: their models come from the roles (settings_role_set).",
       SCOPE_NOTE,
       CHANGE_NOTE_ENDPOINT,
@@ -127,10 +141,14 @@ const roleFields = {
   ),
 };
 
-const roleLines = [
-  `Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: ${Arr.join(ROLE_NAMES, ", ")}. Models: ${MODEL_LIST}.`,
-  "A Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.",
-];
+const roleIntro = `Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: ${Arr.join(ROLE_NAMES, ", ")}.`;
+
+const roleNote =
+  "A Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.";
+
+const roleLines = [`${roleIntro} ${MODEL_NOTE}.`, roleNote];
+
+const roleLinesEndpoint = [`${roleIntro} ${MODEL_NOTE_ENDPOINT}.`, roleNote];
 
 export const settingsRoleSet = {
   name: "settings_role_set",
@@ -141,7 +159,7 @@ export const settingsRoleSet = {
     output: ChangeOutput,
   },
   endpoint: {
-    description: paragraphs([...roleLines, SCOPE_NOTE, CHANGE_NOTE_ENDPOINT]),
+    description: paragraphs([...roleLinesEndpoint, SCOPE_NOTE, CHANGE_NOTE_ENDPOINT]),
     input: Schema.Struct({ ...roleFields, reason: ReasonEndpoint, ...RequestIdField }),
     output: ChangeEndpointOutput,
   },
@@ -314,7 +332,7 @@ export const settingsExtensionSet = {
   endpoint: {
     description: paragraphs([
       extensionLine,
-      "The subagent depth (subagents.maxSubagentDepth) and the Subagent Workspace limit (subagents.maxSubagentWorkspaces) are Limits: a call that names one is refused as unsupported, and nothing is changed.",
+      "The subagent depth (subagents.maxSubagentDepth) and the Subagent Workspace limit (subagents.maxSubagentWorkspaces) are Limits: a call that names one is refused as unsupported, and nothing is changed. settings_subagent_depth_set and settings_subagent_workspaces_set ask the owner for them.",
       SCOPE_NOTE,
       CHANGE_NOTE_ENDPOINT,
     ]),
@@ -336,11 +354,20 @@ const resetFields = {
 /** The fields `settings_reset` takes, as its description and its refusal list them. */
 export const RESET_FIELDS = Arr.join(OVERRIDE_FIELD_NAMES, ", ");
 
-/** The fields the endpoint's `settings_reset` takes: those that are no Limit. */
-export const RESET_FIELDS_ENDPOINT = Arr.join(
-  Arr.filter(OVERRIDE_FIELD_NAMES, (field) => !Arr.contains(SETTINGS_LIMIT_FIELDS, field)),
-  ", ",
-);
+/**
+ * The endpoint's answer to `settings_reset`: a change's, or, for a Limit, the ask's (`status` "pending" with the request,
+ * or "unchanged"), with no changes made yet.
+ */
+export const SettingsResetEndpointOutput = Schema.Struct({
+  ...ChangeEndpointOutput.fields,
+  status: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        'For a Limit, or an MCP field whose reset widens: "pending" when the owner was asked (approval_wait follows the request), "unchanged" when it is reset already; absent for any other field, which is reset at once',
+    }),
+  ),
+  ...ApprovalRequestFields,
+});
 
 const resetLead = (fields: string) =>
   `Reset one setting at a Scope: with an Environment's id, remove the Environment's Override of the field, so it inherits Global again; with scope "${GLOBAL_SETTINGS_SCOPE}", put the field back to its default at Global (an Environment that overrides it keeps its Override). A field the Environment does not override, or that is at its default at Global, changes nothing. The fields: ${fields}. A Role is one field (its model and hint together), and so is each extension option.`;
@@ -362,12 +389,12 @@ export const settingsReset = {
   },
   endpoint: {
     description: paragraphs([
-      resetLead(RESET_FIELDS_ENDPOINT),
-      `A Limit (${Arr.join(SETTINGS_LIMIT_FIELDS, ", ")}) is not reset here: a call that names one is refused as unsupported, and nothing is changed. Any other field is reset at once. ${resetMcpNote} A reset that would make a switched-off server or a hidden tool reachable again is refused as unsupported, and nothing is changed.`,
+      resetLead(RESET_FIELDS),
+      `Resetting a Limit (${Arr.join(SETTINGS_LIMIT_FIELDS, ", ")}) waits for the owner's Approval, as the Limit tools do: the call does not wait for them, but answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires; follow it with approval_wait. Any other field is reset at once. The Instructions are not a field here: settings_instructions_set with an empty text clears them, once the owner approves. ${resetMcpNote} A reset that would make a switched-off server or a hidden tool reachable again waits for the owner's Approval too, as settings_mcp_enable does, and answers the same way.`,
       CHANGE_NOTE_ENDPOINT,
     ]),
     input: Schema.Struct({ ...resetFields, reason: ReasonEndpoint, ...RequestIdField }),
-    output: ChangeEndpointOutput,
+    output: SettingsResetEndpointOutput,
   },
 } as const;
 

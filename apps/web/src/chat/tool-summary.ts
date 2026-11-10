@@ -227,7 +227,7 @@ const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string>
 
 /**
  * The one thing about a call worth showing beside its name: the path a file tool works on, what a search looks for,
- * the command a shell runs, why the Container is restarted or resized, the task a subagent starts with, the instructions of a browser handoff, the message an agent sends, the agent a call addresses, or the Environment an `environment_*` call reads and the variable it changes. Nothing for a tool the page does not know, or arguments that do not have it.
+ * the command a shell runs, why the Container is restarted or resized, the task a subagent starts with, the instructions of a browser handoff, the message an agent sends, the agent a call addresses, the title of a cloudpid report, or the Environment an `environment_*` call reads and the variable it changes. Nothing for a tool the page does not know, or arguments that do not have it.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const toolSummary = (toolName: string, args: Args): string | undefined => {
@@ -340,6 +340,9 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "subagent_cancel":
       case "subagent_delete":
         return text(args, "agent_id");
+      // Its card links the issue it filed (`parts.tsx`).
+      case "cloudpid_report":
+        return firstLine(args, "title");
       default:
         return Option.none();
     }

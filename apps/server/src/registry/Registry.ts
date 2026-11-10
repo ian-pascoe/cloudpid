@@ -2,11 +2,13 @@ import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import type { ContainerPatch, ContainerSettings } from "@cloudpid/config";
+import type { ContainerPatch, ContainerSettings, ModelCatalog } from "@cloudpid/config";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import type {
   McpPending,
@@ -18,6 +20,7 @@ import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/cor
 import type {
   AgentChange,
   AgentChangeVia,
+  ApprovalStatus,
   EnvironmentBuildState,
   EnvironmentRepo,
   EnvironmentSecretRecord,
@@ -81,7 +84,7 @@ import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-re
 import { mcpChangeCheck, mcpGuard } from "./mcp-change-check.ts";
 import { mcpChangeNotice } from "./mcp-change-notice.ts";
 import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
-import { githubSkillReader } from "./skill-reader.ts";
+import { githubSkillReader, SkillReaderOverride } from "./skill-reader.ts";
 import {
   previewSkillUpdates,
   runDailySkillCheck,
@@ -149,6 +152,16 @@ import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.
 import { type BuildWork, buildView } from "./builds.ts";
 import { type ChangeAnswer, type ChangeRequest, openChangeRequests } from "./change-requests.ts";
 import {
+  APPROVAL_WAIT_POLL_MS,
+  type ApprovalAsk,
+  type ApprovalAsked,
+  type ApprovalClaim,
+  type ApprovalEnd,
+  MAX_APPROVAL_WAITS,
+  openApprovals,
+  type StoredApproval,
+} from "./approvals.ts";
+import {
   guardedViaWrite,
   keptOf,
   type KeptTexts,
@@ -157,10 +170,27 @@ import {
   type OpenViaCheck,
 } from "./via-secrets.ts";
 import { GitHubAppConfig } from "../github/config.ts";
+import { APP_ORIGIN_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
+import type { CloudpidReportAnswer } from "@cloudpid/extensions/cloudpid-report";
+import { type AgentCloudpidReportInput, registryCloudpidReports } from "./cloudpid-reports.ts";
 import { PushConfig } from "../push/config.ts";
+import { ModelProxyConfig } from "../model-proxy.ts";
+import { modelCatalogKeeper } from "./model-catalog.ts";
 import { pushNotifier, pushOwner } from "../push/notify.ts";
-import { describeTriggerFailure, type PushEvent, type PushPayload } from "../push/notification.ts";
-import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
+import {
+  describeApproval,
+  describeTriggerFailure,
+  type PushEvent,
+  type PushPayload,
+} from "../push/notification.ts";
+import {
+  newApprovalId,
+  newEnvironmentId,
+  newSessionId,
+  newTriggerId,
+  newWorkspaceId,
+  shortId,
+} from "./ids.ts";
 import { openTriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
@@ -685,6 +715,71 @@ export type RegistryMethods = {
     readonly via: AgentChangeVia;
   }) => Effect.Effect<PushPayload | null>;
   /**
+   * Ask for the owner's Approval of a change made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → Approvals
+   * with no Session; `./approvals.ts`): a new request, or the one there is for the same `request_id` or the same change.
+   * Refused, writing nothing, when an argument holds a kept Secret of the Scope's reach, and past the caller's cap.
+   */
+  readonly requestApproval: (input: ApprovalAsk) => Effect.Effect<ApprovalAsked>;
+  /** Request `id` as it stands (expired when its days are past); null when it is not kept. */
+  readonly approval: (input: { readonly id: string }) => Effect.Effect<StoredApproval | null>;
+  /** Every request kept, oldest first; only Scope `scope`'s when one is named. */
+  readonly listApprovals: (input: {
+    readonly scope?: string | undefined;
+  }) => Effect.Effect<ReadonlyArray<StoredApproval>>;
+  /** The owner's answer: a waiting request becomes `approved` or `declined`; any other is answered as it is. */
+  readonly answerApproval: (input: {
+    readonly id: string;
+    readonly approved: boolean;
+    readonly reason?: string | undefined;
+  }) => Effect.Effect<StoredApproval | null>;
+  /** The caller's withdrawal: a waiting request becomes `withdrawn`; any other is answered as it is. */
+  readonly withdrawApproval: (input: {
+    readonly id: string;
+  }) => Effect.Effect<StoredApproval | null>;
+  /** Claim approved request `id` for the run `token` (`APPROVAL_LEASE_MS`): whether the run holds it now. */
+  readonly claimApproval: (input: {
+    readonly id: string;
+    readonly token: string;
+  }) => Effect.Effect<ApprovalClaim | null>;
+  /** Settle approved request `id` as its run `token` ends it, while the run holds its lease. */
+  readonly finishApproval: (input: {
+    readonly id: string;
+    readonly token: string;
+    readonly status: ApprovalEnd;
+    readonly reason?: string | undefined;
+    readonly result?: ChangeAnswer | undefined;
+  }) => Effect.Effect<StoredApproval | null>;
+  /**
+   * Let go of approved request `id`'s lease for the run `token` that holds it, leaving it approved, so the next run (Try
+   * again, the owner's next visit) applies it at once.
+   */
+  readonly releaseApproval: (input: {
+    readonly id: string;
+    readonly token: string;
+  }) => Effect.Effect<StoredApproval | null>;
+  /** The approved requests no run is applying: what the owner's next visit resumes. */
+  readonly staleApprovals: () => Effect.Effect<ReadonlyArray<StoredApproval>>;
+  /**
+   * Tell the owner a request waits for them (`input`), tagged `approval:<id>` and opening its card; nothing for one no
+   * longer waiting. Answers what was sent; the send never fails.
+   */
+  readonly notifyApproval: (input: { readonly id: string }) => Effect.Effect<PushPayload | null>;
+  /**
+   * Wait until request `id`'s status is no longer `seen` (what the caller last read; it answers at once when it changed
+   * since), or `deadline` (ms since the epoch) passes, re-reading it every half second; answers it then. At most
+   * `MAX_APPROVAL_WAITS` waits at once per caller `auth` (`too_many_waits`). Null when it is not kept.
+   */
+  readonly waitApproval: (input: {
+    readonly id: string;
+    readonly seen: ApprovalStatus;
+    readonly auth: string;
+    readonly deadline: number;
+  }) => Effect.Effect<
+    | { readonly status: "answered"; readonly approval: StoredApproval }
+    | { readonly status: "too_many_waits" }
+    | null
+  >;
+  /**
    * An Agent change (`docs/architecture/workspace.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
    * its path in the folder) for `environment` (an Environment's id, or `*` at Global), in place of one of its
    * name, if it passes a save's checks, and record it with its files before and after. The same files as kept record
@@ -978,6 +1073,11 @@ export type RegistryMethods = {
     readonly session: string;
   }) => Effect.Effect<SessionSettingsSource>;
   /**
+   * The Model catalog (ADR-0052): the models the model proxy lists, read from it again first when the kept copy is older
+   * than its TTL; the kept copy when that read fails, and the built-in fallback before any read succeeded.
+   */
+  readonly getModelCatalog: () => Effect.Effect<ModelCatalog>;
+  /**
    * The host's pull (`docs/architecture/mcp-configuration.md` → From the Registry to the host): `environment`'s MCP server
    * set's hash with a new `revision`, noted as handed to the host, and the set unless the host holds it (`heldHash`;
    * none held is the empty set). An Environment the Registry does not list gets neither revision nor set. For the
@@ -1168,6 +1268,14 @@ export type RegistryMethods = {
     readonly id: string;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<TriggerChanged>;
+  /**
+   * File the agent's cloudpid report on cloudpid's own repo, as the GitHub App, once per Session and call (ADR-0051,
+   * `cloudpid-reports.ts`): refused when it names the owner's Repos or a cap is reached, and a rerun of the call answered
+   * what the first attempt came to. A status a newer Registry adds reads as `unknown` to the Session.
+   */
+  readonly agentFileReport: (
+    input: AgentCloudpidReportInput,
+  ) => Effect.Effect<CloudpidReportAnswer>;
   /** Every Trigger, or `environment`'s, newest first. */
   readonly listTriggers: (input: {
     readonly environment?: string | undefined;
@@ -1293,10 +1401,52 @@ export const registryMethods = Effect.suspend(() =>
     secrets: SecretsConfig,
     github: GitHubAppConfig,
     worker: Cloudflare.WorkerEnvironment,
+    // Where the Model catalog is read from: none in a test that provides no proxy, which keeps the fallback.
+    proxy: Effect.serviceOption(ModelProxyConfig),
   }).pipe(
-    Effect.map(({ state, push, secrets, github, worker }) =>
+    Effect.map(({ state, push, secrets, github, worker, proxy }) =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
+
+        // The Model catalog (ADR-0052): read from the proxy by this object alone, kept in its document table.
+        const catalog = modelCatalogKeeper({
+          documents: store,
+          proxy: Option.getOrUndefined(
+            Option.map(proxy, ({ url, apiKey }) => ({
+              url: Redacted.value(url),
+              apiKey: Redacted.value(apiKey),
+            })),
+          ),
+          // @effect-diagnostics-next-line globalDate:off -- the keeper is Promise code, read outside any Effect.
+          now: () => Date.now(),
+        });
+
+        /** Read the proxy's catalog again if the kept one is stale; a read that fails is logged and the copy kept. */
+        const refreshCatalog = Effect.promise(() => catalog.refresh()).pipe(
+          Effect.flatMap((outcome) =>
+            outcome.status === "failed"
+              ? Effect.logWarning(
+                  `Reading the Model catalog from the model proxy failed; the kept one is used: ${outcome.message}`,
+                )
+              : Effect.void,
+          ),
+        );
+
+        /**
+         * `method`, run after `refreshCatalog`: every method that writes a model (the Settings, an Environment's Overrides,
+         * Triggers, the Agent changes of either and their reverts) is wrapped in it, so its model is checked against a
+         * catalog read lately, not the fallback a new object starts with (ADR-0052).
+         */
+        const catalogFirst =
+          <Args extends ReadonlyArray<unknown>, A, E, R>(
+            method: (...args: Args) => Effect.Effect<A, E, R>,
+          ) =>
+          (...args: Args): Effect.Effect<A, E, R> =>
+            Effect.andThen(
+              refreshCatalog,
+              Effect.suspend(() => method(...args)),
+            );
+
         const changes = openAgentChanges(state.raw.storage);
         const triggers = openTriggers(state.raw.storage, store);
         const triggerChanges = openTriggerChanges(state.raw.storage, store, triggers, changes);
@@ -1315,7 +1465,11 @@ export const registryMethods = Effect.suspend(() =>
         });
 
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
-        const skillReader = githubSkillReader(github);
+        // A test's Registry reads a fake repo in place of GitHub (`SkillReaderOverride`); a deploy provides none.
+        const skillReader = Option.getOrElse(yield* Effect.serviceOption(SkillReaderOverride), () =>
+          githubSkillReader(github),
+        );
+
         // The Repos' `.pi/mcp.json` are read through the same reader (one token), and kept in the Registry.
         const mcpLooks = openMcpRepoLooks(store, skillReader);
 
@@ -1414,7 +1568,22 @@ export const registryMethods = Effect.suspend(() =>
           // @effect-diagnostics-next-line runEffectInsideEffect:off
           Effect.runPromise(viaCheck({ author, reach }));
 
+        // The agent's cloudpid reports, posted with a token of their own: `issues: write` on cloudpid's repo alone. Every
+        // stage but `prod` (the one with no stage label) files fewer a day.
+        const cloudpidReports = registryCloudpidReports({
+          storage: state.raw.storage,
+          store,
+          github,
+          stageLabel: Predicate.isString(worker[STAGE_LABEL_VAR])
+            ? worker[STAGE_LABEL_VAR]
+            : undefined,
+          origin: Predicate.isString(worker[APP_ORIGIN_VAR]) ? worker[APP_ORIGIN_VAR] : undefined,
+        });
+
         const changeRequests = openChangeRequests(state.raw.storage, store, changes);
+        const approvals = openApprovals(state.raw.storage);
+        // The `approval_wait`s each caller holds now: an eviction ends them, and the count with them.
+        const approvalWaits = new Map<string, number>();
 
         /**
          * Run `write(now)` for the endpoint's or a Session's `args`, which are the call's own arguments: checked against the
@@ -1662,7 +1831,7 @@ export const registryMethods = Effect.suspend(() =>
           deleteEnvironment: ({ id }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => {
-                const deletion = store.deleteEnvironment(id);
+                const deletion = store.deleteEnvironment(id, now);
 
                 // The host is wiped by the main Worker's next sync: the Registry never calls out.
                 if (deletion === "deleted") recordMcpDeleted(store, id, now);
@@ -1888,7 +2057,7 @@ export const registryMethods = Effect.suspend(() =>
                 ? null
                 : changes.list(environment),
             ),
-          revertAgentChange: ({ environment, change }) =>
+          revertAgentChange: catalogFirst(({ environment, change }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
@@ -1901,6 +2070,7 @@ export const registryMethods = Effect.suspend(() =>
                 skills,
               );
             }),
+          ),
           dismissAgentChange: ({ environment, change }) =>
             Effect.sync(() => changes.dismiss(environment, change)),
           changeRequest: ({ id }) =>
@@ -1915,6 +2085,85 @@ export const registryMethods = Effect.suspend(() =>
               if (notice !== null) yield* notifyOwner(notice);
 
               return notice;
+            }),
+          requestApproval: (ask) =>
+            Effect.gen(function* () {
+              const id = yield* newApprovalId;
+
+              // Every text of the arguments (the reason among them) is checked against the kept Secrets the Scope reaches,
+              // as the write it asks for will be: a refusal writes no row.
+              return yield* viaWrite(
+                {
+                  author: { via: ask.via, tool: ask.tool, reason: ask.card.reason },
+                  args: ask.args,
+                },
+                reachOf(ask.scope),
+                (message): ApprovalAsked => ({ status: "refused", message }),
+                (now) => approvals.ask(ask, id, now),
+              );
+            }),
+          approval: ({ id }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.get(id, now))),
+          listApprovals: ({ scope }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.list(now, scope))),
+          answerApproval: (answer) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.answer(answer, now))),
+          withdrawApproval: ({ id }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.withdraw(id, now))),
+          claimApproval: ({ id, token }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.claim(id, token, now))),
+          finishApproval: (ended) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.finish(ended, now))),
+          releaseApproval: ({ id, token }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.release(id, token, now))),
+          staleApprovals: () =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.stale(now))),
+          notifyApproval: ({ id }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              const asked = approvals.get(id, now);
+
+              if (asked === null || asked.status !== "pending") return null;
+
+              const notice = describeApproval(asked);
+
+              yield* notifyOwner(notice);
+
+              return notice;
+            }),
+          waitApproval: ({ id, seen, auth, deadline }) =>
+            Effect.gen(function* () {
+              const first = approvals.get(id, yield* Clock.currentTimeMillis);
+
+              if (first === null) return null;
+
+              const held = approvalWaits.get(auth) ?? 0;
+
+              if (held >= MAX_APPROVAL_WAITS) return { status: "too_many_waits" as const };
+
+              approvalWaits.set(auth, held + 1);
+
+              return yield* Effect.gen(function* () {
+                let now = yield* Clock.currentTimeMillis;
+                let current: StoredApproval | null = first;
+
+                while (current !== null && current.status === seen && now < deadline) {
+                  yield* Effect.sleep(Math.min(APPROVAL_WAIT_POLL_MS, deadline - now));
+                  now = yield* Clock.currentTimeMillis;
+                  current = approvals.get(id, now);
+                }
+
+                return current === null ? null : { status: "answered" as const, approval: current };
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    const left = (approvalWaits.get(auth) ?? 1) - 1;
+
+                    if (left <= 0) approvalWaits.delete(auth);
+                    else approvalWaits.set(auth, left);
+                  }),
+                ),
+              );
             }),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
           getWorkspaceSetup: ({ id, skillSetHash }) =>
@@ -2191,7 +2440,7 @@ export const registryMethods = Effect.suspend(() =>
               ...readSettings(store),
               overriddenIn: settingsOverriddenIn(store),
             })),
-          updateSettings: ({ overrides }) =>
+          updateSettings: catalogFirst(({ overrides }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now): SettingsUpdate => {
                 const saved = writeSettings(store, overrides, now);
@@ -2203,14 +2452,16 @@ export const registryMethods = Effect.suspend(() =>
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
             ),
+          ),
           getSettingsOverrides: ({ environment }) =>
             Effect.sync(() => readSettingsOverrides(store, environment)),
-          updateSettingsOverrides: ({ environment, set, reset }) =>
+          updateSettingsOverrides: catalogFirst(({ environment, set, reset }) =>
             Effect.sync(() =>
               settingsOverridesUpdate(
                 updateSettingsOverrides(state.raw.storage, store, environment, { set, reset }),
               ),
             ),
+          ),
           updateEnvironmentInstructions: ({ environment, instructions }) =>
             Effect.sync(() =>
               settingsOverridesUpdate(putEnvironmentInstructions(store, environment, instructions)),
@@ -2224,8 +2475,12 @@ export const registryMethods = Effect.suspend(() =>
                 yield* firstMcpLook(mcpLooks, store, environment, MCP_FIRST_LOOK_WAIT);
               }
 
+              // The Session is answered the catalog kept: a stale one is read again behind it, for its next read.
+              yield* Effect.forkDetach(refreshCatalog);
+
               return sessionSettingsSource(store, session);
             }),
+          getModelCatalog: catalogFirst(() => Effect.sync(catalog.current)),
           mcpServerSet: (input) =>
             checkHanded.pipe(
               Effect.andThen(Clock.currentTimeMillis),
@@ -2301,7 +2556,7 @@ export const registryMethods = Effect.suspend(() =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => recordMcpDestroyed(store, environment, now)),
             ),
-          changeSettings: (args) =>
+          changeSettings: catalogFirst((args) =>
             // The Settings at Global are the `*` scope's: every Secret may be held in a text of theirs.
             viaWrite<SettingsChange>(
               args,
@@ -2334,13 +2589,15 @@ export const registryMethods = Effect.suspend(() =>
               // The MCP hosts' revision the change is checked against, not what it keeps.
               ["guard"],
             ),
+          ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
-          revertSettingsChange: ({ change }) =>
+          revertSettingsChange: catalogFirst(({ change }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 revertSettingsChange(state.raw.storage, store, changes, { id: change }, now),
               ),
             ),
+          ),
           dismissSettingsChange: ({ change }) =>
             Effect.sync(() => changes.dismiss(SETTINGS_SCOPE, change)),
           getPush: ({ endpoint }) =>
@@ -2355,13 +2612,14 @@ export const registryMethods = Effect.suspend(() =>
           unsubscribePush: ({ endpoint }) =>
             Effect.sync(() => store.deletePushSubscription(endpoint)),
           notify: ({ sessionId, event }) => notify(sessionId, event),
-          createTrigger: ({ id, trigger }) =>
+          createTrigger: catalogFirst(({ id, trigger }) =>
             Effect.gen(function* () {
               const made = id ?? (yield* newTriggerId);
 
               return triggers.create(made, trigger, yield* Clock.currentTimeMillis);
             }),
-          updateTrigger: ({ id, patch, expected }) =>
+          ),
+          updateTrigger: catalogFirst(({ id, patch, expected }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 triggers.update(
@@ -2374,14 +2632,16 @@ export const registryMethods = Effect.suspend(() =>
                 ),
               ),
             ),
+          ),
           setTriggerPaused: ({ id, paused }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
           removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),
-          agentCreateTrigger: (args) =>
+          agentCreateTrigger: catalogFirst((args) =>
             viaWrite<TriggerChanged>(args, createReach(args.trigger), invalid, (now) =>
               triggerChanges.create(args.id, args.trigger, args.author, now),
             ),
-          agentUpdateTrigger: (args) =>
+          ),
+          agentUpdateTrigger: catalogFirst((args) =>
             viaWrite<TriggerChanged>(
               args,
               triggerReach(args.id),
@@ -2389,6 +2649,7 @@ export const registryMethods = Effect.suspend(() =>
               (now) => triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
               ["expected"],
             ),
+          ),
           agentSetTriggerPaused: (args) =>
             viaWrite<TriggerChanged>(
               args,
@@ -2402,6 +2663,7 @@ export const registryMethods = Effect.suspend(() =>
             viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
               triggerChanges.remove(args.id, args.author, now),
             ),
+          agentFileReport: (input) => Effect.promise(() => cloudpidReports.file(input)),
           listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
           listSessionTriggers: ({ session }) => Effect.sync(() => triggers.listOfSession(session)),
           triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
@@ -2436,7 +2698,7 @@ export const registryMethods = Effect.suspend(() =>
           deleteEnvironmentWithTriggers: ({ id }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => {
-                const removal = triggers.deleteEnvironment(id);
+                const removal = triggers.deleteEnvironment(id, now);
 
                 // The host is wiped by the main Worker's next sync: the Registry never calls out.
                 if (removal.deletion === "deleted") recordMcpDeleted(store, id, now);

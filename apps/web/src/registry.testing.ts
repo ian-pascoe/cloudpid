@@ -1,6 +1,7 @@
 // A Registry for tests: the real RPC client over an in-memory server whose handlers a test supplies. A handler the test
 // does not supply dies, so a test notices a call it did not expect.
 
+import { FALLBACK_CATALOG } from "@cloudpid/config";
 import { RegistryRpcs } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -75,6 +76,8 @@ const UNEXPECTED: Handlers = {
   mcpSignIns: unexpected("mcpSignIns"),
   signOutMcpSignIn: unexpected("signOutMcpSignIn"),
   getSettings: unexpected("getSettings"),
+  // Every select of a model reads the catalog: it answers the fallback unless a test gives its own.
+  getModelCatalog: () => Effect.succeed(FALLBACK_CATALOG),
   updateSettings: unexpected("updateSettings"),
   getSettingsOverrides: unexpected("getSettingsOverrides"),
   updateSettingsOverrides: unexpected("updateSettingsOverrides"),
@@ -97,6 +100,9 @@ const UNEXPECTED: Handlers = {
   triggerFireLog: unexpected("triggerFireLog"),
   subscribePush: unexpected("subscribePush"),
   unsubscribePush: unexpected("unsubscribePush"),
+  listApprovals: unexpected("listApprovals"),
+  answerApproval: unexpected("answerApproval"),
+  retryApproval: unexpected("retryApproval"),
 };
 
 /** A `RegistryClient` answering with `handlers`. */

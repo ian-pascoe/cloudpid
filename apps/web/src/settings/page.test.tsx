@@ -11,14 +11,16 @@ import {
   DEFAULT_SETTINGS,
   overridesFrom,
 } from "@cloudpid/config";
-import { McpServersList, McpSignInsListing } from "@cloudpid/protocol";
+import { McpServersList, McpSignInsListing, type RegistryApproval } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom, globalSettingsAtom } from "../environments-state.ts";
-import { registryWith, settled } from "../registry.testing.ts";
+import { requestCardId } from "../chat/request-anchor.ts";
+import { type RegistryHandlers, registryWith, settled } from "../registry.testing.ts";
+import { approvalsAtom } from "./approvals.ts";
 import type { SettingsView } from "../router.ts";
 import {
   containerSectionForm,
@@ -43,10 +45,13 @@ type HeldInstructions = { readonly global: string; readonly work: string };
 const fakeRegistry = (
   container: ContainerSettings = DEFAULT_CONTAINER_SETTINGS,
   instructions: HeldInstructions = { global: "", work: "" },
+  more: Partial<RegistryHandlers> = {},
 ) => {
   const settings = { ...DEFAULT_SETTINGS, instructions: instructions.global };
 
   return registryWith({
+    listApprovals: () => Effect.succeed([]),
+    ...more,
     listEnvironments: () => Effect.succeed([WORK, HOME]),
     listSessions: () => Effect.succeed([]),
     listWorkspaces: () => Effect.succeed([]),
@@ -374,6 +379,86 @@ describe("an Environment's Instructions section", () => {
   );
 });
 
+describe("the requests waiting for the owner", () => {
+  const asked = (scope: string, section: string, id: string): RegistryApproval => ({
+    id,
+    scope,
+    section,
+    card: {
+      tool: "settings_spend_limit_set",
+      target: scope === "*" ? "Global" : "Work",
+      change: "Spend limit per Session",
+      before: "$10",
+      after: "$20",
+      reason: "r",
+    },
+    via: { client: { name: "pi" }, auth: "oauth" },
+    status: "pending",
+    applying: false,
+    createdAt: 1,
+    expiresAt: 2,
+  });
+
+  it.effect("shows a request's card above its own Scope's section only, before the section", () =>
+    Effect.gen(function* () {
+      const registry = fakeRegistry(DEFAULT_CONTAINER_SETTINGS, undefined, {
+        listApprovals: ({ scope }) =>
+          Effect.succeed(
+            scope === "work"
+              ? [asked("work", "container", "w1"), asked("work", "limits", "w2")]
+              : [asked("*", "container", "g1")],
+          ),
+      });
+
+      yield* loaded(registry);
+      registry.mount(approvalsAtom("work"));
+      registry.mount(approvalsAtom("*"));
+      yield* settled(registry, approvalsAtom("work"));
+      yield* settled(registry, approvalsAtom("*"));
+
+      const markup = render(registry, "work", section("container"));
+      const card = markup.indexOf(`id="${requestCardId("w1")}"`);
+
+      expect(card).toBeGreaterThanOrEqual(0);
+      expect(card).toBeLessThan(markup.indexOf("</h1>"));
+      expect(markup).not.toContain(requestCardId("w2"));
+      expect(markup).not.toContain(requestCardId("g1"));
+      expect(render(registry, "*", section("container"))).toContain(requestCardId("g1"));
+      registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "shows an Environment's size limit request in its Limits section, where the size limit is edited",
+    () =>
+      Effect.gen(function* () {
+        const sizeLimit: RegistryApproval = {
+          ...asked("work", "limits", "s1"),
+          card: {
+            tool: "environment_container_size_limit_set",
+            target: "Work",
+            change: "Size limit",
+            before: "standard-2",
+            after: "standard-4",
+            reason: "r",
+          },
+        };
+
+        const registry = fakeRegistry(DEFAULT_CONTAINER_SETTINGS, undefined, {
+          listApprovals: ({ scope }) => Effect.succeed(scope === "work" ? [sizeLimit] : []),
+        });
+
+        yield* loaded(registry);
+        registry.mount(approvalsAtom("work"));
+        yield* settled(registry, approvalsAtom("work"));
+
+        expect(render(registry, "work", section("limits"))).toContain(requestCardId("s1"));
+        expect(render(registry, "work", section("container"))).not.toContain(requestCardId("s1"));
+        registry.dispose();
+      }),
+  );
+});
+
 describe("every section", () => {
   /** The fake Registry, with every list a section asks for empty. */
   const everything = () =>
@@ -386,6 +471,7 @@ describe("every section", () => {
       listAgentChanges: () => Effect.succeed([]),
       listTriggers: () => Effect.succeed([]),
       listSettingsChanges: () => Effect.succeed([]),
+      listApprovals: () => Effect.succeed([]),
       listEnvironmentSkills: () => Effect.succeed([]),
       listSkillDirectory: () => Effect.succeed({ total: 0, hasMore: false, skills: [] }),
       mcpServers: () => Effect.succeed(McpServersList.make({ version: "1", servers: [] })),

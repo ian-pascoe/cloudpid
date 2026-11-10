@@ -1,15 +1,18 @@
 // The tools that wait for the owner's Approval (docs/architecture/agent-changes.md → Approval): each asks the owner on a card, with the values
 // before and after and the agent's reason, applies the change on Approve against what the owner saw, changes nothing on
-// Decline, and refuses without asking what it would refuse anyway.
+// Decline, and refuses without asking what it would refuse anyway. The deletes' cores, as the endpoint builds them
+// (`./environment-deletes.ts`), refuse what they would refuse without asking, delete only within what the owner saw,
+// and answer in the endpoint's words.
 // @effect-diagnostics asyncFunction:off strictEffectProvide:off preferEffectArray:off newPromise:off globalTimers:off
 import {
   type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
+  FALLBACK_CATALOG,
   overridesFrom,
   resolveOverridesLeniently,
   type Settings,
 } from "@cloudpid/config";
-import type { AgentChange } from "@cloudpid/protocol";
+import { type AgentChange, DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type JsonObject,
@@ -33,6 +36,12 @@ import {
   type KeptSecretMark,
 } from "./approval-tools.ts";
 import { type ApprovalAsk, Approvals, type ApprovalsService, makeApprovals } from "./approvals.ts";
+import { expectEndpointWords } from "./endpoint-words.fixture.ts";
+import {
+  environmentDeleteCore,
+  type EnvironmentRemovalService,
+  secretDeleteCore,
+} from "./environment-deletes.ts";
 import {
   AgentChangeLog,
   type ChangeAuthor,
@@ -354,6 +363,7 @@ const setUp = async ({
           Effect.sync(() => {
             calls.deleted.push(environment);
           }),
+        afterGone: () => Effect.void,
         keptSecrets: (scope) => Effect.sync(() => state.kept[scope] ?? null),
         deleteSecret: ({ environment, name, expected, author }) =>
           Effect.sync(() => {
@@ -418,6 +428,7 @@ const setUp = async ({
             });
           }),
         own: Effect.succeed(current),
+        models: Effect.succeed(FALLBACK_CATALOG),
         change: ({ scope, changes, author }) =>
           Effect.sync(() => {
             calls.settings.push({ scope, changes, author });
@@ -1946,5 +1957,268 @@ describe("the tools that wait for Approval, from a program", () => {
       deleted: false,
       approval: { approved: false, reason: "Too much" },
     });
+  });
+});
+
+describe("the deletes' cores, built for the endpoint", () => {
+  const FOOTPRINT: EnvironmentFootprint = { workspaces: 2, sessions: 3, secrets: 1, triggers: 2 };
+
+  const recordedChangeOf = (scope: string, field: string): AgentChange => ({
+    id: 7,
+    scope,
+    at: 0,
+    actor: "agent",
+    session: null,
+    conversation: null,
+    tool: "environment_secret_delete",
+    reason: "r",
+    field,
+    before: "kept",
+    after: null,
+    reverts: null,
+    revertedBy: null,
+  });
+
+  /** The cores over Environments "Web" (0000abcd) and Default, "Web" with one kept Secret, and what was deleted. */
+  const cores = () => {
+    const kept: Readonly<Record<string, ReadonlyArray<KeptSecretMark>>> = {
+      "0000abcd": [{ name: "A", build: true, updatedAt: 5 }],
+    };
+
+    const state = {
+      environments: new Set(["0000abcd", DEFAULT_ENVIRONMENT]),
+      footprint: FOOTPRINT,
+      kept,
+    };
+
+    const done: Array<unknown> = [];
+
+    const environments = {
+      current: Effect.succeed(null),
+      get: (id: string) =>
+        // SAFETY: the cores read only the id and the name of an Environment's details.
+        Effect.succeed(
+          state.environments.has(id)
+            ? ({ id, name: id === "0000abcd" ? "Web" : "Default" } as EnvironmentDetails)
+            : null,
+        ),
+    };
+
+    const removal: EnvironmentRemovalService = {
+      footprint: (id) => Effect.succeed(state.environments.has(id) ? state.footprint : null),
+      deleteEnvironment: (id, progress) =>
+        Effect.gen(function* () {
+          done.push({ deleted: id });
+
+          if (progress?.onStep !== undefined) yield* progress.onStep;
+        }),
+      afterGone: (id) => Effect.sync(() => void done.push({ afterGone: id })),
+      keptSecrets: (scope) =>
+        Effect.succeed(
+          scope === "*" || state.environments.has(scope) ? (state.kept[scope] ?? []) : null,
+        ),
+      deleteSecret: ({ environment, name, expected, author }) =>
+        Effect.sync(() => {
+          done.push({ environment, name, expected, author });
+
+          const secret = state.kept[environment]?.find((each) => each.name === name);
+          const scope = { id: environment, name: "Web" };
+
+          if (secret === undefined) return { status: "absent" as const, environment: scope };
+
+          if (expected !== undefined && expected.updatedAt !== secret.updatedAt) {
+            return { status: "changed-since" as const, environment: scope };
+          }
+
+          return {
+            status: "deleted" as const,
+            environment: scope,
+            change: recordedChangeOf(environment, `secrets.${name}`),
+          };
+        }),
+    };
+
+    const services = {
+      environments,
+      removal,
+      plainText: () => Effect.void,
+      surface: "endpoint" as const,
+    };
+
+    return {
+      state,
+      done,
+      remove: environmentDeleteCore(services),
+      secret: secretDeleteCore(services),
+    };
+  };
+
+  const AUTHOR = { tool: "t", reason: "r" };
+
+  const codeOf = <A>(effect: Effect.Effect<A, { readonly code?: string | undefined }>) =>
+    Effect.runPromise(effect.pipe(Effect.flip)).then((error) => error.code);
+
+  it("refuse, asking nothing, the default Environment, Global, an unknown Environment and an unknown Secret", async () => {
+    const { remove, secret, done } = cores();
+
+    expect(await codeOf(remove.prepare({ id: DEFAULT_ENVIRONMENT, reason: "r" }))).toBe(
+      "invalid_argument",
+    );
+    expect(await codeOf(remove.prepare({ id: "*", reason: "r" }))).toBe("invalid_argument");
+    expect(await codeOf(remove.prepare({ id: "0000ffff", reason: "r" }))).toBe("not_found");
+    expect(await codeOf(secret.prepare({ id: "0000abcd", name: "B", reason: "r" }))).toBe(
+      "not_found",
+    );
+    expect(await codeOf(secret.prepare({ id: "0000ffff", name: "A", reason: "r" }))).toBe(
+      "not_found",
+    );
+    expect(done).toEqual([]);
+  });
+
+  it("ask with what the delete takes, and the Secret's updatedAt, as expected", async () => {
+    const { remove, secret } = cores();
+
+    expect(await Effect.runPromise(remove.prepare({ id: "0000abcd", reason: "r" }))).toMatchObject({
+      card: { tool: "environment_delete", target: 'Environment "Web"' },
+      expected: FOOTPRINT,
+      known: { environment: { id: "0000abcd", name: "Web" } },
+    });
+    expect(
+      await Effect.runPromise(secret.prepare({ id: "0000abcd", name: "A", reason: "r" })),
+    ).toMatchObject({ card: { tool: "environment_secret_delete" }, expected: { updatedAt: 5 } });
+  });
+
+  it("delete an Environment only within what the owner saw, reporting each step, and find one gone done", async () => {
+    const { remove, state, done } = cores();
+    const steps: Array<string> = [];
+    const onStep = Effect.sync(() => void steps.push("step"));
+    const args = { id: "0000abcd", reason: "r" };
+    const more = { ...FOOTPRINT, sessions: 4 };
+
+    state.footprint = more;
+
+    const grew = await Effect.runPromise(remove.applyWith(args, FOOTPRINT, undefined, { onStep }));
+
+    expect(grew.result).toEqual({ status: "changed-since", footprint: more });
+    expect(done).toEqual([]);
+
+    // Part of it taken already, by a run cut off: still within what the owner saw.
+    state.footprint = { ...FOOTPRINT, workspaces: 1 };
+
+    const deleted = await Effect.runPromise(
+      remove.applyWith(args, FOOTPRINT, undefined, { onStep }),
+    );
+
+    expect(deleted.result).toEqual({
+      status: "deleted",
+      environment: { id: "0000abcd", name: "Web" },
+      footprint: FOOTPRINT,
+    });
+    expect(done).toEqual([{ deleted: "0000abcd" }]);
+    expect(steps).toEqual(["step"]);
+
+    state.environments.delete("0000abcd");
+
+    // A run cut after the record went has only the stored request: the card names the Environment.
+    const known = remove.knownFromCard(args, FOOTPRINT, {
+      tool: "environment_delete",
+      target: 'Environment "Web"',
+      change: "Delete the Environment",
+      before: "",
+      after: "",
+      reason: "r",
+    });
+
+    const gone = await Effect.runPromise(remove.applyWith(args, FOOTPRINT, known, undefined));
+
+    expect(gone).toEqual({
+      known: { environment: { id: "0000abcd", name: "Web" }, footprint: FOOTPRINT },
+      result: { status: "absent" },
+    });
+    // What runs after a delete runs again; nothing more is deleted.
+    expect(done).toEqual([{ deleted: "0000abcd" }, { afterGone: "0000abcd" }]);
+  });
+
+  it("name an Environment from the card the owner approved, or by its id when the card does not say it", () => {
+    const { remove } = cores();
+    const args = { id: "0000abcd", reason: "r" };
+
+    const card = (target: string) => ({
+      tool: "environment_delete",
+      target,
+      change: "",
+      before: "",
+      after: "",
+      reason: "r",
+    });
+
+    expect(
+      remove.knownFromCard(args, FOOTPRINT, card(`Environment ${JSON.stringify('Web "two"')}`)),
+    ).toEqual({
+      environment: { id: "0000abcd", name: 'Web "two"' },
+      footprint: FOOTPRINT,
+    });
+    expect(remove.knownFromCard(args, null, card("Something else"))).toEqual({
+      environment: { id: "0000abcd", name: "0000abcd" },
+      footprint: null,
+    });
+  });
+
+  it("delete a Secret against the updatedAt the owner saw, as approved", async () => {
+    const { secret, state, done } = cores();
+    const args = { id: "0000abcd", name: "A", reason: "r" };
+
+    state.kept = { "0000abcd": [{ name: "A", build: true, updatedAt: 6 }] };
+
+    const changed = await Effect.runPromise(secret.apply(args, { updatedAt: 5 }, AUTHOR));
+
+    expect(changed.result.status).toBe("changed-since");
+    expect(done).toEqual([
+      {
+        environment: "0000abcd",
+        name: "A",
+        expected: { updatedAt: 5 },
+        author: { ...AUTHOR, approved: true },
+      },
+    ]);
+
+    const deleted = await Effect.runPromise(secret.apply(args, { updatedAt: 6 }, AUTHOR));
+
+    expect(deleted.result.status).toBe("deleted");
+  });
+
+  it("answer each outcome in the endpoint's words", async () => {
+    const { remove, secret } = cores();
+    const environment = { id: "0000abcd", name: "Web" };
+    const deleteArgs = { id: "0000abcd", reason: "r" };
+    const secretArgs = { id: "0000abcd", name: "A", reason: "r" };
+    const deleteKnown = { environment, footprint: FOOTPRINT };
+    const secretKnown = { environment: "0000abcd", scope: environment, marked: true };
+
+    const said = await Effect.runPromise(
+      Effect.gen(function* () {
+        const renderDelete = (result: Parameters<typeof remove.render>[2]["result"]) =>
+          remove.render(deleteArgs, FOOTPRINT, { known: deleteKnown, result }, undefined);
+
+        const renderSecret = (result: Parameters<typeof secret.render>[2]["result"]) =>
+          secret.render(secretArgs, { updatedAt: 5 }, { known: secretKnown, result }, undefined);
+
+        return [
+          (yield* renderDelete({ status: "deleted", environment, footprint: FOOTPRINT })).text,
+          (yield* renderDelete({ status: "absent" })).text,
+          (yield* Effect.flip(renderDelete({ status: "changed-since", footprint: FOOTPRINT })))
+            .message,
+          (yield* renderSecret({
+            status: "deleted",
+            environment,
+            change: recordedChangeOf("0000abcd", "secrets.A"),
+          })).text,
+          (yield* renderSecret({ status: "absent", environment })).text,
+          (yield* Effect.flip(renderSecret({ status: "changed-since", environment }))).message,
+        ];
+      }),
+    );
+
+    for (const text of said) expectEndpointWords(text);
   });
 });

@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off asyncFunction:off nodeBuiltinImport:off globalDate:off tryCatchInEffectGen:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; plain Promises, as node's fs gives them; runs on node, on the owner's machine; the time the tokens were obtained.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off asyncFunction:off nodeBuiltinImport:off globalDate:off tryCatchInEffectGen:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; plain Promises, as node's fs gives them; runs on node, on the owner's machine; the time the tokens were obtained.
 /**
  * Where the sign-in is kept (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → The connection):
  * `<pi agent dir>/cloudpid-auth.json`, mode 0600, one entry per endpoint URL (the client registration, the tokens, and

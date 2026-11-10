@@ -6,9 +6,14 @@
 // codes, and answers anything else `unavailable` with a fixed sentence, so no service's message reaches a caller that was
 // not meant to read it. A change goes through one path: the probe (`agentChangeFeatures`, failing closed), the
 // `request_id` (refused with the Registry's own `approval:` prefix; looked up, then claimed by the write's own transaction
-// and settled before the answer is sent), then the notice and the upkeep after the answer.
-// @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off -- the input is the caller's JSON, read again; an attempt is a plain UUID.
+// and settled before the answer is sent), then the notice and the upkeep after the answer. A tool whose change waits for
+// the owner's Approval, the reset of a Limit, an MCP server's change that widens what is reachable, and a Skill tool's
+// change at Global (`id: "*"`, → Built so far: S3b-3), goes to the ask instead (`./approval-ask.ts`); an MCP server's
+// change that narrows is made at once, through the path above, when the ask finds it does. The input is the caller's
+// JSON, read again, and an attempt is a plain UUID:
+// @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off
 import { sha256Hex, sortedJson } from "@cloudpid/config";
+import { limitOfField } from "@cloudpid/extensions/approval-cores";
 import {
   environmentChangeCores,
   type Replayed,
@@ -19,7 +24,7 @@ import {
   LIFECYCLE_REPLAYED,
   lifecycleCores,
 } from "@cloudpid/extensions/environment-lifecycle-changes";
-import { RESET_LIMIT_UNSUPPORTED, resetCore } from "@cloudpid/extensions/environment-reset";
+import { resetCore } from "@cloudpid/extensions/environment-reset";
 import { SKILL_REPLAYED, skillCores } from "@cloudpid/extensions/environment-skill-changes";
 import { environmentGetRead, environmentListRead } from "@cloudpid/extensions/environment-reads";
 import type { HarnessRead, HarnessWrite } from "@cloudpid/extensions/harness";
@@ -42,9 +47,14 @@ import {
 } from "@cloudpid/protocol/mcp-api";
 import {
   APPROVAL_REQUEST_PREFIX,
+  type ApprovalAskToolName,
+  type ApprovalToolName,
+  type DispatchedToolName,
   GLOBAL_ID,
+  type GlobalSkillToolName,
   HARNESS_TOOLS,
   type HarnessToolName,
+  type McpWideningToolName,
   RESET_LIMIT_SETTING,
 } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
@@ -55,13 +65,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ChangeClaim, ChangeRequest } from "../registry/change-requests.ts";
 import type { AuthorSource } from "../session/change-author.ts";
+import { type ApprovalAskCall, askApproval } from "./approval-ask.ts";
+import { type CoreError, resetsMcpField } from "./approval-tools.ts";
 import type { HarnessChangeServices, HarnessServices } from "./services.ts";
-
-/** What a core's refusal carries that the dispatcher reads: the message the model sees, and the code that maps. */
-type CoreError = {
-  readonly message: string;
-  readonly code?: "not_found" | "invalid_argument" | "unsupported" | "unavailable";
-};
 
 /** The answer of a failure no code names: fixed, so a service's own message (a Registry's, a host's) is never relayed. */
 const unavailable = apiFailure(
@@ -112,8 +118,7 @@ const ENVIRONMENT_REPLAYED: Readonly<Record<EnvironmentToolName, Replayed>> = {
 
 /**
  * The words of what a tool is asked for that this stage does not serve (`unsupported`), or undefined for a call it does:
- * a change to the Skills kept Global and the reset of the size limit wait for the owner's Approval (S3b, S3a-2), and a Test
- * Build of `proposed` is S4a's. They are answered before anything is claimed or written.
+ * a Test Build of `proposed` is S4a's. They are answered before anything is claimed or written.
  */
 type Unsupported<Name extends HarnessToolName> = (args: InputOf<Name>) => string | undefined;
 
@@ -172,6 +177,154 @@ export const requestDigest = (tool: string, args: { readonly request_id?: string
       sortedJson({ tool, args: Record.remove(args as Record<string, Schema.Json>, "request_id") }),
     ),
   );
+
+/** The refusal of a `request_id` the Registry keeps for the owner's Approvals' own claims. */
+const approvalPrefix = apiFailure(
+  "invalid_argument",
+  `A request_id may not begin "${APPROVAL_REQUEST_PREFIX}": cloudpid keeps those for the owner's Approvals.`,
+);
+
+/** The ask of a change that waits for the owner's Approval, over the dispatcher's services (`askApproval`). */
+type Ask = (call: ApprovalAskCall) => Effect.Effect<ApiResult<HarnessAnswer>>;
+
+/**
+ * An asking tool's served form (`./approval-ask.ts`): the input read again, a `request_id` beginning `approval:` refused,
+ * then the ask, which answers `pending` (or `unchanged`) and claims and settles the `request_id` itself.
+ */
+const serveAsk = <Name extends ApprovalToolName>(
+  ask: Ask,
+  tool: Name,
+  newAttempt: () => string,
+  narrowing?: Served,
+): Served => {
+  const decode = decoder(tool);
+
+  return (request, caller) => {
+    const { input, requestId: given } = request;
+    const decoded = decode(input);
+
+    if (Result.isFailure(decoded)) return Effect.succeed(decoded.failure);
+
+    const args = decoded.success;
+    const requestId = given ?? args.request_id;
+
+    if (requestId?.startsWith(APPROVAL_REQUEST_PREFIX) === true) {
+      return Effect.succeed(approvalPrefix);
+    }
+
+    return ask({
+      tool,
+      args,
+      caller,
+      requestId,
+      requestDigest: requestDigest(tool, args),
+      // SAFETY: an endpoint input as its schema decoded it: JSON.
+      digest: requestDigest(tool, Record.remove(args as Record<string, Schema.Json>, "reason")),
+      attempt: newAttempt(),
+      narrowing:
+        narrowing === undefined ? undefined : Effect.suspend(() => narrowing(request, caller)),
+    });
+  };
+};
+
+/** What `settings_reset`'s routing reads of its input: the field. */
+const decodeResetField = Schema.decodeUnknownOption(Schema.Struct({ field: Schema.String }));
+
+/**
+ * Whether a `settings_reset` input names a field of an MCP server's adjustment, whose reset waits for the owner's Approval
+ * when it widens what is reachable: `resetsMcpField` (`./approval-tools.ts`) decides, as the table's pick does.
+ */
+const resetsMcpFieldInput = (input: HarnessRequest["input"]): boolean =>
+  Option.isSome(Option.filter(decodeResetField(input), ({ field }) => resetsMcpField(field)));
+
+/** What `environment_setting_reset`'s routing reads of its input: the setting. */
+const decodeResetSetting = Schema.decodeUnknownOption(Schema.Struct({ setting: Schema.String }));
+
+/**
+ * Whether a `settings_reset` input names a Limit, whose reset waits for the owner's Approval: `limitOfField` decides, as
+ * it picks the Limit's core for the ask.
+ */
+const resetsLimit = (input: HarnessRequest["input"]): boolean =>
+  Option.isSome(Option.flatMap(decodeResetField(input), ({ field }) => limitOfField(field)));
+
+/** Whether an `environment_setting_reset` input names the size limit, whose reset waits for the owner's Approval. */
+const resetsSizeLimit = (input: HarnessRequest["input"]): boolean =>
+  Option.match(decodeResetSetting(input), {
+    onNone: () => false,
+    onSome: ({ setting }) => setting === RESET_LIMIT_SETTING,
+  });
+
+/** An answer's structured value as a JSON object, or none for any other value. */
+const decodeJsonObject = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json));
+
+/** The keys a Settings change's endpoint answer always has, as an ask that changed nothing yet gives them. */
+const SETTINGS_CHANGE_KEYS = { changes: [], changes_truncated: false, unchanged: [] };
+
+/** The keys an Environment change's endpoint answer always has, as an ask that changed nothing yet gives them. */
+const ENVIRONMENT_CHANGE_KEYS = { ...SETTINGS_CHANGE_KEYS, global: null };
+
+/** The keys a Skill tool's endpoint answer always has (`SkillEndpointFields`), as an ask that changed nothing yet gives them. */
+const SKILL_CHANGE_KEYS = { ...SETTINGS_CHANGE_KEYS, unchanged_truncated: false, changed: false };
+
+/** `SkillInstallEndpointOutput`'s keys, as an ask that read and installed nothing yet gives them. */
+const SKILL_INSTALL_KEYS = {
+  ...SKILL_CHANGE_KEYS,
+  source: null,
+  installed: [],
+  installed_truncated: false,
+  refused: [],
+  refused_truncated: false,
+  listed: [],
+  listed_truncated: false,
+};
+
+/** `SkillUpdateEndpointOutput`'s keys, as an ask that updated nothing yet gives them. */
+const SKILL_UPDATE_KEYS = {
+  ...SKILL_CHANGE_KEYS,
+  updated: [],
+  updated_truncated: false,
+  refused: [],
+  refused_truncated: false,
+  nothing_marked: false,
+};
+
+/** What a Skill tool's routing reads of its input: the Scope, and the Skill a removal names. */
+const decodeSkillTarget = Schema.decodeUnknownOption(
+  Schema.Struct({ id: Schema.String, name: Schema.optionalKey(Schema.String) }),
+);
+
+/** Whether a Skill tool's input names Global, whose change waits for the owner's Approval. */
+const atGlobal = (input: HarnessRequest["input"]): boolean =>
+  Option.match(decodeSkillTarget(input), {
+    onNone: () => false,
+    onSome: ({ id }) => id === GLOBAL_ID,
+  });
+
+/** `SkillRemoveEndpointOutput`'s keys for the removal `input` asks for, as an ask that removed nothing yet gives them. */
+const skillRemoveKeys = (input: HarnessRequest["input"]) => ({
+  ...SETTINGS_CHANGE_KEYS,
+  changed: false,
+  skill: Option.match(decodeSkillTarget(input), {
+    onNone: () => "",
+    onSome: ({ name }) => name ?? "",
+  }),
+  global_served: false,
+});
+
+/**
+ * An ask's answer as a reset's endpoint output has it (`SettingsResetEndpointOutput`, `EnvironmentResetEndpointOutput`):
+ * no change made yet, with `keys`, which a change's answer always has.
+ */
+const asChangeAnswer =
+  (keys: Readonly<Record<string, Schema.Json>>) =>
+  (result: ApiResult<HarnessAnswer>): ApiResult<HarnessAnswer> => {
+    if (!result.ok) return result;
+
+    return Option.match(decodeJsonObject(result.value.structured), {
+      onNone: () => result,
+      onSome: (structured) => apiOk({ ...result.value, structured: { ...keys, ...structured } }),
+    });
+  };
 
 /** The refusal of a `request_id` an earlier call holds with another tool or other arguments. */
 const otherArguments = (id: string) =>
@@ -376,12 +529,7 @@ const serveChange = <Name extends ChangeToolName, Cores>(
       // The dispatcher reads the `request_id` from the request (`McpServer` copies it there), else from the input.
       const requestId = given ?? args.request_id;
 
-      if (requestId?.startsWith(APPROVAL_REQUEST_PREFIX) === true) {
-        return apiFailure(
-          "invalid_argument",
-          `A request_id may not begin "${APPROVAL_REQUEST_PREFIX}": cloudpid keeps those for the owner's Approvals.`,
-        );
-      }
+      if (requestId?.startsWith(APPROVAL_REQUEST_PREFIX) === true) return approvalPrefix;
 
       const digest = requestDigest(tool, args);
       const lookedUp = yield* probeAndLookUp(requestId);
@@ -440,8 +588,8 @@ export const harnessDispatch = (
       unsupported,
     );
 
-  // The Settings' and the MCP servers' tools: their scope is `scope`. A push of a server set that fails is handed on to
-  // `background` by the services (`settingsChanges`' `pushFailed`), once per host.
+  // The Settings' and the MCP servers' tools: their scope is `scope`. The push of a server set is the services'
+  // (`settingsChanges`' `sync`: `mcp.sync` under `background`, once per Environment the change reaches).
   const settingsChange = <Name extends SettingsEndpointToolName>(
     tool: Name,
     coreOf: (cores: SettingsEndpointCores) => HarnessWrite<InputOf<Name>, CoreError>,
@@ -458,14 +606,72 @@ export const harnessDispatch = (
       newAttempt,
     );
 
-  /** The words of a Skill tool's call at Global, or none for a call at an Environment: the Skills kept Global wait for the owner's Approval, which is S3b's. */
-  const globalSkillsWords = ({ id }: { readonly id: string }) =>
-    id === GLOBAL_ID
-      ? `The Skills kept Global (id "${GLOBAL_ID}") wait for the owner's Approval, which is not offered yet: name an Environment's id.`
-      : undefined;
+  const ask = askApproval(services);
+
+  // A Skill tool's change at Global asks the owner (S3b-3), its answer a change's with the request's keys; at an Environment
+  // it is made at once.
+  const skillChange = <Name extends GlobalSkillToolName>(
+    tool: Name,
+    keys: (input: HarnessRequest["input"]) => Readonly<Record<string, Schema.Json>>,
+  ): Served => {
+    const asks = serveAsk(ask, tool, newAttempt);
+    // SAFETY: the core of a tool is a `HarnessWrite` of that tool's input (`EnvironmentCores` is keyed by tool).
+    const made = change(tool, (cores) => cores[tool] as HarnessWrite<InputOf<Name>, CoreError>);
+
+    return (request, caller) =>
+      atGlobal(request.input)
+        ? Effect.map(asks(request, caller), asChangeAnswer(keys(request.input)))
+        : made(request, caller);
+  };
+
+  const asking = <Name extends ApprovalAskToolName>(tool: Name) => serveAsk(ask, tool, newAttempt);
+
+  // The MCP servers' changes that ask only when they widen: the ask's `prepare` finds whether this one does, and one that
+  // narrows is made at once by the tool's own core, as it was before the endpoint asked. Their answers are a change's, with a
+  // request's keys when one was asked.
+  const widening = <Name extends McpWideningToolName>(tool: Name): Served => {
+    const asks = serveAsk(
+      ask,
+      tool,
+      newAttempt,
+      // SAFETY: the core of a tool is a `HarnessWrite` of that tool's input (`SettingsEndpointCores` is keyed by tool).
+      settingsChange(tool, (cores) => cores[tool] as HarnessWrite<InputOf<Name>, CoreError>),
+    );
+
+    return (request, caller) =>
+      Effect.map(asks(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS));
+  };
+
+  // `settings_reset` of a Limit asks the owner, as the Limit tools do; of an MCP server's key it asks when it widens, as the
+  // MCP tools do; any other field is reset at once.
+  const resetChange = settingsChange("settings_reset", (cores) => cores.settings_reset);
+  const resetAsk = serveAsk(ask, "settings_reset", newAttempt);
+  const resetMcpAsk = serveAsk(ask, "settings_reset", newAttempt, resetChange);
+
+  const settingsReset: Served = (request, caller) =>
+    resetsLimit(request.input)
+      ? Effect.map(resetAsk(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS))
+      : resetsMcpFieldInput(request.input)
+        ? Effect.map(resetMcpAsk(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS))
+        : resetChange(request, caller);
+
+  // `environment_setting_reset` of the size limit asks the owner, as `environment_container_size_limit_set` does; any
+  // other setting is reset at once.
+  const sizeLimitReset = serveAsk(ask, "environment_setting_reset", newAttempt);
+
+  const settingReset = change(
+    "environment_setting_reset",
+    (cores) => cores.environment_setting_reset,
+  );
+
+  const environmentSettingReset: Served = (request, caller) =>
+    resetsSizeLimit(request.input)
+      ? Effect.map(sizeLimitReset(request, caller), asChangeAnswer(ENVIRONMENT_CHANGE_KEYS))
+      : settingReset(request, caller);
 
   // The tools `harness` serves: the same names as `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which `dispatch.test.ts` checks.
-  const table: Record<HarnessToolName, Served> = {
+  // `approval_wait` and `approval_withdraw` have operations of their own.
+  const table: Record<DispatchedToolName, Served> = {
     environment_list: serveRead("environment_list", environmentListRead(services.environments)),
     environment_get: serveRead("environment_get", environmentGetRead(services.environments)),
     settings_get: serveRead("settings_get", settingsGetRead(services.settings)),
@@ -533,7 +739,7 @@ export const harnessDispatch = (
       "settings_extension_set",
       (cores) => cores.settings_extension_set,
     ),
-    settings_reset: settingsChange("settings_reset", (cores) => cores.settings_reset),
+    settings_reset: settingsReset,
     settings_mcp_reload: serveRead(
       "settings_mcp_reload",
       mcpReloadCore(services.settingsMcpReload),
@@ -542,18 +748,9 @@ export const harnessDispatch = (
       "settings_mcp_disable",
       (cores) => cores.settings_mcp_disable,
     ),
-    settings_mcp_exposure_set: settingsChange(
-      "settings_mcp_exposure_set",
-      (cores) => cores.settings_mcp_exposure_set,
-    ),
-    settings_mcp_tool_exposure_set: settingsChange(
-      "settings_mcp_tool_exposure_set",
-      (cores) => cores.settings_mcp_tool_exposure_set,
-    ),
-    settings_mcp_remove: settingsChange(
-      "settings_mcp_remove",
-      (cores) => cores.settings_mcp_remove,
-    ),
+    settings_mcp_exposure_set: widening("settings_mcp_exposure_set"),
+    settings_mcp_tool_exposure_set: widening("settings_mcp_tool_exposure_set"),
+    settings_mcp_remove: widening("settings_mcp_remove"),
     environment_create: change("environment_create", (cores) => cores.environment_create),
     environment_rename: change("environment_rename", (cores) => cores.environment_rename),
     environment_repo_add: change("environment_repo_add", (cores) => cores.environment_repo_add),
@@ -569,26 +766,21 @@ export const harnessDispatch = (
           ? undefined
           : "A Test Build of proposed changes is not offered yet: call environment_rebuild without proposed for a Build of the saved settings.",
     ),
-    environment_skill_install: change(
-      "environment_skill_install",
-      (cores) => cores.environment_skill_install,
-      globalSkillsWords,
-    ),
-    environment_skill_update: change(
-      "environment_skill_update",
-      (cores) => cores.environment_skill_update,
-      globalSkillsWords,
-    ),
-    environment_skill_remove: change(
-      "environment_skill_remove",
-      (cores) => cores.environment_skill_remove,
-      globalSkillsWords,
-    ),
-    environment_setting_reset: change(
-      "environment_setting_reset",
-      (cores) => cores.environment_setting_reset,
-      ({ setting }) => (setting === RESET_LIMIT_SETTING ? RESET_LIMIT_UNSUPPORTED : undefined),
-    ),
+    environment_skill_install: skillChange("environment_skill_install", () => SKILL_INSTALL_KEYS),
+    environment_skill_update: skillChange("environment_skill_update", () => SKILL_UPDATE_KEYS),
+    environment_skill_remove: skillChange("environment_skill_remove", skillRemoveKeys),
+    environment_setting_reset: environmentSettingReset,
+    // The tools that wait for the owner's Approval: they ask, and answer `pending` (`./approval-ask.ts`).
+    settings_spend_limit_set: asking("settings_spend_limit_set"),
+    settings_subagent_depth_set: asking("settings_subagent_depth_set"),
+    settings_subagent_workspaces_set: asking("settings_subagent_workspaces_set"),
+    settings_instructions_set: asking("settings_instructions_set"),
+    settings_mcp_add: asking("settings_mcp_add"),
+    settings_mcp_update: asking("settings_mcp_update"),
+    settings_mcp_enable: asking("settings_mcp_enable"),
+    environment_container_size_limit_set: asking("environment_container_size_limit_set"),
+    environment_delete: asking("environment_delete"),
+    environment_secret_delete: asking("environment_secret_delete"),
   };
 
   // Looked up by a name the caller sent: only the table's own keys are tools.

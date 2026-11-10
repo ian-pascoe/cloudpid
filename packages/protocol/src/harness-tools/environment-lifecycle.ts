@@ -2,8 +2,8 @@
 // Settings tools → Names and surfaces, The tools): `environment_create`, `environment_rename`, `environment_repo_add`,
 // `environment_repo_remove` and `environment_rebuild`. The in-session descriptions, parameters and output schemas stay
 // as they were (the snapshot in `packages/extensions/src/harness-session.test.ts` pins them). The endpoint's sentences
-// name the owner and no Session, and no tool the endpoint does not serve (a Test Build's tools and `environment_delete`
-// are later stages'); every endpoint input takes `request_id`, and every endpoint output is a flat object. The endpoint
+// name the owner and no Session, and no tool the endpoint does not serve (a Test Build's tools are a later stage's;
+// `environment_delete` asks the owner, `./approvals.ts`); every endpoint input takes `request_id`, and every endpoint output is a flat object. The endpoint
 // takes `proposed` of `environment_rebuild` (a Test Build, S4a) so that it is refused as unsupported, never dropped and
 // answered with a real Build.
 // @effect-diagnostics missingPipeableSignature:off

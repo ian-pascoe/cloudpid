@@ -1,13 +1,37 @@
-import { SUPPORTED_MODELS } from "@cloudpid/config";
+// @effect-diagnostics preferEffectArray:off
+import type { CatalogModel, ModelCatalog } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
 import {
   agentSelect,
   FOLLOW_DEFAULT,
   isLevel,
   modelChoices,
+  modelGroups,
+  modelLabel,
   modelName,
   pickedChange,
+  UNLISTED_GROUP,
 } from "./models.ts";
+
+const model = (id: string, name: string, ownedBy: string): CatalogModel => ({
+  id,
+  name,
+  ownedBy,
+  contextWindow: 1_000_000,
+  maxTokens: 128_000,
+});
+
+/** A catalog as the proxy lists it: servers in no order, names that sort by their numbers. */
+const CATALOG: ModelCatalog = {
+  models: [
+    model("anthropic/claude-fable-5-dd-5-tpg", "GPT-5", "opencode"),
+    model("anthropic/claude-opus-5-10", "Claude Opus 5.10", "anthropic"),
+    model("anthropic/claude-opus-5-5", "Claude Opus 5.5", "anthropic"),
+    model("anthropic/claude-fable-5-dd-weiverp-pans-qbus", "SubQ Snap", "subquadratic"),
+    model("anthropic/claude-fable-5-2", "Claude Fable 5.2", "antigravity"),
+  ],
+  fetchedAt: 1,
+};
 
 describe("a model and thinking level picked together", () => {
   it("ask for both, or to follow the default for either", () => {
@@ -21,8 +45,8 @@ describe("a model and thinking level picked together", () => {
     });
   });
 
-  it("leave a model the settings no longer accept as it is", () => {
-    expect(pickedChange("anthropic/claude-retired-1", "low")).toEqual({ thinkingLevel: "low" });
+  it("leave a value that is not a model's id as it is", () => {
+    expect(pickedChange("claude-retired-1", "low")).toEqual({ thinkingLevel: "low" });
   });
 
   it("know the thinking levels", () => {
@@ -39,13 +63,47 @@ describe("model names", () => {
 });
 
 describe("the models to offer", () => {
-  it("are the ones the settings accept", () => {
-    expect(modelChoices(null)).toEqual(SUPPORTED_MODELS);
-    expect(modelChoices("anthropic/claude-opus-5-5")).toEqual(SUPPORTED_MODELS);
+  it("are the catalog's, grouped by who serves them, anthropic first, each group by name", () => {
+    expect(
+      modelGroups(CATALOG, "anthropic/claude-opus-5-5").map((group) => [
+        group.label,
+        group.models.map((each) => each.name),
+      ]),
+    ).toEqual([
+      ["anthropic", ["Claude Opus 5.5", "Claude Opus 5.10"]],
+      ["antigravity", ["Claude Fable 5.2"]],
+      ["opencode", ["GPT-5"]],
+      ["subquadratic", ["SubQ Snap"]],
+    ]);
+    expect(modelChoices(CATALOG, null)).toEqual([
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-opus-5-10",
+      "anthropic/claude-fable-5-2",
+      "anthropic/claude-fable-5-dd-5-tpg",
+      "anthropic/claude-fable-5-dd-weiverp-pans-qbus",
+    ]);
   });
 
-  it("include the model a Session runs when the settings no longer list it", () => {
-    expect(modelChoices("anthropic/retired")).toEqual([...SUPPORTED_MODELS, "anthropic/retired"]);
+  it("include the value held when the catalog does not list it, in a group of its own", () => {
+    expect(modelGroups(CATALOG, "anthropic/retired").at(-1)).toEqual({
+      label: UNLISTED_GROUP,
+      models: [
+        {
+          id: "anthropic/retired",
+          name: "retired",
+          ownedBy: "anthropic",
+          contextWindow: 0,
+          maxTokens: 0,
+        },
+      ],
+    });
+    expect(modelChoices(CATALOG, "anthropic/retired").at(-1)).toBe("anthropic/retired");
+    expect(modelGroups(CATALOG, "")).toHaveLength(4);
+  });
+
+  it("are named by the catalog's display name, or by id when it does not list them", () => {
+    expect(modelLabel(CATALOG, "anthropic/claude-fable-5-dd-5-tpg")).toBe("GPT-5");
+    expect(modelLabel(CATALOG, "anthropic/retired")).toBe("retired");
   });
 });
 
