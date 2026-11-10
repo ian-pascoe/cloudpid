@@ -7,6 +7,7 @@
 import {
   type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
+  FALLBACK_CATALOG,
   overridesFrom,
   resolveOverridesLeniently,
   type Settings,
@@ -427,6 +428,7 @@ const setUp = async ({
             });
           }),
         own: Effect.succeed(current),
+        models: Effect.succeed(FALLBACK_CATALOG),
         change: ({ scope, changes, author }) =>
           Effect.sync(() => {
             calls.settings.push({ scope, changes, author });

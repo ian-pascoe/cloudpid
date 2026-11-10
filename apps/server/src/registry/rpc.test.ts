@@ -3,6 +3,7 @@
 import {
   DEFAULT_CONTAINER_SETTINGS,
   DEFAULT_SETTINGS,
+  FALLBACK_CATALOG,
   parseMcpField,
   resolveContainerOverridesLeniently,
   SettingsError,
@@ -1530,6 +1531,7 @@ const fakeRegistries = () => {
         calls.push(`forgetLegacy:${object.kind}:${object.id}`);
         remove(legacyObjects, (held) => held.kind === object.kind && held.id === object.id);
       }),
+    getModelCatalog: () => Effect.succeed(FALLBACK_CATALOG),
     getSettings: () =>
       Effect.sync(() => {
         calls.push("getSettings");

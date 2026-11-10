@@ -1,6 +1,7 @@
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- a fake backend is cut down to what a case reads. */
 // docs/architecture/mcp-endpoint.md → The `api` target, Limits and errors: the service over a fake Registry and Sessions.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
+import { FALLBACK_CATALOG } from "@cloudpid/config";
 import {
   apiFailure,
   apiOk,
@@ -87,6 +88,7 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
       createdAt: 1,
     }),
   defaultModel: Effect.succeed("anthropic/claude-opus"),
+  models: Effect.succeed(FALLBACK_CATALOG),
   status: () =>
     Effect.succeed({
       ok: true as const,
@@ -704,6 +706,8 @@ describe("start", () => {
 
     const bad = await Promise.all([
       run(api.start({ text: "go", model: "gpt-nope", via: VIA })),
+      // Well formed, but not one the Model catalog lists.
+      run(api.start({ text: "go", model: "anthropic/claude-nope", via: VIA })),
       run(api.start({ text: "go", thinking: "turbo", via: VIA })),
       run(api.start({ text: "go", branch: "a..b", via: VIA })),
       run(api.start({ text: "go", branch: "cloudpid/spare", via: VIA })),
@@ -724,6 +728,19 @@ describe("start", () => {
     expect(large).toMatchObject({ ok: false, error: { code: "input_too_large" } });
     expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("checks a model against the fallback catalog when the Registry can't say, as environments_list lists it", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession, models: Effect.die(new Error("Registry is down")) });
+
+    expect(
+      await run(api.start({ text: "go", model: "anthropic/claude-fable-5-2", via: VIA })),
+    ).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(
+      await run(api.start({ text: "go", model: "anthropic/claude-opus-5-5", via: VIA })),
+    ).toMatchObject({ ok: true });
   });
 
   it("answers the cap, a taken branch and a missing Environment with their codes, and sends nothing", async () => {

@@ -7,6 +7,7 @@ import {
   DEFAULT_SETTINGS,
   overrideFields,
   overridesFrom,
+  type ModelCatalog,
   resolveOverridesLeniently,
   type Settings,
 } from "@cloudpid/config";
@@ -71,6 +72,27 @@ type FakeStart = {
   readonly own?: string | null;
   /** How many MCP servers each Scope has, by scope ("*" for Global); not said for one that is left out. */
   readonly mcpServers?: Readonly<Record<string, number>>;
+};
+
+/** A Model catalog as the Registry read it from the proxy: a Claude model, and one the proxy serves under an alias. */
+const CATALOG: ModelCatalog = {
+  models: [
+    {
+      id: "anthropic/claude-fable-5-2",
+      name: "Claude Fable 5.2",
+      ownedBy: "opencode",
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    },
+    {
+      id: "anthropic/claude-fable-5-dd-5-tpg",
+      name: "GPT-5",
+      ownedBy: "opencode",
+      contextWindow: 400_000,
+      maxTokens: 128_000,
+    },
+  ],
+  fetchedAt: 1_000,
 };
 
 /**
@@ -200,6 +222,7 @@ const fakeSettings = (
         });
       }),
     own: Effect.succeed(own),
+    models: Effect.succeed(CATALOG),
     change: ({ scope, changes, author }) =>
       Effect.suspend(() => {
         const environment = held[scope];
@@ -382,6 +405,42 @@ describe("the settings tools", () => {
       failure: expect.stringContaining(
         "settings_get is unknown or outside your capability ceiling",
       ),
+    });
+  });
+});
+
+describe("models_list", () => {
+  it("lists the Model catalog's models, narrowed by query, with their names, servers and windows", async () => {
+    const tool = await toolsOver(fakeSettings({}).service);
+
+    const all = await run(tool("models_list"), {});
+
+    // The text shows each model's id, its name and who serves it; its wording is free.
+    expect(text(all)).toContain("anthropic/claude-fable-5-2");
+    expect(text(all)).toContain("Claude Fable 5.2");
+    expect(all.structuredOutput).toMatchObject({
+      total: 2,
+      fetched_at: "1970-01-01T00:00:01.000Z",
+    });
+
+    const gpt = await run(tool("models_list"), { query: "gpt" });
+
+    expect(gpt.structuredOutput).toEqual({
+      models: [
+        {
+          id: "anthropic/claude-fable-5-dd-5-tpg",
+          name: "GPT-5",
+          owned_by: "opencode",
+          context_window: 400_000,
+          max_tokens: 128_000,
+        },
+      ],
+      total: 2,
+      fetched_at: "1970-01-01T00:00:01.000Z",
+    });
+    expect((await run(tool("models_list"), { query: "nope" })).structuredOutput).toMatchObject({
+      models: [],
+      total: 2,
     });
   });
 });

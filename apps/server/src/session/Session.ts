@@ -31,7 +31,6 @@ import { WebConfig } from "@cloudpid/extensions/web";
 import { telemetryLayer, tracingModels, tracingTools, workersTelemetry } from "@cloudpid/telemetry";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
-import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as HttpBody from "effect/http/HttpBody";
@@ -45,6 +44,7 @@ import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
+import { ModelProxyConfig } from "../model-proxy.ts";
 import { APP_ORIGIN_VAR, LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
@@ -94,6 +94,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import {
   instructionsSettings,
   reloadSessionExtensions,
+  SessionSettings,
   sessionSettingsLayer,
   subagentSettings,
   toolSearchSettings,
@@ -172,21 +173,6 @@ const NAME_KEY = "session-name";
  * to Environments (ADR-0016), and until then are not listed, so they never read one.
  */
 const PLACEMENT_KEY = "workspace-placement";
-
-/** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
-export class ModelProxyConfig extends Context.Service<
-  ModelProxyConfig,
-  { readonly url: Redacted.Redacted<string>; readonly apiKey: Redacted.Redacted<string> }
->()("@cloudpid/server/session/Session/ModelProxyConfig") {}
-
-/** Reads `MODEL_PROXY_URL` and `MODEL_PROXY_API_KEY`: from the deploying environment, then from the Worker's secrets. */
-export const ModelProxyConfigLive = Layer.effect(
-  ModelProxyConfig,
-  Config.all({
-    url: Config.Redacted("MODEL_PROXY_URL"),
-    apiKey: Config.Redacted("MODEL_PROXY_API_KEY"),
-  }),
-);
 
 /**
  * What the Session DO answers: its alarm, and its clients' sockets (`docs/architecture/client-and-protocol.md`). `fetch`
@@ -355,11 +341,6 @@ export const SessionLive = Session.make(
             Effect.withSpan(name),
             Effect.provideService(Tracer.Tracer, telemetry.tracer),
           );
-
-        const models = proxyModels({
-          url: Redacted.value(proxy.url),
-          apiKey: Redacted.value(proxy.apiKey),
-        });
 
         // The Session's name is its ID in the Registry. Instances are told it when addressed by name, as every Session
         // is; it is kept so one that is not, such as an alarm's, still has it.
@@ -1037,11 +1018,27 @@ export const SessionLive = Session.make(
                 storage: state.raw.storage,
                 // Every model call (generations, summaries) is scrubbed of the Secrets this Session holds.
                 // Each request is a span too, measured where it leaves for the proxy.
-                models: Effect.map(Effect.service(Secrets), (held) =>
-                  tracingModels(
-                    scrubbingModels(absentToolFlatteningModels(imageLimitedModels(models)), held),
-                    telemetry.context,
-                  ),
+                // The models are the Model catalog's the Session last read with its settings (ADR-0052).
+                models: Effect.map(
+                  Effect.all([Effect.service(Secrets), Effect.service(SessionSettings)]),
+                  ([held, sessionSettings]) =>
+                    tracingModels(
+                      scrubbingModels(
+                        absentToolFlatteningModels(
+                          imageLimitedModels(
+                            proxyModels(
+                              {
+                                url: Redacted.value(proxy.url),
+                                apiKey: Redacted.value(proxy.apiKey),
+                              },
+                              () => sessionSettings.current().models,
+                            ),
+                          ),
+                        ),
+                        held,
+                      ),
+                      telemetry.context,
+                    ),
                 ),
                 reset: (reason) => state.raw.abort(reason),
                 // Read where the Session and its Subagent Workspaces work, without readying them: it starts nothing.

@@ -332,6 +332,10 @@ _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a me
 The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options), kept Global and as an Environment's Overrides. Each Session reads its Environment's, resolved over Global and the defaults, before its next request.
 _Avoid_: Config, preferences
 
+**Model catalog**:
+The models the model proxy serves, each with its display name and who serves it, as the Registry last read them from the proxy (every 15 minutes at most), or a built-in fallback of four Claude models before it ever has. A model the Settings, a pick or a Trigger names must be one it lists when it is written; one it stops listing is ignored where it is read.
+_Avoid_: Supported models, model list, Catalog (alone)
+
 **Settings page**:
 The one page where the owner configures cloudpid, for the Scope picked at its top: the Settings, Environments, Workspaces, Triggers, Skills, Variables, Secrets, Notifications and Agent changes, each in a Settings section.
 _Avoid_: Preferences, admin page
@@ -353,7 +357,7 @@ What a Session has spent on model requests: tokens by kind and the cost in US do
 _Avoid_: Billing, tokens (for the whole figure)
 
 **Spend limit**:
-The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on. A Sampling request at the limit is refused, and the Run goes on.
+The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on. A Sampling request at the limit is refused, and the Run goes on. A model the Model catalog lists that cloudpid knows no price for is counted at zero cost.
 _Avoid_: Budget, quota, cap
 
 ## The agent's changes to its harness

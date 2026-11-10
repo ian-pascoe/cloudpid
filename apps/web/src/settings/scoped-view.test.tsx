@@ -198,7 +198,9 @@ describe("a Settings section at an Environment", () => {
 
         expect(model).not.toBe("");
         expect(model).toContain("border-dashed");
-        expect(fieldOf(markup, "model")).toContain(`<option value="${SONNET}" selected="">`);
+        expect(fieldOf(markup, "model")).toContain(
+          `<option value="${SONNET}" title="${SONNET}" selected="">`,
+        );
         expect(thinking).not.toContain("border-dashed");
         expect(fieldOf(markup, "thinkingLevel")).toContain('<option value="low" selected="">');
         expect(markup).not.toContain("Overridden in");
@@ -257,7 +259,7 @@ describe("a Settings section at an Environment", () => {
       expect(markOf(markup, "roles.small")).toBe("Inherited, Override");
       // The Role shows Global's model again.
       expect(fieldOf(markup, "roles.small")).toContain(
-        `<option value="${DEFAULT_SETTINGS.roles.small.model}" selected="">`,
+        `<option value="${DEFAULT_SETTINGS.roles.small.model}" title="${DEFAULT_SETTINGS.roles.small.model}" selected="">`,
       );
       expect(markOf(markup, "model")).toBe("Overridden, Reset to Global");
 

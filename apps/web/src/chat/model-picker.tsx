@@ -1,11 +1,11 @@
 // The model and thinking level the Session's next request runs with, as one chip in the composer's toolbar. Its menu
-// lists the models; each opens a submenu of the thinking levels, and picking a level picks both. On a wide screen the
+// lists the Model catalog's models by display name, grouped by who serves them (ADR-0052); each opens a submenu of the thinking levels, and picking a level picks both. On a wide screen the
 // submenu sits beside the models and follows the one hovered or focused; on a phone a tap on a model goes into its
 // levels, with a row back to the models.
 
 import { THINKING_LEVELS } from "@cloudpid/config";
 import type { SessionView } from "@cloudpid/protocol";
-import { useAtom } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
@@ -23,7 +23,15 @@ import {
 } from "react";
 import { popoverPanel, useAnchoredPopover } from "../components/ui/popover.tsx";
 import { cn } from "../lib/utils.ts";
-import { agentSelect, FOLLOW_DEFAULT, modelChoices, modelName, pickedChange } from "../models.ts";
+import {
+  agentSelect,
+  FOLLOW_DEFAULT,
+  modelGroups,
+  modelLabel,
+  modelName,
+  pickedChange,
+} from "../models.ts";
+import { modelCatalogStateAtom } from "../settings.ts";
 import type { ConfigureChange, Picked } from "../session/state.ts";
 
 /** Opens the picker from elsewhere, as `/model` and `/thinking` do without an argument. */
@@ -77,6 +85,7 @@ const Picker = ({
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [state, setState] = useAtom(PickerScope.use());
+  const catalog = useAtomValue(modelCatalogStateAtom);
   // The list to move the focus into once the next render is on screen.
   const pendingFocus = useRef<"models" | "levels" | null>(null);
   const shownView = useRef(state.view);
@@ -87,11 +96,11 @@ const Picker = ({
   const shownModel = model === null ? null : modelName(model);
   const modelChoice = agentSelect(model, picked.model, shownModel);
   const levelChoice = agentSelect(view.thinkingLevel, picked.thinkingLevel);
-  const models = [FOLLOW_DEFAULT, ...modelChoices(model)];
+  const groups = modelGroups(catalog, model);
   const levels = [FOLLOW_DEFAULT, ...THINKING_LEVELS];
 
-  const modelLabel = (choice: string) =>
-    choice === FOLLOW_DEFAULT ? modelChoice.defaultLabel : modelName(choice);
+  const modelRowLabel = (choice: string) =>
+    choice === FOLLOW_DEFAULT ? modelChoice.defaultLabel : modelLabel(catalog, choice);
 
   const levelLabel = (choice: string) =>
     choice === FOLLOW_DEFAULT ? levelChoice.defaultLabel : choice;
@@ -180,8 +189,42 @@ const Picker = ({
     }
   };
 
+  /** One model's row of the menu, or the default's (`FOLLOW_DEFAULT`). */
+  const modelRow = (choice: string) => {
+    const checked = choice === modelChoice.value;
+    const open = choice === state.model;
+
+    return (
+      <button
+        key={choice}
+        type="button"
+        data-row
+        data-value={choice}
+        role="menuitemradio"
+        aria-checked={checked}
+        aria-haspopup="menu"
+        aria-expanded={open && state.view === "levels"}
+        title={choice === FOLLOW_DEFAULT ? undefined : choice}
+        onClick={() => {
+          goToLevels(choice);
+        }}
+        onFocus={() => {
+          if (!open) setState({ ...state, model: choice });
+        }}
+        onPointerEnter={(event) => {
+          if (event.pointerType === "mouse" && !open) setState({ ...state, model: choice });
+        }}
+        className={cn(row, open && "sm:bg-accent/60")}
+      >
+        <Mark checked={checked} />
+        <span className="min-w-0 flex-1 truncate">{modelRowLabel(choice)}</span>
+        <ChevronRight className="text-muted-foreground" aria-hidden />
+      </button>
+    );
+  };
+
   const following = (isPicked: boolean) => (isPicked ? "" : ", the default");
-  const submenuFor = modelLabel(state.model);
+  const submenuFor = modelRowLabel(state.model);
 
   return (
     <>
@@ -232,44 +275,13 @@ const Picker = ({
           )}
         >
           <ListLabel>Model</ListLabel>
-          {Arr.map(models, (choice) => {
-            const checked = choice === modelChoice.value;
-            const open = choice === state.model;
-
-            return (
-              <button
-                key={choice}
-                type="button"
-                data-row
-                data-value={choice}
-                role="menuitemradio"
-                aria-checked={checked}
-                aria-haspopup="menu"
-                aria-expanded={open && state.view === "levels"}
-                onClick={() => {
-                  goToLevels(choice);
-                }}
-                onFocus={() => {
-                  if (!open) setState({ ...state, model: choice });
-                }}
-                onPointerEnter={(event) => {
-                  if (event.pointerType === "mouse" && !open) setState({ ...state, model: choice });
-                }}
-                className={cn(row, open && "sm:bg-accent/60")}
-              >
-                <Mark checked={checked} />
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate",
-                    choice !== FOLLOW_DEFAULT && "font-mono text-[0.8125rem]",
-                  )}
-                >
-                  {modelLabel(choice)}
-                </span>
-                <ChevronRight className="text-muted-foreground" aria-hidden />
-              </button>
-            );
-          })}
+          {modelRow(FOLLOW_DEFAULT)}
+          {Arr.map(groups, (group) => (
+            <div key={group.label} role="group" aria-label={group.label} className="flex flex-col">
+              <ListLabel>{group.label}</ListLabel>
+              {Arr.map(group.models, (each) => modelRow(each.id))}
+            </div>
+          ))}
         </div>
         <div
           data-list="levels"
@@ -286,7 +298,7 @@ const Picker = ({
             className={cn(row, "text-muted-foreground sm:hidden")}
           >
             <ChevronLeft aria-hidden />
-            <span className="min-w-0 truncate font-mono text-[0.8125rem]">{submenuFor}</span>
+            <span className="min-w-0 truncate">{submenuFor}</span>
           </button>
           <ListLabel>Thinking level</ListLabel>
           {Arr.map(levels, (choice) => {

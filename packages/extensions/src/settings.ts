@@ -1,7 +1,8 @@
 // The `settings` extension (`docs/architecture/agent-changes.md`, ADR-0019): the agent's tools for the Settings the owner edits
 // on the Settings page, one tool for each thing it may change: `settings_get`, `settings_model_set`,
 // `settings_role_set`, `settings_tool_offer`, `settings_tool_defer`, `settings_compaction_set`,
-// `settings_branch_summary_set` and `settings_extension_set`. The Limits (`spendLimit.perSession`, the subagent
+// `settings_branch_summary_set` and `settings_extension_set`, with `models_list`, the Model catalog the model tools take
+// (`./models-list.ts`, ADR-0052). The Limits (`spendLimit.perSession`, the subagent
 // depth and the Subagent Workspace limit) are not among them: their tools wait for the owner's Approval
 // (`./approval-tools.ts`), as `settings_reset` does for a Limit. Every tool takes a required `scope` (ADR-0027): `*` for Global, or an Environment's id, whose Overrides
 // it reads and changes. Each change is an Agent change: the Registry applies it as the owner's save is applied and
@@ -15,6 +16,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
+  type ModelCatalog,
   overrideValue,
   resetsOverride,
   matchesToolPattern,
@@ -56,7 +58,14 @@ import {
   loggedOf,
   toolResult,
 } from "./harness.ts";
-import { APPROVED, outputSchema } from "./outputs.ts";
+import {
+  MODELS_LIST_DESCRIPTION,
+  MODELS_LIST_NAME,
+  modelsList,
+  ModelsListInput,
+  ModelsListOutput,
+} from "./models-list.ts";
+import { APPROVED, asOutput, outputSchema } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
@@ -146,6 +155,8 @@ export type SettingsAccessService = {
     /** An agent's MCP change: what the Registry checks again in the transaction that writes it (`McpChangeGuard`). */
     readonly guard?: McpChangeGuard | undefined;
   }) => Effect.Effect<AppliedSettingsChange, SettingsAccessError>;
+  /** The Model catalog (ADR-0052): the models a change of a model may name, as the Registry keeps them. */
+  readonly models: Effect.Effect<ModelCatalog, SettingsAccessError>;
 };
 
 export class SettingsAccess extends Context.Service<SettingsAccess, SettingsAccessService>()(
@@ -324,7 +335,7 @@ export type SettingsChangeRequest = {
 export type SettingsChangeServices = {
   /** Where the change is made from: a Session's words say "this Session" and "the user"; the endpoint's neither. */
   readonly surface: Surface;
-  readonly access: SettingsAccessService;
+  readonly access: Omit<SettingsAccessService, "models">;
   /** Where the Session reads the Settings again after a change; the endpoint has no Session, and reads nothing. */
   readonly reload: Effect.Effect<SettingsApplied>;
   /** Where each change made is told, for the Run's Notification (a Session's) or for the answer's `logged` (the cores'). */
@@ -1183,8 +1194,22 @@ export const SettingsTools: Effect.Effect<
       inSession(cores.settings_extension_set(args, "session", api.conversationId)),
   });
 
+  const listModels = modelsList(access.models);
+
+  const models = yield* defineEffectTool({
+    name: MODELS_LIST_NAME,
+    description: MODELS_LIST_DESCRIPTION,
+    parameters: ModelsListInput,
+    structuredOutputSchema: outputSchema(ModelsListOutput),
+    replay: "safe",
+    execute: (args) =>
+      Effect.map(listModels(args), ({ text, structured }) =>
+        toolResult({ text, structured: asOutput(ModelsListOutput, structured), details: null }),
+      ),
+  });
+
   return defineExtension({
     name: extensionName,
-    tools: [get, model, role, offer, defer, compaction, branchSummary, extension],
+    tools: [get, model, role, offer, defer, compaction, branchSummary, extension, models],
   });
 });

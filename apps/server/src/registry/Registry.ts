@@ -8,7 +8,7 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import type { ContainerPatch, ContainerSettings } from "@cloudpid/config";
+import type { ContainerPatch, ContainerSettings, ModelCatalog } from "@cloudpid/config";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import type {
   McpPending,
@@ -174,6 +174,8 @@ import { APP_ORIGIN_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import type { CloudpidReportAnswer } from "@cloudpid/extensions/cloudpid-report";
 import { type AgentCloudpidReportInput, registryCloudpidReports } from "./cloudpid-reports.ts";
 import { PushConfig } from "../push/config.ts";
+import { ModelProxyConfig } from "../model-proxy.ts";
+import { modelCatalogKeeper } from "./model-catalog.ts";
 import { pushNotifier, pushOwner } from "../push/notify.ts";
 import {
   describeApproval,
@@ -1071,6 +1073,11 @@ export type RegistryMethods = {
     readonly session: string;
   }) => Effect.Effect<SessionSettingsSource>;
   /**
+   * The Model catalog (ADR-0052): the models the model proxy lists, read from it again first when the kept copy is older
+   * than its TTL; the kept copy when that read fails, and the built-in fallback before any read succeeded.
+   */
+  readonly getModelCatalog: () => Effect.Effect<ModelCatalog>;
+  /**
    * The host's pull (`docs/architecture/mcp-configuration.md` → From the Registry to the host): `environment`'s MCP server
    * set's hash with a new `revision`, noted as handed to the host, and the set unless the host holds it (`heldHash`;
    * none held is the empty set). An Environment the Registry does not list gets neither revision nor set. For the
@@ -1394,10 +1401,52 @@ export const registryMethods = Effect.suspend(() =>
     secrets: SecretsConfig,
     github: GitHubAppConfig,
     worker: Cloudflare.WorkerEnvironment,
+    // Where the Model catalog is read from: none in a test that provides no proxy, which keeps the fallback.
+    proxy: Effect.serviceOption(ModelProxyConfig),
   }).pipe(
-    Effect.map(({ state, push, secrets, github, worker }) =>
+    Effect.map(({ state, push, secrets, github, worker, proxy }) =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
+
+        // The Model catalog (ADR-0052): read from the proxy by this object alone, kept in its document table.
+        const catalog = modelCatalogKeeper({
+          documents: store,
+          proxy: Option.getOrUndefined(
+            Option.map(proxy, ({ url, apiKey }) => ({
+              url: Redacted.value(url),
+              apiKey: Redacted.value(apiKey),
+            })),
+          ),
+          // @effect-diagnostics-next-line globalDate:off -- the keeper is Promise code, read outside any Effect.
+          now: () => Date.now(),
+        });
+
+        /** Read the proxy's catalog again if the kept one is stale; a read that fails is logged and the copy kept. */
+        const refreshCatalog = Effect.promise(() => catalog.refresh()).pipe(
+          Effect.flatMap((outcome) =>
+            outcome.status === "failed"
+              ? Effect.logWarning(
+                  `Reading the Model catalog from the model proxy failed; the kept one is used: ${outcome.message}`,
+                )
+              : Effect.void,
+          ),
+        );
+
+        /**
+         * `method`, run after `refreshCatalog`: every method that writes a model (the Settings, an Environment's Overrides,
+         * Triggers, the Agent changes of either and their reverts) is wrapped in it, so its model is checked against a
+         * catalog read lately, not the fallback a new object starts with (ADR-0052).
+         */
+        const catalogFirst =
+          <Args extends ReadonlyArray<unknown>, A, E, R>(
+            method: (...args: Args) => Effect.Effect<A, E, R>,
+          ) =>
+          (...args: Args): Effect.Effect<A, E, R> =>
+            Effect.andThen(
+              refreshCatalog,
+              Effect.suspend(() => method(...args)),
+            );
+
         const changes = openAgentChanges(state.raw.storage);
         const triggers = openTriggers(state.raw.storage, store);
         const triggerChanges = openTriggerChanges(state.raw.storage, store, triggers, changes);
@@ -2008,7 +2057,7 @@ export const registryMethods = Effect.suspend(() =>
                 ? null
                 : changes.list(environment),
             ),
-          revertAgentChange: ({ environment, change }) =>
+          revertAgentChange: catalogFirst(({ environment, change }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
@@ -2021,6 +2070,7 @@ export const registryMethods = Effect.suspend(() =>
                 skills,
               );
             }),
+          ),
           dismissAgentChange: ({ environment, change }) =>
             Effect.sync(() => changes.dismiss(environment, change)),
           changeRequest: ({ id }) =>
@@ -2390,7 +2440,7 @@ export const registryMethods = Effect.suspend(() =>
               ...readSettings(store),
               overriddenIn: settingsOverriddenIn(store),
             })),
-          updateSettings: ({ overrides }) =>
+          updateSettings: catalogFirst(({ overrides }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now): SettingsUpdate => {
                 const saved = writeSettings(store, overrides, now);
@@ -2402,14 +2452,16 @@ export const registryMethods = Effect.suspend(() =>
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
             ),
+          ),
           getSettingsOverrides: ({ environment }) =>
             Effect.sync(() => readSettingsOverrides(store, environment)),
-          updateSettingsOverrides: ({ environment, set, reset }) =>
+          updateSettingsOverrides: catalogFirst(({ environment, set, reset }) =>
             Effect.sync(() =>
               settingsOverridesUpdate(
                 updateSettingsOverrides(state.raw.storage, store, environment, { set, reset }),
               ),
             ),
+          ),
           updateEnvironmentInstructions: ({ environment, instructions }) =>
             Effect.sync(() =>
               settingsOverridesUpdate(putEnvironmentInstructions(store, environment, instructions)),
@@ -2423,8 +2475,12 @@ export const registryMethods = Effect.suspend(() =>
                 yield* firstMcpLook(mcpLooks, store, environment, MCP_FIRST_LOOK_WAIT);
               }
 
+              // The Session is answered the catalog kept: a stale one is read again behind it, for its next read.
+              yield* Effect.forkDetach(refreshCatalog);
+
               return sessionSettingsSource(store, session);
             }),
+          getModelCatalog: catalogFirst(() => Effect.sync(catalog.current)),
           mcpServerSet: (input) =>
             checkHanded.pipe(
               Effect.andThen(Clock.currentTimeMillis),
@@ -2500,7 +2556,7 @@ export const registryMethods = Effect.suspend(() =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => recordMcpDestroyed(store, environment, now)),
             ),
-          changeSettings: (args) =>
+          changeSettings: catalogFirst((args) =>
             // The Settings at Global are the `*` scope's: every Secret may be held in a text of theirs.
             viaWrite<SettingsChange>(
               args,
@@ -2533,13 +2589,15 @@ export const registryMethods = Effect.suspend(() =>
               // The MCP hosts' revision the change is checked against, not what it keeps.
               ["guard"],
             ),
+          ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
-          revertSettingsChange: ({ change }) =>
+          revertSettingsChange: catalogFirst(({ change }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 revertSettingsChange(state.raw.storage, store, changes, { id: change }, now),
               ),
             ),
+          ),
           dismissSettingsChange: ({ change }) =>
             Effect.sync(() => changes.dismiss(SETTINGS_SCOPE, change)),
           getPush: ({ endpoint }) =>
@@ -2554,13 +2612,14 @@ export const registryMethods = Effect.suspend(() =>
           unsubscribePush: ({ endpoint }) =>
             Effect.sync(() => store.deletePushSubscription(endpoint)),
           notify: ({ sessionId, event }) => notify(sessionId, event),
-          createTrigger: ({ id, trigger }) =>
+          createTrigger: catalogFirst(({ id, trigger }) =>
             Effect.gen(function* () {
               const made = id ?? (yield* newTriggerId);
 
               return triggers.create(made, trigger, yield* Clock.currentTimeMillis);
             }),
-          updateTrigger: ({ id, patch, expected }) =>
+          ),
+          updateTrigger: catalogFirst(({ id, patch, expected }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 triggers.update(
@@ -2573,14 +2632,16 @@ export const registryMethods = Effect.suspend(() =>
                 ),
               ),
             ),
+          ),
           setTriggerPaused: ({ id, paused }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
           removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),
-          agentCreateTrigger: (args) =>
+          agentCreateTrigger: catalogFirst((args) =>
             viaWrite<TriggerChanged>(args, createReach(args.trigger), invalid, (now) =>
               triggerChanges.create(args.id, args.trigger, args.author, now),
             ),
-          agentUpdateTrigger: (args) =>
+          ),
+          agentUpdateTrigger: catalogFirst((args) =>
             viaWrite<TriggerChanged>(
               args,
               triggerReach(args.id),
@@ -2588,6 +2649,7 @@ export const registryMethods = Effect.suspend(() =>
               (now) => triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
               ["expected"],
             ),
+          ),
           agentSetTriggerPaused: (args) =>
             viaWrite<TriggerChanged>(
               args,

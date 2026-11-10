@@ -2,6 +2,8 @@ export const packageName = "@cloudpid/config";
 
 export * from "./settings.ts";
 
+export * from "./model-catalog.ts";
+
 export * from "./settings-overrides.ts";
 
 export * from "./container-settings.ts";

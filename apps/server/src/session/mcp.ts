@@ -880,7 +880,8 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
     const fire = sessionFire({
       deliver,
-      configure: (pick) => host.configure(agentChange(pick)),
+      // A model the Model catalog no longer lists is left to the Environment's Settings, not refused.
+      configure: (pick) => host.configure(agentChange(pick), { unservedModel: "ignore" }),
       redact: redactor.pipe(Effect.map((seam) => seam.redact)),
     });
 

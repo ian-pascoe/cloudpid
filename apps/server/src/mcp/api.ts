@@ -6,7 +6,14 @@
 // as values (`ApiResult`); nothing streams. The read operations, `start`, `send`, `stop` and `wait` are here; an operation
 // `describe()` does not list answers `unsupported`, which is also how `McpServer` knows to leave its tool out.
 // @effect-diagnostics globalDate:off preferEffectArray:off missingPipeableSignature:off -- epoch times said as ISO text; short native lists.
-import { isModelId, SUPPORTED_MODELS, ThinkingLevel, THINKING_LEVELS } from "@cloudpid/config";
+import {
+  catalogHas,
+  FALLBACK_CATALOG,
+  type ModelCatalog,
+  ThinkingLevel,
+  THINKING_LEVELS,
+  unservedModel,
+} from "@cloudpid/config";
 import {
   type AgentChangeVia,
   type ApiDescription,
@@ -170,6 +177,13 @@ export const HARNESS_TOOLS_SERVED = [
 ] as const satisfies ReadonlyArray<DispatchedToolName>;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
+/**
+ * The Model catalog `backend` gives, or the built-in fallback when the Registry can't say (a failure or a defect): what
+ * `environments_list` lists and `session_start` checks a model against, the same in both (ADR-0052).
+ */
+const catalogOf = (backend: Pick<McpBackend, "models">): Effect.Effect<ModelCatalog> =>
+  backend.models.pipe(Effect.catchCause(() => Effect.succeed(FALLBACK_CATALOG)));
+
 export interface McpBackend {
   readonly environments: Effect.Effect<ReadonlyArray<EnvironmentRecord>>;
   /** Every Session, newest first: for each Environment's running count. */
@@ -179,6 +193,8 @@ export interface McpBackend {
   readonly workspace: (id: string) => Effect.Effect<WorkspaceRecord | null>;
   /** The Global Settings' default model. */
   readonly defaultModel: Effect.Effect<string>;
+  /** The Model catalog (ADR-0052): the models a Session may be started on. */
+  readonly models: Effect.Effect<ModelCatalog>;
   /** The Session object's `status()`; `after` is the cursor the caller holds, which `branch_changed` is told against. */
   readonly status: (id: string, after?: string) => Effect.Effect<ApiResult<SessionStatusReport>>;
   /**
@@ -644,15 +660,18 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
     environments: guarded(
       Effect.gen(function* () {
-        const [environments, sessions, model] = yield* Effect.all([
+        const [environments, sessions, model, catalog] = yield* Effect.all([
           backend.environments,
           backend.allSessions,
-          // A Registry that cannot say the default model still lists the Environments.
+          // A Registry that cannot say the default model, or the models, still lists the Environments.
           backend.defaultModel.pipe(
             Effect.asSome,
             Effect.catchCause(() => Effect.succeed(Option.none<string>())),
           ),
+          catalogOf(backend),
         ]);
+
+        const available = Arr.map(catalog.models, (each) => each.id);
 
         const running = new Map<string, number>();
 
@@ -678,9 +697,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             repos: Arr.map(environment.repos, ({ name, url }) => ({ name, url })),
             running_sessions: running.get(environment.id) ?? 0,
           })),
-          models: Option.isSome(model)
-            ? { available: [...SUPPORTED_MODELS], default: model.value }
-            : { available: [...SUPPORTED_MODELS] },
+          models: Option.isSome(model) ? { available, default: model.value } : { available },
         } satisfies EnvironmentsResult);
       }),
     ),
@@ -802,10 +819,10 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
           const model = request.model;
 
-          if (model !== undefined && !isModelId(model)) {
+          if (model !== undefined && !catalogHas(yield* catalogOf(backend), model)) {
             return apiFailure(
               "invalid_argument",
-              `model must be one of environments_list's models.available: ${Arr.join(SUPPORTED_MODELS, ", ")}.`,
+              `model: ${unservedModel(model)}; environments_list's models.available lists them too.`,
             );
           }
 

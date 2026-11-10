@@ -139,6 +139,7 @@ const backendOf = (
       Effect.map(({ settings }) => settings.model),
       Effect.orDie,
     ),
+    models: Effect.suspend(() => registry.getModelCatalog()).pipe(Effect.orDie),
     status: (id, after) =>
       endpoint.sessions
         .getByName(id)

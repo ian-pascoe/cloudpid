@@ -8,7 +8,6 @@
 // a lookup failing before any write, the `approval:` prefix), the Registry's refusals (one that heals is `unavailable`),
 // the author recorded, and the upkeep and the notice after the answer.
 // @effect-diagnostics globalJsonInEffect:off preferEffectArray:off missedPipeableOpportunity:off preferTypedSchemaDecoder:off schemaSync:off schemaSyncInEffect:off
-import { SUPPORTED_MODELS } from "@cloudpid/config";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { APPROVAL_REQUEST_PREFIX, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
@@ -1090,7 +1089,7 @@ describe("a change to the Settings or an MCP server", () => {
         const result = yield* call("settings_role_set", {
           scope: "default",
           role: "small",
-          model: SUPPORTED_MODELS[0],
+          model: "anthropic/claude-fable-5-1",
           hint: "Pick it when s3cret-value is needed",
           reason,
         });

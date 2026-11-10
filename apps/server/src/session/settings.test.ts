@@ -1,5 +1,11 @@
-// @effect-diagnostics asyncFunction:off
-import { DEFAULT_OFFERED_TOOLS, DEFAULT_SETTINGS, resolveLeniently } from "@cloudpid/config";
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
+import {
+  DEFAULT_OFFERED_TOOLS,
+  DEFAULT_SETTINGS,
+  FALLBACK_CATALOG,
+  type ModelCatalog,
+  resolveLeniently,
+} from "@cloudpid/config";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -146,7 +152,7 @@ describe("a Session's settings", () => {
   it("keep the kept overrides that still resolve when another no longer does", () => {
     const kv = memoryKv();
 
-    kv.put("settings-overrides", { model: "anthropic/retired-model", thinkingLevel: "low" });
+    kv.put("settings-overrides", { model: "retired-model", thinkingLevel: "low" });
 
     const settings = open(registry(), kv).current();
 
@@ -220,9 +226,82 @@ describe("a Session's settings", () => {
   it("fall back to the defaults when the kept overrides no longer resolve", () => {
     const kv = memoryKv();
 
-    kv.put("settings-overrides", { model: "anthropic/retired-model" });
+    kv.put("settings-overrides", { model: "retired-model" });
 
     expect(open(registry(), kv).current()).toEqual(valuesFrom(DEFAULT_SETTINGS));
+  });
+});
+
+describe("the Model catalog a Session reads with its settings", () => {
+  const catalog = (ids: ReadonlyArray<string>, fetchedAt: number | null): ModelCatalog => ({
+    models: ids.map((id) => ({
+      id,
+      name: id,
+      ownedBy: "anthropic",
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    })),
+    fetchedAt,
+  });
+
+  const reading = (global: Schema.Json, overrides: Schema.Json, models: ModelCatalog) => ({
+    read: Effect.succeed({ global, overrides, models }),
+  });
+
+  it("is kept with the settings, and runs a model it lists that pi-ai does not know", async () => {
+    const kv = memoryKv();
+    const models = catalog(["anthropic/claude-fable-5-2"], 1);
+    const settings = open(reading({ model: "anthropic/claude-fable-5-2" }, {}, models), kv);
+
+    await Effect.runPromise(settings.refresh);
+
+    expect(settings.current().models).toEqual(models);
+    expect(settings.current().agent.model).toEqual({
+      provider: "anthropic",
+      modelId: "claude-fable-5-2",
+    });
+    // An instance that starts with the Registry down has it too.
+    expect(open(registry(), kv).current().models).toEqual(models);
+  });
+
+  it("leaves out a saved model a catalog read from the proxy no longer lists, at either Scope", async () => {
+    const settings = open(
+      reading(
+        { model: "anthropic/claude-gone", thinkingLevel: "low" },
+        { roles: { small: { model: "anthropic/claude-gone" } } },
+        catalog(["anthropic/claude-opus-5-5"], 1),
+      ),
+    );
+
+    await Effect.runPromise(settings.refresh);
+
+    expect(settings.current().agent).toEqual({
+      model: valuesFrom(DEFAULT_SETTINGS).agent.model,
+      thinkingLevel: "low",
+    });
+    expect(settings.current().subagents).toEqual(valuesFrom(DEFAULT_SETTINGS).subagents);
+  });
+
+  it("keeps a saved model while the catalog is the fallback, which says nothing of what the proxy serves", async () => {
+    const settings = open(reading({ model: "anthropic/claude-fable-5-2" }, {}, FALLBACK_CATALOG));
+
+    await Effect.runPromise(settings.refresh);
+
+    expect(settings.current().agent.model.modelId).toBe("claude-fable-5-2");
+    // And it is one the Session can run: the catalog it uses lists it, with an unknown model's limits.
+    expect(settings.current().models).toEqual({
+      models: [
+        ...FALLBACK_CATALOG.models,
+        {
+          id: "anthropic/claude-fable-5-2",
+          name: "claude-fable-5-2",
+          ownedBy: "anthropic",
+          contextWindow: 200_000,
+          maxTokens: 32_000,
+        },
+      ],
+      fetchedAt: null,
+    });
   });
 });
 

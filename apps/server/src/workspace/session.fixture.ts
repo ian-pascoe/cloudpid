@@ -144,6 +144,7 @@ export class TestWorkspaceSession extends TestSession {
         get: () => Effect.die("No Settings"),
         own: Effect.die("No Settings"),
         change: () => Effect.die("No Settings"),
+        models: Effect.die("No Settings"),
       }),
       // Nor a `settings_mcp_*` tool, which reaches no MCP host.
       Effect.provideService(SettingsMcpAccess, {

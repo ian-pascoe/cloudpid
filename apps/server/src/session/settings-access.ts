@@ -25,6 +25,7 @@ export type SettingsRegistry = Pick<
   | "sessionSettings"
   | "changeSettings"
   | "mcpServerNames"
+  | "getModelCatalog"
 >;
 
 export type SessionSettingsAccessOptions = {
@@ -118,6 +119,7 @@ export const sessionSettingsAccess = ({
 }: SessionSettingsAccessOptions): SettingsAccessService => ({
   ...settingsReads(registry),
   own: ownEnvironment(registry, source),
+  models: Effect.suspend(() => registry.getModelCatalog()),
   change: ({ scope, changes, author, guard }) =>
     Effect.gen(function* () {
       const by = yield* authored(

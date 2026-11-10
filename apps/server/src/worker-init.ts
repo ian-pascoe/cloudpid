@@ -49,12 +49,8 @@ import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { workspaceLookups } from "./session/lookups.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
-import {
-  destroySessionObject,
-  ModelProxyConfigLive,
-  Session,
-  SessionLive,
-} from "./session/Session.ts";
+import { ModelProxyConfigLive } from "./model-proxy.ts";
+import { destroySessionObject, Session, SessionLive } from "./session/Session.ts";
 import { triggerObjects } from "./trigger/objects.ts";
 import { Trigger, TriggerLive } from "./trigger/Trigger.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
@@ -303,7 +299,15 @@ export const serverInit = Effect.gen(function* () {
         Layer.provideMerge(GitHubAppConfigLive),
         Layer.provideMerge(
           RegistryLive.pipe(
-            Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive, GitHubAppConfigLive)),
+            // The Registry reads the Model catalog from the model proxy.
+            Layer.provide(
+              Layer.mergeAll(
+                PushConfigLive,
+                SecretsConfigLive,
+                GitHubAppConfigLive,
+                ModelProxyConfigLive,
+              ),
+            ),
           ),
         ),
       ),
