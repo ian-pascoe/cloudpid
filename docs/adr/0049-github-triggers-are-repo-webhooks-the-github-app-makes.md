@@ -22,5 +22,5 @@ The App gains the repository permission **Webhooks: write** (`repository_hooks`)
 - GitHub allows at most 20 hooks per event per repo; cloudpid shows GitHub's refusal plainly and sets no cap of its own.
 - An installation that hasn't accepted the permission gets a plain message naming the step, not a failed Trigger with no reason.
 - Any permission added to the App later reaches Containers only when it is added to their list, deliberately.
-- The list holds only while the App's key stays out of the agent's reach. The `preview` environment holds the key, and a Container token can push a branch whose workflow runs there, so every job in `preview` waits for the owner's approval ([CI credentials](../development/infra.md#ci-credentials)). An approved job runs with the key, and through it every App permission, `repository_hooks` included.
+- The list holds only while the App's key stays out of the agent's reach. The `preview` environment holds the key, and a Container token can push a branch whose workflow runs there, so every job in `preview` waits for the owner's review, GitHub's deployment review ([CI credentials](../development/infra.md#ci-credentials)). A job the owner lets run with the key, and through it every App permission, `repository_hooks` included.
 - A failed hook delete is retried, with backoff, for up to a day, then logged as a warning.
