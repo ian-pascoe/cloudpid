@@ -65,10 +65,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cloudpid/config": "workspace:*",
-    "@cloudpid/effect-durable": "workspace:*",
-    "@cloudpid/mcp": "workspace:*",
-    "@cloudpid/protocol": "workspace:*",
+    "@cloudpid/config": "*",
+    "@cloudpid/effect-durable": "*",
+    "@cloudpid/mcp": "*",
+    "@cloudpid/protocol": "*",
     "@earendil-works/chord": "^1.5.0",
     "@earendil-works/pi-ai": "^1.5.0",
     "@earendil-works/pi-durable": "^1.5.0",

@@ -41,7 +41,7 @@ const pinOf = (directory: string, name: string): string | undefined => {
   return manifest.dependencies?.[name];
 };
 
-describe("the bundled SDK", () => {
+describe("the extension's SDK", () => {
   // docs/development/dependencies.md: the extension's copy of the client is the core's version, moved together.
   it("is the core's pin of @modelcontextprotocol/client", () => {
     const core = pinOf("mcp", "@modelcontextprotocol/client");

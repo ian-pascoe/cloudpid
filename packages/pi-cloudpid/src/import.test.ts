@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
 /**
  * `/cloudpid` against a stub endpoint (docs/architecture/mcp-endpoint.md → Session import → The working tree, The
  * `/cloudpid` command): cloudpid's own MCP handler over a fake `api`, a checkout with a bare remote, and pi's own

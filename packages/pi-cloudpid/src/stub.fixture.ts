@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off processEnv:off newPromise:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine; reads the owner's environment.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off processEnv:off newPromise:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine; reads the owner's environment.
 /**
  * The test fixtures of `/cloudpid`: a stub endpoint (cloudpid's own handler, `serveMcp`, over a fake `api` that keeps
  * an import in memory), a checkout with a bare remote to import from, and a scripted pi UI.

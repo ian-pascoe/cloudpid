@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off asyncFunction:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; runs on node, on the owner's machine; plain Promises, as node's fs gives them.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off asyncFunction:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; runs on node, on the owner's machine; plain Promises, as node's fs gives them.
 /**
  * Where the sign-in is kept (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → The connection):
  * `cloudpid-auth.json` in pi's agent directory, mode 0600, written atomically, one entry per endpoint URL.

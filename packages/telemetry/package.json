@@ -13,14 +13,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cloudpid/effect-durable": "workspace:*",
+    "@cloudpid/effect-durable": "*",
     "@earendil-works/pi-ai": "^1.5.0",
     "@earendil-works/pi-durable": "^1.5.0",
     "@earendil-works/pi-telemetry": "^1.5.0",
     "effect": "^4.1.2"
   },
   "devDependencies": {
-    "@cloudpid/config": "workspace:*",
+    "@cloudpid/config": "*",
     "@earendil-works/chord": "^1.5.0",
     "@earendil-works/pi-schema": "^1.5.0"
   }

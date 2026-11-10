@@ -1,7 +1,7 @@
 /**
  * What `/cloudpid` shares with the endpoint (`docs/architecture/mcp-endpoint.md` → The `/cloudpid` command). The
- * values are copies of `@cloudpid/protocol`'s: that package builds its Schemas on `effect`, which the bundle must not
- * carry, so the extension imports it for types only, and `constants.test.ts` checks the copies against the original.
+ * values are copies of `@cloudpid/protocol`'s: that package builds its Schemas on `effect`, which the extension must
+ * not load, so the extension imports it for types only, and `constants.test.ts` checks the copies against the original.
  */
 
 /** begin's `format`: pi's own session file. */

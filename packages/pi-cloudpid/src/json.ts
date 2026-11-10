@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain functions over values, called directly.
 /**
  * The endpoint's answers as JSON values, read field by field. The SDK hands `structuredContent` over as `unknown`;
  * {@link toJson} is the one place it is checked, and everything after it reads typed values.

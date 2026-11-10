@@ -16,7 +16,7 @@
     "format:check": "oxfmt --check",
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint -- --fix",
-    "prepare": "husky && effect-tsgo patch --typescript && ./scripts/link-tsrslint.sh && ./scripts/sync-reference-repos.sh",
+    "prepare": "./scripts/prepare.sh",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck"
   },
@@ -54,6 +54,11 @@
     "@cloudflare/vitest-plugin@1.5.1": "patches/@cloudflare__vitest-plugin@1.5.1.patch",
     "@alchemy.run/cloudflare@2.0.0-beta.85": "patches/@alchemy.run__cloudflare@2.0.0-beta.85.patch",
     "@earendil-works/pi-durable@1.5.0": "patches/@earendil-works__pi-durable@1.5.0.patch"
+  },
+  "pi": {
+    "extensions": [
+      "./packages/pi-cloudpid/src/index.ts"
+    ]
   },
   "trustedDependencies": [
     "@google/genai",

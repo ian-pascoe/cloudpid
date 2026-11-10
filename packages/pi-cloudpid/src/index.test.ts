@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off processEnv:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API gives them; runs on node, on the owner's machine; the test points pi's agent directory at a temporary one.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off processEnv:off -- native array methods over plain values (the extension carries no Effect runtime); plain Promises, as pi's extension API gives them; runs on node, on the owner's machine; the test points pi's agent directory at a temporary one.
 /**
  * The extension as pi loads it (docs/architecture/mcp-endpoint.md → The `/cloudpid` command): one command with its
  * subcommands completing, reading the endpoint from pi's settings on each run, and printing what fails.

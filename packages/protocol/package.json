@@ -22,7 +22,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cloudpid/config": "workspace:*",
+    "@cloudpid/config": "*",
     "@earendil-works/chord": "^1.5.0",
     "@earendil-works/pi-ai": "^1.5.0",
     "@earendil-works/pi-durable": "^1.5.0",

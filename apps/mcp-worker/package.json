@@ -15,9 +15,9 @@
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.85",
-    "@cloudpid/mcp": "workspace:*",
-    "@cloudpid/sandbox-image": "workspace:*",
-    "@cloudpid/telemetry": "workspace:*",
+    "@cloudpid/mcp": "*",
+    "@cloudpid/sandbox-image": "*",
+    "@cloudpid/telemetry": "*",
     "alchemy": "2.0.0-beta.85",
     "effect": "^4.1.2",
     "typebox": "1.4.4"
@@ -25,8 +25,8 @@
   "devDependencies": {
     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.85",
     "@cloudflare/vitest-plugin": "^1.5.1",
-    "@cloudpid/config": "workspace:*",
-    "@cloudpid/protocol": "workspace:*",
+    "@cloudpid/config": "*",
+    "@cloudpid/protocol": "*",
     "@earendil-works/pi-mcp": "1.5.0",
     "rolldown": "1.2.16"
   }

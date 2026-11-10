@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the extension carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
