@@ -67,9 +67,9 @@ export default Alchemy.Stack(
 
     // Pull request previews (stage `pr-<number>`). Any branch may deploy here, so it holds its own token and its own copy
     // of the app secrets, never production's ones. The token still writes every Worker on the account (Cloudflare has no
-    // narrower Workers scope), so whoever can push a branch can reach `prod`'s Workers, and the GitHub App's key is here
-    // too. No review guards it: agents merge their own changes (ADR-0053). Retained on destroy for the same reason as
-    // `production`.
+    // narrower Workers scope), so whoever can push a branch can reach `prod`'s Workers. Its GitHub App is `cloudpid-dev`,
+    // installed only on the repos previews work on, not `prod`'s; no review guards it (ADR-0053). Retained on destroy for
+    // the same reason as `production`.
     const preview = yield* GitHub.Environment("Preview", {
       ...repo,
       name: "preview",

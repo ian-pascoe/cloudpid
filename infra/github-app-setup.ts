@@ -2,16 +2,21 @@
  * Registers cloudpid's GitHub App (ADR-0025) through GitHub's manifest flow and hands its secrets to the deploys. Run
  * from a workstation with `gh` signed in as the owner, and a browser:
  *
- *   bun run --cwd infra github-app:setup [--name cloudpid] [--repo owner/name]
+ *   bun run --cwd infra github-app:setup [--name cloudpid] [--repo owner/name] [--environment <name>]...
  *
  * 1. It serves a page on 127.0.0.1 that posts the manifest (`githubAppManifest`) to GitHub; you confirm the app's name
  *    there, and GitHub sends you back with a code the app's ID and private key are fetched with. GitHub shows the key
  *    only then.
- * 2. It writes CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY into the GitHub environments `production` and
- *    `preview` of the repo (`gh secret set`) and into ~/.config/cloudpid/dev.env, at once, so the key is kept before
- *    anything else can fail. No other copy is kept: a lost key is replaced from the app's settings.
- * 3. It sends you to install the app (choose All repositories) on your account and on each organization whose repos
- *    the agent works on, then mints a token for each installation to check them.
+ * 2. It writes CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY into the repo's GitHub environments (`gh
+ *    secret set`; `production` and `preview` unless `--environment` names them) and into ~/.config/cloudpid/dev.env, at
+ *    once, so the key is kept before anything else can fail. No other copy is kept: a lost key is replaced from the
+ *    app's settings.
+ * 3. It sends you to install the app on your account and on each organization whose repos the agent works on (All
+ *    repositories for the app `production` uses; only the repos previews and dev stages need for one it does not), then
+ *    mints a token for each installation to check them.
+ *
+ * The previews' and dev stages' own app (ADR-0053) is made with `--name cloudpid-dev --environment preview`, so
+ * `production` keeps the main app's key.
  *
  * The app is registered under your own account and is public, so it can be installed on your organizations too (an
  * installation by anyone else gives cloudpid their repos, nothing of yours).
@@ -30,7 +35,7 @@ import { GitHubApp, notInstalledOn } from "@cloudpid/server/github/app";
 import { type GitHubAppManifest, githubAppManifest, withDevEnvValues } from "./src/github-app.ts";
 
 /** The GitHub environments whose deploys bind the app's secrets. */
-const ENVIRONMENTS = ["production", "preview"];
+const ENVIRONMENTS: ReadonlyArray<string> = ["production", "preview"];
 
 /** Where a workstation keeps its deploy secrets (docs/development/infra.md → Secrets and variables). */
 const DEV_ENV = join(homedir(), ".config", "cloudpid", "dev.env");
@@ -45,8 +50,21 @@ const { values: args } = parseArgs({
   options: {
     name: { type: "string", default: "cloudpid" },
     repo: { type: "string", default: process.env.GITHUB_REPOSITORY ?? "ian-pascoe/cloudpid" },
+    environment: { type: "string", multiple: true },
   },
 });
+
+/** The environments this run writes the app's secrets into: those named, else every one. */
+const environments: ReadonlyArray<string> = args.environment ?? ENVIRONMENTS;
+
+for (const environment of environments) {
+  if (!ENVIRONMENTS.includes(environment)) {
+    throw new Error(`--environment must be one of ${ENVIRONMENTS.join(", ")}, not ${environment}`);
+  }
+}
+
+/** Whether `production`'s deploys use this app, which then reaches every repo the agent works on. */
+const forProduction = environments.includes("production");
 
 /** Runs `command` with `input` on its stdin (a secret never goes on a command line); rejects unless it succeeds. */
 const run = (command: string, argv: readonly string[], input = ""): Promise<string> =>
@@ -185,7 +203,7 @@ const storeSecrets = async (app: Registered) => {
   await chmod(DEV_ENV, 0o600);
   console.log(`Wrote ${Object.keys(values).join(" and ")} into ${DEV_ENV}.`);
 
-  for (const environment of ENVIRONMENTS) {
+  for (const environment of environments) {
     for (const [name, value] of Object.entries(values)) {
       await run("gh", ["secret", "set", name, "--env", environment, "--repo", args.repo], value);
     }
@@ -203,7 +221,9 @@ const install = async (app: Registered) => {
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
 
   console.log(
-    `\nInstall it on ${owner} and on each organization whose repos the agent works on, choosing All repositories each time (it opens by itself, or open this):`,
+    forProduction
+      ? `\nInstall it on ${owner} and on each organization whose repos the agent works on, choosing All repositories each time (it opens by itself, or open this):`
+      : `\nInstall it on ${owner}, choosing only the repos previews and dev stages work on, and on an organization only for its repos they need (it opens by itself, or open this):`,
   );
   openInBrowser(`https://github.com/apps/${app.slug}/installations/new`);
 
