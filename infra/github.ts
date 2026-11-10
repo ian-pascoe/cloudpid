@@ -1,9 +1,8 @@
 /**
  * CI credentials as code: the GitHub Actions environments `production` (deployments from `main` only) and `preview`
- * (pull request previews, any branch, each job held for the owner's deployment review), a scoped Cloudflare API token
- * for each, and the secrets and variables that hand them to .github/workflows/ci.yml, and for each environment a
- * read-only analytics token its deploys bind to the Workspaces Worker (CLOUDPID_ANALYTICS_TOKEN), which reads the
- * Containers' usage for the Session header's cost.
+ * (pull request previews, any branch), a scoped Cloudflare API token for each, and the secrets and variables that hand
+ * them to .github/workflows/ci.yml, and for each environment a read-only analytics token its deploys bind to the
+ * Workspaces Worker (CLOUDPID_ANALYTICS_TOKEN), which reads the Containers' usage for the Session header's cost.
  * Deployed once from a workstation with a profile that may create API tokens, and again to rotate the token or change
  * its permissions:
  *
@@ -17,9 +16,9 @@
  * Not managed here: the app secrets each environment's deploys bind to the Workers, set by hand on both `production` and
  * `preview` (`gh secret set <NAME> --env <environment>`; docs/development/infra.md → CI credentials): MODEL_PROXY_API_KEY (a Commissary API key
  * minted in Commissary's panel), SECRETS_ENCRYPTION_KEY (`openssl rand -base64 32`), the VAPID triple and the search
- * keys. Give `preview` its own SECRETS_ENCRYPTION_KEY and VAPID pair rather than production's. The GitHub App's
- * CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY are written into both by `github-app:setup`
- * (github-app-setup.ts).
+ * keys. Give `preview` its own SECRETS_ENCRYPTION_KEY and VAPID pair rather than production's. CLOUDPID_GITHUB_APP_ID
+ * and CLOUDPID_GITHUB_APP_PRIVATE_KEY are written by `github-app:setup` (github-app-setup.ts): `cloudpid`'s into
+ * `production`, `cloudpid-dev`'s into `preview` (ADR-0053).
  */
 import { APP_ZONE_ID } from "@cloudpid/server/view-host";
 import * as Alchemy from "alchemy";
@@ -68,14 +67,12 @@ export default Alchemy.Stack(
 
     // Pull request previews (stage `pr-<number>`). Any branch may deploy here, so it holds its own token and its own copy
     // of the app secrets, never production's ones. The token still writes every Worker on the account (Cloudflare has no
-    // narrower Workers scope), and the GitHub App's key is here too, so every job that names the environment waits for
-    // the owner's review, the owner (the repo's owning user) being its one required reviewer: see
-    // docs/development/infra.md → CI credentials. Retained on destroy for the same reason as `production`.
+    // narrower Workers scope), so whoever can push a branch can reach `prod`'s Workers. Its GitHub App is `cloudpid-dev`,
+    // installed only on the repos previews work on, not `prod`'s; no review guards it (ADR-0053). Retained on destroy for
+    // the same reason as `production`.
     const preview = yield* GitHub.Environment("Preview", {
       ...repo,
       name: "preview",
-      reviewers: { users: [owner] },
-      preventSelfReview: false,
     }).pipe(Alchemy.RemovalPolicy.retain());
 
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it

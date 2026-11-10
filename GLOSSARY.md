@@ -249,7 +249,7 @@ The file a tool writes the whole of its output to when more came back than one r
 _Avoid_: Temp file, full output, truncation file, overflow
 
 **GitHub App**:
-cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from.
+cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from. `prod`'s is `cloudpid`; previews and dev stages have their own, `cloudpid-dev`, installed only on the repos they work on.
 _Avoid_: Bot account, PAT
 
 **GitHub token**:
