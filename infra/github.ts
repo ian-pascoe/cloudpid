@@ -1,6 +1,6 @@
 /**
  * CI credentials as code: the GitHub Actions environments `production` (deployments from `main` only) and `preview`
- * (pull request previews, any branch), a scoped Cloudflare API token for each, and the secrets and variables that hand
+ * (pull request previews, any branch, each job approved by the owner), a scoped Cloudflare API token for each, and the secrets and variables that hand
  * them to .github/workflows/ci.yml, and for each environment a read-only analytics token its deploys bind to the
  * Workspaces Worker (CLOUDPID_ANALYTICS_TOKEN), which reads the Containers' usage for the Session header's cost.
  * Deployed once from a workstation with a profile that may create API tokens, and again to rotate the token or change
@@ -67,11 +67,16 @@ export default Alchemy.Stack(
 
     // Pull request previews (stage `pr-<number>`). Any branch may deploy here, so it holds its own token and its own copy
     // of the app secrets, never production's ones. The token still writes every Worker on the account (Cloudflare has no
-    // narrower Workers scope), so whoever can push a branch can reach `prod`'s Workers. Retained on destroy for the same
-    // reason as `production`.
+    // narrower Workers scope), and the GitHub App's key is here too. So every job that names the environment (a preview's
+    // deploy and destroy, and any workflow a branch adds) waits for the owner's approval before it gets a secret: the
+    // agent's Container tokens can push a branch, change its workflows and open a pull request, and the job runs that
+    // branch's code. Self-review stays allowed, since the owner pushes their own pull requests' branches too
+    // (docs/development/infra.md → CI credentials). Retained on destroy for the same reason as `production`.
     const preview = yield* GitHub.Environment("Preview", {
       ...repo,
       name: "preview",
+      reviewers: { users: [owner] },
+      preventSelfReview: false,
     }).pipe(Alchemy.RemovalPolicy.retain());
 
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it

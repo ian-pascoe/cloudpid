@@ -1,5 +1,5 @@
 ---
-status: accepted (webhooks, as repo webhooks the App makes, and Container tokens minted with an explicit list of permissions: amended by ADR-0049)
+status: accepted (webhooks, as repo webhooks the App makes, and Container tokens minted with an explicit list of permissions: amended by ADR-0049; the `preview` environment's jobs wait for the owner's approval: docs/development/infra.md → CI credentials)
 ---
 
 # GitHub access through a GitHub App
@@ -41,7 +41,7 @@ cloudpid reached GitHub with a personal access token, `CLOUDPID_GITHUB_TOKEN`: o
 - `gh` has one token per command: run in a directory whose repos span accounts, or outside any repo, it uses the app owner's account's, and a `gh` call about another account's repo then fails or sees only what is public. Running it in that repo's directory fixes it.
 - An app's token is not a user: `gh api user`, `gh repo fork`, `gh repo create` under the owner's account, gists and stars fail with "Resource not accessible by integration".
 - The app is public: its page can be found, and anyone can install it on their own account (see above).
-- Workflows: write lets the agent change CI, and so reach the `preview` environment's secrets from a branch, as a PAT with the `workflow` scope could.
+- Workflows: write lets the agent change CI, and so reach the `preview` environment's secrets from a branch, as a PAT with the `workflow` scope could. Those secrets include this App's key, which mints tokens with every App permission on every installation. So every job in `preview` waits for the owner's approval, and an approval trusts that branch's code ([CI credentials](../development/infra.md#ci-credentials)).
 - Every stage sits behind Cloudflare Access, which GitHub cannot pass: the triggers will need an Access bypass for the webhook path, and a second app (or forwarding from `prod`) to receive webhooks on previews and dev stages.
 - GitHub's rate limit is each installation's, shared by every Workspace and the main Worker.
 - Rollout: run the setup script and install the app on each account, open the change (its preview needs the new secrets in `preview`), merge, and once `prod` works delete `CLOUDPID_GITHUB_TOKEN` from both environments and revoke the PAT. An app made private by the first version of the setup is made public in its settings (Advanced → Make public), then installed on the organizations.
