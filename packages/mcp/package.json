@@ -18,7 +18,7 @@
     "conformance": "node conformance/run.ts"
   },
   "dependencies": {
-    "@cloudpid/protocol": "workspace:*",
+    "@cloudpid/protocol": "*",
     "@earendil-works/pi-mcp": "1.5.0",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/core": "2.4.0",
@@ -27,7 +27,7 @@
     "tldts": "^7.4.19"
   },
   "devDependencies": {
-    "@cloudpid/config": "workspace:*",
+    "@cloudpid/config": "*",
     "@modelcontextprotocol/conformance": "0.2.0-alpha.12",
     "@modelcontextprotocol/ext-tasks": "^0.2.2",
     "eventsource-parser": "4.1.3",

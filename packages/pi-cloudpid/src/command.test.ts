@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the bundle carries no Effect runtime).
+// @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the extension carries no Effect runtime).
 /**
  * The `/cloudpid` command line (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Command): the verbs, the
  * instruction kept verbatim, and the completions.

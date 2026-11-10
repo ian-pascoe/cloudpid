@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API gives them.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off -- native array methods over plain values (the extension carries no Effect runtime); plain Promises, as pi's extension API gives them.
 /**
  * What each `/cloudpid` subcommand does (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Command): the
  * usage and the configured endpoint, `login`, `logout` (one endpoint's sign-in only), and `import`'s routing.

@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off asyncFunction:off -- native array methods over plain values (the bundle carries no Effect runtime); plain functions over values, called directly; plain Promises, as pi's extension API gives them.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off asyncFunction:off -- native array methods over plain values (the extension carries no Effect runtime); plain functions over values, called directly; plain Promises, as pi's extension API gives them.
 /**
  * What each `/cloudpid` subcommand does (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Command): `import`
  * is `flow.ts`; `login` signs in to the configured endpoint now, replacing a stored sign-in; `logout` deletes the stored

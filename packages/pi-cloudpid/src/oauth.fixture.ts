@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off globalDate:off globalFetch:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off globalDate:off globalFetch:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine.
 /**
  * A stub of what Access is to `/mcp` (docs/architecture/mcp-endpoint.md → Access and identity): an authorization server
  * (RFC 8414 metadata, Dynamic Client Registration, an authorization endpoint with PKCE `S256`, a token endpoint with

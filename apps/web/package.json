@@ -13,9 +13,9 @@
   "dependencies": {
     "@assistant-ui/react": "^0.15.32",
     "@assistant-ui/react-streamdown": "^0.3.21",
-    "@cloudpid/config": "workspace:*",
-    "@cloudpid/mcp": "workspace:*",
-    "@cloudpid/protocol": "workspace:*",
+    "@cloudpid/config": "*",
+    "@cloudpid/mcp": "*",
+    "@cloudpid/protocol": "*",
     "@effect/atom-react": "4.1.2",
     "@effect/platform-browser": "4.1.2",
     "@pierre/diffs": "1.6.4",

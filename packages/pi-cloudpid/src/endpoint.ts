@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; wraps a callback API (a child process, a timer); the wait between retries.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; wraps a callback API (a child process, a timer); the wait between retries.
 /**
  * The MCP endpoint as `/cloudpid` calls it (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → The connection,
  * Compatibility): one connection with the owner's OAuth sign-in (`oauth.ts`, the SDK's `authProvider`), the tools it needs
@@ -208,7 +208,7 @@ const summaryOf = (fields: JsonObject | undefined): ImportSummary | undefined =>
   };
 };
 
-/** The SDK builds no validator of its own (Ajv would go into the bundle) and runs none: every field is read where it is used. */
+/** The SDK builds no validator of its own (Ajv would be loaded) and runs none: every field is read where it is used. */
 const noValidation = {
   getValidator:
     <T>(): JsonSchemaValidator<T> =>
@@ -274,7 +274,7 @@ export const connectEndpoint = async (
   const client = new Client(
     { name: "pi-cloudpid", version: name.slice("pi-cloudpid/".length) },
     {
-      // The endpoint's results are read field by field below; the SDK's own validation (Ajv) stays out of the bundle.
+      // The endpoint's results are read field by field below; the SDK's own validation (Ajv) is never built.
       jsonSchemaValidator: noValidation,
     },
   );

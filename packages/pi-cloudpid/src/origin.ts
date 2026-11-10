@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); plain functions over values, called directly.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- native array methods over plain values (the extension carries no Effect runtime); plain functions over values, called directly.
 /**
  * Matching the checkout to an Environment (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → The
  * Environment): the repo's `origin` and each Environment Repo's URL are both normalized to `https://host/path` and

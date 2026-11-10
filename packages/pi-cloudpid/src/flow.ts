@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off missingPipeableSignature:off cryptoRandomUUID:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; the request_id of begin.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off missingPipeableSignature:off cryptoRandomUUID:off -- native array methods over plain values (the extension carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; the request_id of begin.
 /**
  * `/cloudpid import [instruction]` (docs/architecture/mcp-endpoint.md → Session import → The `/cloudpid` command, The
  * working tree): refuse unless idle and saved, match the checkout to an Environment, say what will go and ask, then
