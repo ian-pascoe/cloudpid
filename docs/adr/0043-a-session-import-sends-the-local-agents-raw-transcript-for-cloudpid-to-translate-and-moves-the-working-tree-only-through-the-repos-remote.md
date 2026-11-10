@@ -1,5 +1,5 @@
 ---
-status: accepted (the extension is installed from the repo and follows `main`, no longer published after the deploy it targets: docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Distribution)
+status: accepted (the extension installed from the repo, following `main` rather than published after the deploy it targets: amended by docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Distribution)
 ---
 
 # A Session import sends the Local agent's raw transcript for cloudpid to translate, and moves the working tree only through the Repo's remote

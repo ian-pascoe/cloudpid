@@ -251,7 +251,10 @@ jobs:
       group: git-install-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
+      # No token in the checkout: npm runs every dependency's install scripts.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install: the check runs on pi's own
       # loader, a development dependency.

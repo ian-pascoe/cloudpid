@@ -22,9 +22,9 @@ export const sourceCommit = (directory: string): string => {
 };
 
 /** Asked once per load of the extension: a `pi update` reloads it from the new commit. */
-let loaded: string | undefined;
+let loadedCommit: string | undefined;
 
 /** The `X-Cloudpid-Client` value of `commit` (the extension's own by default), trimmed to 40 characters by the endpoint. */
 export const clientName = (
-  commit: string = (loaded ??= sourceCommit(import.meta.dirname)),
+  commit: string = (loadedCommit ??= sourceCommit(import.meta.dirname)),
 ): string => `pi-cloudpid/${commit.slice(0, 12)}`;
