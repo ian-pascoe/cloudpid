@@ -221,7 +221,7 @@ const sessionCommands = ({
 }: {
   live: boolean;
   view: SessionView;
-  /** The Model catalog, whose models `/model` offers (ADR-0051). */
+  /** The Model catalog, whose models `/model` offers (ADR-0052). */
   catalog: ModelCatalog;
   picker: RefObject<PickerHandle | null>;
   rename: Rename | undefined;

@@ -9,7 +9,6 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { ContainerPatch, ContainerSettings, ModelCatalog } from "@cloudpid/config";
-import * as Option from "effect/Option";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import type {
   McpPending,
@@ -1074,7 +1073,7 @@ export type RegistryMethods = {
     readonly session: string;
   }) => Effect.Effect<SessionSettingsSource>;
   /**
-   * The Model catalog (ADR-0051): the models the model proxy lists, read from it again first when the kept copy is older
+   * The Model catalog (ADR-0052): the models the model proxy lists, read from it again first when the kept copy is older
    * than its TTL; the kept copy when that read fails, and the built-in fallback before any read succeeded.
    */
   readonly getModelCatalog: () => Effect.Effect<ModelCatalog>;
@@ -1409,7 +1408,7 @@ export const registryMethods = Effect.suspend(() =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
 
-        // The Model catalog (ADR-0051): read from the proxy by this object alone, kept in its document table.
+        // The Model catalog (ADR-0052): read from the proxy by this object alone, kept in its document table.
         const catalog = modelCatalogKeeper({
           documents: store,
           proxy: Option.getOrUndefined(
@@ -1436,7 +1435,7 @@ export const registryMethods = Effect.suspend(() =>
         /**
          * `method`, run after `refreshCatalog`: every method that writes a model (the Settings, an Environment's Overrides,
          * Triggers, the Agent changes of either and their reverts) is wrapped in it, so its model is checked against a
-         * catalog read lately, not the fallback a new object starts with (ADR-0051).
+         * catalog read lately, not the fallback a new object starts with (ADR-0052).
          */
         const catalogFirst =
           <Args extends ReadonlyArray<unknown>, A, E, R>(

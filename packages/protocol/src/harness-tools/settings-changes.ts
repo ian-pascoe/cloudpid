@@ -67,7 +67,7 @@ export const CHANGE_NOTE_ENDPOINT =
 
 /**
  * What the descriptions say of the models: the Model catalog changes without a release, so it is never listed in a
- * description (ADR-0051), which must stay as it is for the prompt cache; the agent lists it with `models_list`.
+ * description (ADR-0052), which must stay as it is for the prompt cache; the agent lists it with `models_list`.
  */
 const MODEL_NOTE =
   "Models: any id models_list lists (provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused";

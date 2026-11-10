@@ -1,4 +1,4 @@
-// Model access through the model proxy (`docs/architecture/overview.md` → Models, ADR-0051). The models are the Model
+// Model access through the model proxy (`docs/architecture/overview.md` → Models, ADR-0052). The models are the Model
 // catalog's, as the Registry last read them from the proxy: each is served through the Anthropic Messages API, so all
 // are pi-ai `anthropic` models, served from the proxy's base URL and authenticated with the proxy's API key. Their
 // metadata (cost, reasoning, thinking levels) is pi-ai's for a model its catalog has, a family template's for a newer

@@ -179,7 +179,7 @@ export const HARNESS_TOOLS_SERVED = [
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
 /**
  * The Model catalog `backend` gives, or the built-in fallback when the Registry can't say (a failure or a defect): what
- * `environments_list` lists and `session_start` checks a model against, the same in both (ADR-0051).
+ * `environments_list` lists and `session_start` checks a model against, the same in both (ADR-0052).
  */
 const catalogOf = (backend: Pick<McpBackend, "models">): Effect.Effect<ModelCatalog> =>
   backend.models.pipe(Effect.catchCause(() => Effect.succeed(FALLBACK_CATALOG)));
@@ -193,7 +193,7 @@ export interface McpBackend {
   readonly workspace: (id: string) => Effect.Effect<WorkspaceRecord | null>;
   /** The Global Settings' default model. */
   readonly defaultModel: Effect.Effect<string>;
-  /** The Model catalog (ADR-0051): the models a Session may be started on. */
+  /** The Model catalog (ADR-0052): the models a Session may be started on. */
   readonly models: Effect.Effect<ModelCatalog>;
   /** The Session object's `status()`; `after` is the cursor the caller holds, which `branch_changed` is told against. */
   readonly status: (id: string, after?: string) => Effect.Effect<ApiResult<SessionStatusReport>>;

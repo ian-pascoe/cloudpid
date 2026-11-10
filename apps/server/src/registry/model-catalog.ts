@@ -1,4 +1,4 @@
-// The Model catalog as the Registry keeps it (`docs/architecture/overview.md` → Models, ADR-0051): the models the model proxy
+// The Model catalog as the Registry keeps it (`docs/architecture/overview.md` → Models, ADR-0052): the models the model proxy
 // (Commissary) lists at `GET /v1/models`, read by the Registry alone, kept in its document table (`model-catalog`) and
 // read again once older than `CATALOG_TTL_MS`. A read that fails keeps the copy it has (stale), and before the first
 // read that succeeds the catalog is the built-in fallback (`FALLBACK_CATALOG`). Sessions are handed it with their

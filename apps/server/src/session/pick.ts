@@ -36,7 +36,7 @@ export const storedPick = (kv: SettingsKv): AgentPick => kv.get<AgentPick>(PICK_
 
 /**
  * What the Session in `kv` picked, as it runs: a field is absent while it follows the default. `catalog` is the Model
- * catalog the Session last read (ADR-0051).
+ * catalog the Session last read (ADR-0052).
  */
 export const pickedIn = (kv: SettingsKv, catalog: ModelCatalog): AgentPick => {
   const kept = storedPick(kv);

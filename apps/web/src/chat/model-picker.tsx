@@ -1,5 +1,5 @@
 // The model and thinking level the Session's next request runs with, as one chip in the composer's toolbar. Its menu
-// lists the Model catalog's models by display name, grouped by who serves them (ADR-0051); each opens a submenu of the thinking levels, and picking a level picks both. On a wide screen the
+// lists the Model catalog's models by display name, grouped by who serves them (ADR-0052); each opens a submenu of the thinking levels, and picking a level picks both. On a wide screen the
 // submenu sits beside the models and follows the one hovered or focused; on a phone a tap on a model goes into its
 // levels, with a row back to the models.
 

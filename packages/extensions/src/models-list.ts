@@ -1,4 +1,4 @@
-// `models_list` (`docs/architecture/overview.md` → Models, ADR-0051): the Model catalog for the agent, the models the model
+// `models_list` (`docs/architecture/overview.md` → Models, ADR-0052): the Model catalog for the agent, the models the model
 // proxy serves, which `settings_model_set`, `settings_role_set` and the Trigger tools take. The catalog changes without a
 // release and holds over a hundred models, so no tool's description lists them (a description must stay as it is, for
 // the prompt cache): the agent reads them here, narrowed by `query`. It is not offered by default; the agent loads it

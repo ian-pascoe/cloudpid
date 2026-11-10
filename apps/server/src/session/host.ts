@@ -945,7 +945,7 @@ export type SessionHostService = {
   /**
    * Pick the root agent's model and thinking level (the active branch's), from its next request on: a field left out
    * stays as it is, and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
-   * A model the Model catalog does not list is refused (ADR-0051), or, with `unservedModel: "ignore"` (a Trigger's pick at
+   * A model the Model catalog does not list is refused (ADR-0052), or, with `unservedModel: "ignore"` (a Trigger's pick at
    * its Fire), left out, so the root follows the default.
    */
   readonly configure: (

@@ -2,7 +2,7 @@
 // defaults, one JSON document in the store's document table, and each Environment's Overrides of Global, in its row,
 // beside its own Instructions, which add to Global's rather than overriding them.
 // Reading falls back to what resolves and writing validates, so what Sessions read always resolves. A model is checked
-// against the Model catalog (ADR-0051): a write of one it does not list is refused, and a saved one a catalog read from
+// against the Model catalog (ADR-0052): a write of one it does not list is refused, and a saved one a catalog read from
 // the proxy no longer lists is left out of a read.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 import {
@@ -303,7 +303,7 @@ export type SessionSettingsSource = {
    * Session with none, and no Resource watch, never wakes the Environment's `McpHost`. Absent from an older Registry.
    */
   readonly mcp?: { readonly servers: number };
-  /** The Model catalog as the Registry keeps it (ADR-0051). Absent from an older Registry. */
+  /** The Model catalog as the Registry keeps it (ADR-0052). Absent from an older Registry. */
   readonly models?: ModelCatalog;
 };
 

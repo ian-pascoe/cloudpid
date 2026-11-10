@@ -1,4 +1,4 @@
-// The Registry's keeper of the Model catalog (`docs/architecture/overview.md` → Models, ADR-0051): the proxy's list read
+// The Registry's keeper of the Model catalog (`docs/architecture/overview.md` → Models, ADR-0052): the proxy's list read
 // into the catalog, again only once it is older than its TTL, the copy kept (stale) when a read fails, the fallback
 // before any read succeeds, and one read for calls made at once.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off

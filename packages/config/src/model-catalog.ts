@@ -1,4 +1,4 @@
-// The Model catalog (`docs/architecture/overview.md` → Models, ADR-0051): the models the model proxy (Commissary) serves,
+// The Model catalog (`docs/architecture/overview.md` → Models, ADR-0052): the models the model proxy (Commissary) serves,
 // as the Registry last read them from its `/v1/models`, or the built-in fallback before it ever has. A model is a
 // `provider/modelId` string whose format the settings check; whether the proxy serves it is checked against the
 // catalog where a model is written, and a saved model the catalog no longer lists is left out where it is read.
@@ -73,7 +73,7 @@ const fallbackModel = (modelId: string, name: string): CatalogModel => ({
 });
 
 /**
- * The catalog before the Registry has ever read the proxy's (ADR-0051): the four models cloudpid offered before the
+ * The catalog before the Registry has ever read the proxy's (ADR-0052): the four models cloudpid offered before the
  * catalog was read live. Its `fetchedAt` is null, so a saved model it lacks is still read (`keepsSavedModel`).
  */
 export const FALLBACK_CATALOG: ModelCatalog = {
@@ -99,7 +99,7 @@ export const catalogHas = (catalog: ModelCatalog, id: string): boolean =>
 
 /**
  * Whether a saved model `id` is still read: one in the right format that `catalog` lists, or any in the right format
- * while `catalog` is the fallback, which says nothing of what the proxy serves (ADR-0051).
+ * while `catalog` is the fallback, which says nothing of what the proxy serves (ADR-0052).
  */
 export const keepsSavedModel = (catalog: ModelCatalog, id: string): boolean =>
   isModelId(id) && (!isCatalogKnown(catalog) || catalogHas(catalog, id));
@@ -204,7 +204,7 @@ export type UnservedModel = { readonly field: string; readonly model: string };
 
 /**
  * Each model of `layer` (a Scope's overrides as written: the default model, each Role's) that `catalog` does not list;
- * none when the proxy serves them all. A write is refused for them (ADR-0051). A model the Scope already runs with at
+ * none when the proxy serves them all. A write is refused for them (ADR-0052). A model the Scope already runs with at
  * the same field (`inForce`, its settings as resolved before the write, inherited ones included) is not one the write
  * changes, and is not checked: it was checked when it was written, and a read decides whether it still applies
  * (`withServedModels`). So writing a Role's hint alone, which completes the Role with its model, is never refused.

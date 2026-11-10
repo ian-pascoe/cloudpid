@@ -462,7 +462,7 @@ export type LenientSettings = {
 /**
  * The settings `overrides` give once every override that does not resolve is dropped: a value a release no longer
  * accepts or a key it dropped costs only itself, and its siblings still apply. A model the Model catalog no longer lists
- * is left out before this, by `withServedModels` (ADR-0051).
+ * is left out before this, by `withServedModels` (ADR-0052).
  * Overrides that are not an object at all give the defaults. Writes stay strict (`resolveSettings`); this is for
  * reading what an earlier release saved.
  */

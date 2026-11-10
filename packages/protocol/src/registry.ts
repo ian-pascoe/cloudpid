@@ -1151,7 +1151,7 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("getSettings", { success: SettingsState }),
   /**
-   * The Model catalog (ADR-0051): the models the model proxy serves, with their names and who serves each, as the
+   * The Model catalog (ADR-0052): the models the model proxy serves, with their names and who serves each, as the
    * Registry last read them from it (`fetchedAt`), or the built-in fallback before it ever has (`fetchedAt: null`). What a
    * model picker offers; a write of a model it does not list is refused.
    */

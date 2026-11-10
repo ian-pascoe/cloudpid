@@ -1,4 +1,4 @@
-// The options of a select of a model (`docs/architecture/overview.md` → Models, ADR-0051): the Model catalog's models
+// The options of a select of a model (`docs/architecture/overview.md` → Models, ADR-0052): the Model catalog's models
 // by display name, in an `<optgroup>` per server behind the proxy, and the value the select holds in a group of its own
 // when the catalog does not list it, so the select still shows it.
 // @effect-diagnostics preferEffectArray:off -- JSX lists of options are native arrays.

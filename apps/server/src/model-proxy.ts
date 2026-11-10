@@ -1,5 +1,5 @@
 // The model proxy's configuration (`docs/architecture/overview.md` → Models): its base URL and API key, deploy-time secrets.
-// Sessions send their model requests through it, and the Registry reads the Model catalog from it (ADR-0051).
+// Sessions send their model requests through it, and the Registry reads the Model catalog from it (ADR-0052).
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";

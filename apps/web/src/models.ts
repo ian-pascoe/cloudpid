@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain view helpers over native arrays.
 
 // How the web app names and offers the models and thinking levels the settings accept: the models are the Model
-// catalog's (`docs/architecture/overview.md` → Models, ADR-0051), the ones the model proxy serves, grouped by who serves
+// catalog's (`docs/architecture/overview.md` → Models, ADR-0052), the ones the model proxy serves, grouped by who serves
 // each.
 import {
   type CatalogModel,

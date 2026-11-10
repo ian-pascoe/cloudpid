@@ -1,4 +1,4 @@
-// The Model catalog's checks of saved models (`docs/architecture/overview.md` → Models and Settings, ADR-0051): a write
+// The Model catalog's checks of saved models (`docs/architecture/overview.md` → Models and Settings, ADR-0052): a write
 // refused for each model it gives that the catalog does not list, and a lenient read that leaves out what the proxy no
 // longer serves, but nothing while the catalog is the fallback.
 // @effect-diagnostics preferEffectArray:off

@@ -1018,7 +1018,7 @@ export const SessionLive = Session.make(
                 storage: state.raw.storage,
                 // Every model call (generations, summaries) is scrubbed of the Secrets this Session holds.
                 // Each request is a span too, measured where it leaves for the proxy.
-                // The models are the Model catalog's the Session last read with its settings (ADR-0051).
+                // The models are the Model catalog's the Session last read with its settings (ADR-0052).
                 models: Effect.map(
                   Effect.all([Effect.service(Secrets), Effect.service(SessionSettings)]),
                   ([held, sessionSettings]) =>

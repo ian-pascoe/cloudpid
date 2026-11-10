@@ -235,7 +235,7 @@ describe("an Environment's Settings Overrides", () => {
     }));
 });
 
-describe("a write of a model, checked against the Model catalog (ADR-0051)", () => {
+describe("a write of a model, checked against the Model catalog (ADR-0052)", () => {
   it("is refused for a model the catalog does not list, at Global and at an Environment", () =>
     inRegistry(({ store, update }) => {
       putCatalog(store, [SONNET, "anthropic/claude-fable-5-2"]);

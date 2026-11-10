@@ -2,7 +2,7 @@
 // on the Settings page, one tool for each thing it may change: `settings_get`, `settings_model_set`,
 // `settings_role_set`, `settings_tool_offer`, `settings_tool_defer`, `settings_compaction_set`,
 // `settings_branch_summary_set` and `settings_extension_set`, with `models_list`, the Model catalog the model tools take
-// (`./models-list.ts`, ADR-0051). The Limits (`spendLimit.perSession`, the subagent
+// (`./models-list.ts`, ADR-0052). The Limits (`spendLimit.perSession`, the subagent
 // depth and the Subagent Workspace limit) are not among them: their tools wait for the owner's Approval
 // (`./approval-tools.ts`), as `settings_reset` does for a Limit. Every tool takes a required `scope` (ADR-0027): `*` for Global, or an Environment's id, whose Overrides
 // it reads and changes. Each change is an Agent change: the Registry applies it as the owner's save is applied and
@@ -155,7 +155,7 @@ export type SettingsAccessService = {
     /** An agent's MCP change: what the Registry checks again in the transaction that writes it (`McpChangeGuard`). */
     readonly guard?: McpChangeGuard | undefined;
   }) => Effect.Effect<AppliedSettingsChange, SettingsAccessError>;
-  /** The Model catalog (ADR-0051): the models a change of a model may name, as the Registry keeps them. */
+  /** The Model catalog (ADR-0052): the models a change of a model may name, as the Registry keeps them. */
   readonly models: Effect.Effect<ModelCatalog, SettingsAccessError>;
 };
 

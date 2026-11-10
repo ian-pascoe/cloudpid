@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off processEnv:off preferEffectArray:off -- a live check: plain Promise code over the model proxy.
-// The live check of the Model catalog (`docs/architecture/overview.md` → Models, ADR-0051): reads the model proxy's
+// The live check of the Model catalog (`docs/architecture/overview.md` → Models, ADR-0052): reads the model proxy's
 // (Commissary's) `GET /v1/models` as the Registry does, and checks that it parses into the catalog and into pi-ai models
 // the Session can use. It is opt-in: it runs only with the proxy's URL and key in the environment, and is skipped
 // without them, as in CI.

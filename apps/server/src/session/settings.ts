@@ -2,7 +2,7 @@
 // and its Environment's Overrides over them (ADR-0027), with the Environment's name and own Instructions, which add to
 // Global's rather than overriding them. The Session keeps the last it read, in its own storage, and hands the Harness
 // live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
-// before a request is admitted (`refresh`), never inside a getter. The Model catalog comes with them (ADR-0051), kept in the
+// before a request is admitted (`refresh`), never inside a getter. The Model catalog comes with them (ADR-0052), kept in the
 // same copy: the models the Session's requests may use, and against which a saved model is read.
 import {
   DEFAULT_SETTINGS,
@@ -164,7 +164,7 @@ export type SettingsSource = {
   readonly environment?: string | null;
   /** How many MCP servers the Environment's set has; absent from an older Registry's answer. */
   readonly mcp?: { readonly servers: number };
-  /** The Model catalog (ADR-0051); absent from an older Registry's answer, and from a source kept before it. */
+  /** The Model catalog (ADR-0052); absent from an older Registry's answer, and from a source kept before it. */
   readonly models?: ModelCatalog;
 };
 

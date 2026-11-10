@@ -37,7 +37,7 @@ export const settingsOverridesAtom = Atom.family((environment: string) =>
 );
 
 /**
- * The Model catalog (ADR-0051): the models the model proxy serves, as the Registry last read them, which the model
+ * The Model catalog (ADR-0052): the models the model proxy serves, as the Registry last read them, which the model
  * pickers offer. Asked again with the settings, since a save is when the Registry reads the proxy's again.
  */
 export const modelCatalogAtom = RegistryClient.query("getModelCatalog", undefined, {
