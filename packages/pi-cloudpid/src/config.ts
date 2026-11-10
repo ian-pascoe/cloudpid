@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off nodeBuiltinImport:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; runs on node, on the owner's machine, and asks git for its commit.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- native array methods over plain values (the extension carries no Effect runtime); native object methods over plain values; plain functions over values, called directly.
 /**
  * Where the endpoint is (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Configuration): the
  * `cloudpid.baseUrl` pi setting, read with `defineLayeredSettings` (`@ian-pascoe/pi-utils`): `~/.pi/agent/settings.json`,
@@ -6,7 +6,6 @@
  * {@link Refusal}. Read on every run and at every `session_start` (`index.ts`), so a change needs no `/reload` for the
  * command. How the command gets in is `oauth.ts`.
  */
-import { execFileSync } from "node:child_process";
 import { defineLayeredSettings } from "@ian-pascoe/pi-utils/layered-settings";
 import type { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -118,27 +117,3 @@ export const readConfig = (source: SettingsSource): Config => {
 
   return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
 };
-
-/**
- * The commit the extension runs from, for `X-Cloudpid-Client`: the HEAD of the git checkout `directory` is in, which
- * `pi install git:github.com/ian-pascoe/cloudpid` makes; `dev` outside one, or without git.
- */
-export const sourceCommit = (directory: string): string => {
-  try {
-    const head = execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-
-    return /^[0-9a-f]{40,64}$/u.test(head) ? head : "dev";
-  } catch {
-    return "dev";
-  }
-};
-
-let loadedCommit: string | undefined;
-
-/** The `X-Cloudpid-Client` value: the endpoint shows it as the Session's client, trimmed to 40 characters. */
-export const clientName = (sha?: string): string =>
-  `pi-cloudpid/${(sha ?? (loadedCommit ??= sourceCommit(import.meta.dirname))).slice(0, 12)}`;

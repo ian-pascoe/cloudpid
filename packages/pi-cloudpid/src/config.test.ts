@@ -4,14 +4,13 @@
  * setting from pi's global settings and a trusted project's, through pi's own `SettingsManager` over real files. No
  * default; an unset or invalid block is a refusal that names the setting and the file.
  */
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as Predicate from "effect/Predicate";
-import { endpointKey, readConfig, SETUP_STEPS, sourceCommit } from "./config.ts";
+import { endpointKey, readConfig, SETUP_STEPS } from "./config.ts";
 import { Refusal } from "./errors.ts";
 import type { JsonObject } from "./json.ts";
 
@@ -185,24 +184,5 @@ describe("an invalid block", () => {
 
     expect(message).toContain(globalFile());
     expect(message).toContain("cannot be read");
-  });
-});
-
-describe("the commit the extension runs from", () => {
-  it("is the HEAD of the git checkout it was installed as", () => {
-    const git = (...args: ReadonlyArray<string>) =>
-      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
-        cwd: root,
-        encoding: "utf8",
-      }).trim();
-
-    git("init", "--quiet");
-    git("commit", "--quiet", "--allow-empty", "-m", "first");
-
-    expect(sourceCommit(root)).toBe(git("rev-parse", "HEAD"));
-  });
-
-  it("is dev outside a git checkout", () => {
-    expect(sourceCommit(root)).toBe("dev");
   });
 });

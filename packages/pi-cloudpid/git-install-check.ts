@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off nodeBuiltinImport:off processEnv:off globalConsole:off asyncFunction:off -- native array methods over plain values; runs on node, as a CI step; hands the environment to npm; a check script's output; a plain async script.
+// @effect-diagnostics preferEffectArray:off nodeBuiltinImport:off globalConsole:off asyncFunction:off -- native array methods over plain values; runs on node, as a CI step; a check script's output; a plain async script.
 /**
  * Installs this repository as `pi install git:github.com/ian-pascoe/cloudpid` does and loads `/cloudpid` from it
  * (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Distribution): a copy of the working tree (the files

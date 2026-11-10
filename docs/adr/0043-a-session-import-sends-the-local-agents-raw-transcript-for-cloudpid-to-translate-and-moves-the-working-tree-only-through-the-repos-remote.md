@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (the extension is installed from the repo and follows `main`, no longer published after the deploy it targets: docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Distribution)
 ---
 
 # A Session import sends the Local agent's raw transcript for cloudpid to translate, and moves the working tree only through the Repo's remote
@@ -17,7 +17,7 @@ A Local agent (pi on the owner's machine) hands cloudpid a conversation and a wo
 ## Consequences
 
 - There is one translator, tested in cloudpid against fixtures, including a live probe per provider that history calls to tools the request doesn't declare are accepted.
-- `pi-session-jsonl` and the carry rule are contracts with laptop code. They change only additively, by a new `format` or through `carry_ref`, and the extension is published only after the deploy it targets.
+- `pi-session-jsonl` and the carry rule are contracts with laptop code. They change only additively, by a new `format` or through `carry_ref`. The extension follows `main`, so it can be ahead of the endpoint for the minutes between a merge and its deploy, and an older install can stay in use: either side must tolerate the other's version.
 - The owner's local branch and index stay as they were. A confirm dialog offers to stash the carried Changes, and bringing work back is `git pull` on the same branch.
 - Importing again onto a branch another Workspace holds is refused (`branch_taken`) until that Workspace is removed or another branch is named.
 - Only the Repo the Local agent runs in carries its uncommitted Changes. The Environment's other Repos start from the branch on their remotes, else from their default branches.

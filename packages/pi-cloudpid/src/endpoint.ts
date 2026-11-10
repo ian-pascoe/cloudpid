@@ -18,7 +18,8 @@ import {
 } from "@modelcontextprotocol/client";
 import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";
 import type { AuthStore } from "./auth-store.ts";
-import { type Config, clientName, endpointKey } from "./config.ts";
+import { clientName } from "./client-name.ts";
+import { type Config, endpointKey } from "./config.ts";
 import { REQUIRED_TOOLS } from "./constants.ts";
 import { ApiFailure, NOT_SIGNED_IN, Refusal, SIGN_IN_REJECTED, SignInRequired } from "./errors.ts";
 import {
