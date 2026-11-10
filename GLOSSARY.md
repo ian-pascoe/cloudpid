@@ -325,7 +325,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session, with one more at a Run's end listing the Agent changes it made and the cloudpid reports it filed; when a Trigger's Fire fails; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session, with one more at a Run's end listing the Agent changes it made and the cloudpid reports it filed; when a Trigger's Fire fails or cloudpid pauses a Trigger for its Fire rate; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
@@ -371,7 +371,7 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; making a Trigger, or widening one (its message, Schedule, match or options changed, or resuming it); or one no revert can undo (deleting an Environment or a kept Secret). A Session's agent waits for it on a card in the Session. An agent through the MCP endpoint does not wait: the Registry keeps its request, which the owner answers in the "Waiting for you" area of the Settings page section the change is in, and the agent follows it with `approval_wait`; on Approve the main Worker applies the change.
+The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; making a Trigger, or widening one (its message, Schedule or options changed, its match taking more, taking Own-bot deliveries, or resuming it); or one no revert can undo (deleting an Environment or a kept Secret). A Session's agent waits for it on a card in the Session. An agent through the MCP endpoint does not wait: the Registry keeps its request, which the owner answers in the "Waiting for you" area of the Settings page section the change is in, and the agent follows it with `approval_wait`; on Approve the main Worker applies the change.
 _Avoid_: Confirmation, permission, consent
 
 **cloudpid report**:
@@ -417,8 +417,16 @@ The text a Trigger sends at each Fire. It is kept as written and sent as the own
 _Avoid_: Prompt (alone), template, Instructions, payload
 
 **Paused trigger**:
-A Trigger that keeps everything it holds but does not fire until it is resumed.
+A Trigger that keeps everything it holds but does not fire until it is resumed. cloudpid pauses a webhook Trigger that goes past its Fire rate.
 _Avoid_: Disabled, off, archived
+
+**Own-bot delivery**:
+A GitHub delivery sent as cloudpid's own GitHub App bot, as every change an agent makes on GitHub is. A Trigger drops one unless it takes Own-bot deliveries, which the owner approves.
+_Avoid_: Self-delivery, echo, loopback, agent event
+
+**Fire rate**:
+The most Fires a webhook Trigger makes in an hour; one more pauses it.
+_Avoid_: Breaker, circuit breaker, throttle, rate limit (the MCP endpoint has one per caller), cap
 
 ## Credentials and the browser
 

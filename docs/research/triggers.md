@@ -123,3 +123,18 @@ _Bears on:_ a generic HMAC receiver can share the verify-then-enqueue path, but 
 - **Containers, per account.** Concurrent memory 6 TiB, concurrent vCPU 1,500, concurrent disk 30 TB. https://developers.cloudflare.com/containers/platform-details/limits/
 
 _Bears on:_ a 25 MiB request cap (GitHub's own payload cap) fits through one RPC call to the Trigger object. No platform ceiling makes a cap on concurrent trigger-started Sessions necessary at single-owner scale.
+
+## 10. Deliveries caused by the App's own token (added for [#724](https://github.com/ian-pascoe/cloudpid/issues/724))
+
+What a Trigger that takes Own-bot deliveries sees. Researched 2026-11-09; **documented** is stated in GitHub's docs, **inferred** is reasoned from them, and [#728](https://github.com/ian-pascoe/cloudpid/issues/728) checks the inferred ones on a deployed stage.
+
+- **`sender`.** "Most webhook payloads include a `sender` property identifying the user who triggered the event"; it is `ghost` only when "the triggering action has no associated user", and "API requests made by an app installation are attributed to the app" (documented). So a change made with the installation token arrives with `sender.login` `<slug>[bot]` and `sender.type` `Bot`, including `workflow_run`, `check_suite` and `push` for a push the App made, with `workflow_run.actor` the same (inferred). https://docs.github.com/en/webhooks/webhook-events-and-payloads, https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation
+- **Chained workflows.** A push made with `GITHUB_TOKEN` starts no workflow run, but one made with an App installation token does (documented), so the App's pushes do produce CI events. https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+- **Labels at creation.** An issue opened with two labels produces "one for the issue opened event and two for the two issue labeled events" (documented for Actions; the REST path with an App token is inferred). `POST /pulls` takes no labels, so a pull request's labels always come in a second call (`pull_request.labeled`).
+- **`workflow_run.pull_requests`, `check_suite.pull_requests`.** Each entry has `number` and `head.ref`; the list is empty for a fork's pull request (documented for check runs and suites) and for a push with no pull request (inferred).
+- **`sub_issues`, `issue_dependencies`, `issue_relates_to`** are webhook events a repo hook can subscribe to (documented); `sub_issues` carries `parent_issue` and `sub_issue`, `issue_dependencies` `blocked_issue` and `blocking_issue`, with the other side possibly in another repo.
+- **Reviews.** "Pull request authors cannot approve their own pull requests" (documented); the App approving or requesting changes on a pull request it opened is refused the same way (inferred).
+- **An issue closed by a closing keyword** on the App's merge: `sender` is the App's bot or `ghost`; not documented.
+- **Repo hooks** get only `check_run` created and completed and `check_suite` completed, at most 20 hooks per event per repo (documented).
+
+_Bears on:_ a Trigger that takes Own-bot deliveries hears every change the App makes, CI included; persons are told apart by `sender.type`, and a pipeline can't use GitHub's review verdict on the App's own pull requests.
