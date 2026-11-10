@@ -1,8 +1,9 @@
 /**
  * CI credentials as code: the GitHub Actions environments `production` (deployments from `main` only) and `preview`
- * (pull request previews, any branch, each job held for the owner's review), a scoped Cloudflare API token for each,
- * and the secrets and variables that hand them to .github/workflows/ci.yml, and for each environment a read-only analytics token its deploys bind to the
- * Workspaces Worker (CLOUDPID_ANALYTICS_TOKEN), which reads the Containers' usage for the Session header's cost.
+ * (pull request previews, any branch, each job held for the owner's deployment review), a scoped Cloudflare API token
+ * for each, and the secrets and variables that hand them to .github/workflows/ci.yml, and for each environment a
+ * read-only analytics token its deploys bind to the Workspaces Worker (CLOUDPID_ANALYTICS_TOKEN), which reads the
+ * Containers' usage for the Session header's cost.
  * Deployed once from a workstation with a profile that may create API tokens, and again to rotate the token or change
  * its permissions:
  *

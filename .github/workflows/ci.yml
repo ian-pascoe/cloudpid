@@ -418,7 +418,7 @@ jobs:
 
   # Deploys stage `pr-<number>` for a pull request from this repository, and destroys it when the pull request is closed
   # (https://alchemy.run/environments/ci/#how-pr-previews-work). Credentials come from the `preview` environment, which
-  # any branch may use, each job once the owner has reviewed it, a deploy and a destroy alike (infra/github.ts;
+  # any branch may use, each job after the owner's deployment review, a deploy and a destroy alike (infra/github.ts;
   # docs/development/infra.md → CI credentials). It holds its own token, without the zone permissions only `prod` needs,
   # and its own copy of the app secrets. Pull requests from forks get no secrets, so they get no preview. The preview's
   # main Worker is `cloudpid-server-pr-<number>` (its app origin, apps/server/src/deployment.ts), and its deploy fails
