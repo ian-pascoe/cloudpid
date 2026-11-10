@@ -22,5 +22,5 @@ Previews and dev stages use a GitHub App of their own, `cloudpid-dev`, installed
 
 - The Container tokens' explicit list of permissions (ADR-0049) still stops a prompt-injected `gh api` adding a hook directly. It does not stop an agent whose merge deploys `prod`, or whose workflow runs in `preview` with `cloudpid-dev`'s key on the repos that App is installed on.
 - `cloudpid-dev` is made with `bun run --cwd infra github-app:setup --name cloudpid-dev --environment preview`, which writes its key into `preview` and `~/.config/cloudpid/dev.env` and never into `production`. Installed on more repos, it reaches more.
-- A preview or dev stage reaches only the repos `cloudpid-dev` is installed on: on any other repo it gets no GitHub token, as a stage gets none on an account the App is not installed on.
+- A preview or dev stage reaches only the repos `cloudpid-dev` is installed on: its tokens reach no other private repo, and on an account it is not installed on a stage gets the token of the App's own account's installation, which reads public repos only.
 - An audit should not report these paths as findings. Reopen this when the factory runs code the owner does not trust, or when someone else gets access to the Apps, the repos or the account.
