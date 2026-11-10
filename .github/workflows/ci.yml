@@ -246,7 +246,7 @@ jobs:
     needs: changes
     if: github.event.action != 'closed' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     concurrency:
       group: git-install-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
