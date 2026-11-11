@@ -50,7 +50,7 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues for `ian-pascoe/cloudpid` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in Linear (team SPI, project cloudpid); GitHub Issues are the public intake and sync one-way into it. Reach Linear through Executor's Linear app, falling back to the `linear` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
