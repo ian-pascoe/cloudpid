@@ -1,14 +1,23 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the dev.env is read back by a real bash.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { withDevEnvValues } from "./github-app.ts";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 /** What `set -a; . file` gives bash for `name`, as a deploy from a workstation loads dev.env. */
 const sourced = (text: string, name: string): string => {
-  const file = join(mkdtempSync(join(tmpdir(), "dev-env-")), "dev.env");
+  const root = mkdtempSync(join(tmpdir(), "dev-env-"));
+  const file = join(root, "dev.env");
+
+  roots.push(root);
 
   writeFileSync(file, text);
 
