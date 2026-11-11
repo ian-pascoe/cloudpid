@@ -3,6 +3,7 @@
 // `structuredContent`, cuts, results over 1 MiB read from a stream, `replay: "safe"` with the `mcp.sent` marker.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off preferEffectRecord:off nodeBuiltinImport:off -- real files in a temporary directory.
+import { rmSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { DOCS, detailsOf, open, results, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, mcpExtension } from "./mcp.ts";
 import type { McpToolOptions } from "./mcp/tools.ts";
@@ -68,6 +69,23 @@ const completed = (value: JsonObject, structuredOutput?: McpStructuredOutput) =>
     ? McpHostCompleted.make({ result: { kind: "inline", value } })
     : McpHostCompleted.make({ result: { kind: "inline", value }, structuredOutput });
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+/** The Node environment, whose temporary directories (its Result Spills') are removed after the test too. */
+class SweptEnv extends NodeExecutionEnv {
+  override async createTempDir(...args: Parameters<NodeExecutionEnv["createTempDir"]>) {
+    const made = await super.createTempDir(...args);
+
+    if (made.ok) roots.push(made.value);
+
+    return made;
+  }
+}
+
 /** The model calls `search` `count` times; the host answers with `reply`, and the Session has a file system. */
 const calling = async (
   reply: Reply,
@@ -76,6 +94,7 @@ const calling = async (
   options: McpToolOptions = {},
 ) => {
   const directory = await mkdtemp(join(tmpdir(), "mcp-results-"));
+  roots.push(directory);
   const host = fakeMcpHost([server(tool)]);
   const tools = makeMcpTools(host.client, undefined, options);
 
@@ -86,7 +105,7 @@ const calling = async (
       request.text === "go"
         ? call(...Arr.makeBy(count, () => ["mcp__docs_site__search", {}] as const))
         : answer("ok"),
-    () => new NodeExecutionEnv({ cwd: directory }),
+    () => new SweptEnv({ cwd: directory }),
   );
 
   await session.start(tools);

@@ -4,10 +4,10 @@
  * and tracing → Conformance).
  */
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { MODES, outcome, parseBaseline, runnerBaseline, scenariosRan } from "./run.ts";
 
 const committed = readFileSync(resolve(import.meta.dirname, "baseline.json"), "utf8");
@@ -76,6 +76,8 @@ describe("the runner's baseline", () => {
 describe("the scenarios a side ran", () => {
   it("are the scenario directories the runner left a `checks.json` in, auth ones nested a level down", () => {
     const out = mkdtempSync(join(tmpdir(), "conformance-"));
+
+    onTestFinished(() => rmSync(out, { recursive: true, force: true }));
 
     for (const scenario of [
       "tools_call-2026",

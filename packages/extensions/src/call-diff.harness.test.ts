@@ -2,6 +2,7 @@
 // real files in a temporary directory and the real QuickJS sandbox. pi-durable's Harness is Promise-based, so this file is
 // too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalRandom:off nodeBuiltinImport:off -- real files in a temporary directory, as pi-durable's Node environment reads them.
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ import { err, FileError, type Result } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { MAX_DIFF_INPUT_BYTES } from "./call-diff.ts";
 import { codingToolsWith } from "./coding-tools.ts";
 
@@ -81,12 +82,19 @@ type Recorded = {
   readonly bytes: number;
 };
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /** A Workspace in a temporary directory with `files`, a Harness over it, and the model calling one tool. */
 const open = async (
   files: Readonly<Record<string, string | Uint8Array>> = {},
   options: { readonly unreadable?: readonly string[] } = {},
 ) => {
   const root = await mkdtemp(join(tmpdir(), "call-diff-"));
+  roots.push(root);
 
   for (const [path, content] of Object.entries(files)) {
     await mkdir(join(root, path, ".."), { recursive: true });
