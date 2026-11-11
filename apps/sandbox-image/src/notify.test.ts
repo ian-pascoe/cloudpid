@@ -5,18 +5,33 @@
 // FUSE mount was checked by hand in Docker (the doc section).
 // @effect-diagnostics nodeBuiltinImport:off processEnv:off preferEffectArray:off
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import { NOTIFY_ATTRIBUTE, NOTIFY_ROOT_VARIABLE } from "@cloudpid/sandbox-image/notify";
+
+/** The helper's build directory, removed after the file; the roots, after each test. */
+const builds: string[] = [];
+const roots: string[] = [];
+
+afterAll(() => {
+  for (const dir of builds.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 /** The helper built from the image's source, when this machine can build and run it (Linux, with `cc`). */
 const built = ((): string | undefined => {
   if (process.platform !== "linux") return undefined;
 
-  const program = join(mkdtempSync(join(tmpdir(), "cloudpid-notify-")), "cloudpid-notify");
+  const dir = mkdtempSync(join(tmpdir(), "cloudpid-notify-"));
+  const program = join(dir, "cloudpid-notify");
+
+  builds.push(dir);
 
   const compiled = spawnSync(
     "cc",
@@ -38,6 +53,8 @@ const built = ((): string | undefined => {
 /** A root for the helper with `src/a.js` and `keep/`, and whether its file system takes user extended attributes. */
 const root = () => {
   const dir = mkdtempSync(join(tmpdir(), "notify-root-"));
+
+  roots.push(dir);
 
   mkdirSync(join(dir, "src"));
   mkdirSync(join(dir, "keep"));

@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +28,18 @@ import {
 const guardScript = join(sandboxImageContext, "cloudpid-memory-guard");
 const commandBash = join(sandboxImageContext, "command.bash");
 
-const notesDirectory = () => join(mkdtempSync(join(tmpdir(), "memory-notes-")), "notes");
+const roots: string[] = [];
+
+/** A new directory under the system's temporary one, removed after the test, once its processes are stopped. */
+const temporaryDirectory = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+
+  roots.push(dir);
+
+  return dir;
+};
+
+const notesDirectory = () => join(temporaryDirectory("memory-notes-"), "notes");
 
 /** What earlyoom 1.7 prints just before it sends a process the signal. */
 const sending = (signal: string, pid: number, name: string, mib: number) =>
@@ -38,7 +50,7 @@ const sending = (signal: string, pid: number, name: string, mib: number) =>
  * without one), and runs until it is stopped, as earlyoom does.
  */
 const fakeEarlyoom = (lines: readonly string[], go?: string) => {
-  const dir = mkdtempSync(join(tmpdir(), "earlyoom-"));
+  const dir = temporaryDirectory("earlyoom-");
   const path = join(dir, "earlyoom");
   const args = join(dir, "args");
   const pid = join(dir, "pid");
@@ -78,6 +90,8 @@ const running: ChildProcess[] = [];
 
 afterEach(() => {
   for (const child of running.splice(0)) child.kill("SIGTERM");
+
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** The guard, as the supervisor starts it, with its stdout collected. */
@@ -318,7 +332,7 @@ describe("a command while the guard stops a process", () => {
     // The guard announces the stop while the command runs; the command ends a little after, as one whose process
     // was stopped does once the process has died.
     const notes = notesDirectory();
-    const go = join(mkdtempSync(join(tmpdir(), "go-")), "go");
+    const go = join(temporaryDirectory("go-"), "go");
     const earlyoom = fakeEarlyoom([sending("SIGTERM", 99, "python3", 5108)], go);
     const guard = startGuard(earlyoom.path, notes);
 

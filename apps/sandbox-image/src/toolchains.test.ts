@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { hasSetsid } from "./host.fixture.ts";
 import { variableNameProblem } from "@cloudpid/config";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
@@ -102,9 +102,18 @@ describe("a command's environment", () => {
   });
 });
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /** A throwaway Workspace root and HOME, and a `mise` on PATH that logs its calls and the directory they ran in. */
 const sandbox = (options: { readonly miseExit?: number; readonly installs?: string } = {}) => {
   const base = mkdtempSync(join(tmpdir(), "bootstrap-"));
+
+  roots.push(base);
+
   const root = join(base, "workspace");
   const home = join(base, "home");
   const bin = join(base, "bin");
@@ -750,6 +759,9 @@ describe("git after the bootstrap", () => {
 /** A Workspace root with repos, a Container state directory, and the two Setup Script commands run for real. */
 const setupSandbox = () => {
   const base = mkdtempSync(join(tmpdir(), "setup-"));
+
+  roots.push(base);
+
   const root = join(base, "workspace");
   const state = join(base, "state");
 

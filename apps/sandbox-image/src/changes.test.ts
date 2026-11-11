@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { hasGnuCoreutils } from "./host.fixture.ts";
 import {
   changesScript,
@@ -23,10 +23,18 @@ const env = {
   GIT_CONFIG_NOSYSTEM: "1",
 };
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /** A Workspace root with repo `app`, whose files are committed on `main`. */
 const workspace = (files: Readonly<Record<string, string | Uint8Array>>) => {
   const root = mkdtempSync(join(tmpdir(), "changes-"));
   const dir = join(root, "app");
+
+  roots.push(root);
 
   const sh = (script: string, cwd: string = root) => {
     const result = spawnSync("bash", ["-c", script], { cwd, encoding: "utf8", env });
