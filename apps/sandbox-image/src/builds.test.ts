@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,8 +31,9 @@ import {
   setupScriptRunIfDue,
 } from "@cloudpid/sandbox-image/toolchains";
 
-/** Processes a test started, killed after it whatever became of it. */
+/** Processes a test started, killed after it whatever became of it; then its directories are removed. */
 const started: number[] = [];
+const roots: string[] = [];
 
 afterEach(() => {
   for (const pid of started.splice(0)) {
@@ -41,11 +43,16 @@ afterEach(() => {
       // Gone already.
     }
   }
+
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** A scratch root, a Setup Script state, a fake `mise`, and bare remotes `app` and `api` whose default branch is `main`. */
 const container = () => {
   const base = mkdtempSync(join(tmpdir(), "builds-"));
+
+  roots.push(base);
+
   const root = join(base, "build");
   const state = join(base, "state");
   const home = join(base, "home");

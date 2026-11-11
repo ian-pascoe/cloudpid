@@ -2,10 +2,18 @@
 // clones of it in a throwaway root.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { hasGnuCoreutils } from "./host.fixture.ts";
 import {
   blobsScript,
@@ -27,6 +35,12 @@ const env = {
 const lines = (count: number, prefix = "line") =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index}\n`).join("");
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /**
  * A Workspace root with a bare remote `origin.git` (main: one commit) and repo `app`, a clone of it on `main`. Other
  * clones push to the remote from `other`.
@@ -34,6 +48,8 @@ const lines = (count: number, prefix = "line") =>
 const workspace = () => {
   const root = mkdtempSync(join(tmpdir(), "comparison-"));
   const dir = join(root, "app");
+
+  roots.push(root);
 
   const sh = (script: string, cwd: string = root) => {
     const result = spawnSync("bash", ["-c", script], { cwd, encoding: "utf8", env });

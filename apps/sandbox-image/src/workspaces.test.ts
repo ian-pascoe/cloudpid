@@ -8,11 +8,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { hasFlock } from "./host.fixture.ts";
 import { SETUP_SCRIPT, setupRecord, START_SCRIPT } from "@cloudpid/sandbox-image/toolchains";
 import {
@@ -27,9 +28,18 @@ import {
   workStateScript,
 } from "@cloudpid/sandbox-image/workspaces";
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /** A Workspace root, a Setup Script state, and bare remotes `app` and `api` whose default branch is `main`. */
 const container = () => {
   const base = mkdtempSync(join(tmpdir(), "workspaces-"));
+
+  roots.push(base);
+
   const root = join(base, "workspace");
   const state = join(base, "state");
   const home = join(base, "home");

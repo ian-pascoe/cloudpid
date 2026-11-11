@@ -11,6 +11,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
@@ -32,10 +33,22 @@ const script = join(sandboxImageContext, "supervise");
 type Report = { readonly method: string; readonly path: string; readonly body: string };
 
 const closers: Array<() => void> = [];
+const roots: string[] = [];
 
 afterEach(() => {
   for (const close of closers.splice(0)) close();
+
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+/** A new directory under the system's temporary one, removed after the test. */
+const temporaryDirectory = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+
+  roots.push(dir);
+
+  return dir;
+};
 
 /** A server that records what it is sent, as the Workspace DO's intercept would receive it. */
 const reportServer = async () => {
@@ -63,7 +76,7 @@ const reportServer = async () => {
 
 /** A fake computerd: a bash script doing `behaviour`. */
 const fakeComputerd = (behaviour: string) => {
-  const dir = mkdtempSync(join(tmpdir(), "supervise-"));
+  const dir = temporaryDirectory("supervise-");
   const path = join(dir, "computerd");
 
   writeFileSync(path, `#!/bin/bash\n${behaviour}\n`);
@@ -96,7 +109,7 @@ type SuperviseOptions = {
 const supervise = (computerd: string, port: number, options: SuperviseOptions = {}) =>
   new Promise<Run>((resolve) => {
     const { signal, env = {}, gate } = options;
-    const opened = join(mkdtempSync(join(tmpdir(), "gate-")), "opened");
+    const opened = join(temporaryDirectory("gate-"), "opened");
 
     const child = spawn("bash", [script], {
       env: {
@@ -107,8 +120,8 @@ const supervise = (computerd: string, port: number, options: SuperviseOptions = 
         // No memory guard unless a test gives one, whatever the machine has installed.
         CLOUDPID_MEMORY_GUARD: "/nonexistent/cloudpid-memory-guard",
         CLOUDPID_EARLYOOM: "/nonexistent/earlyoom",
-        CLOUDPID_MEMORY_NOTES: join(mkdtempSync(join(tmpdir(), "memory-notes-")), "notes"),
-        CLOUDPID_START_MARKER: join(mkdtempSync(join(tmpdir(), "start-marker-")), "started"),
+        CLOUDPID_MEMORY_NOTES: join(temporaryDirectory("memory-notes-"), "notes"),
+        CLOUDPID_START_MARKER: join(temporaryDirectory("start-marker-"), "started"),
         TEST_GATE: opened,
         TEST_GATE_LINE: gate?.trim() ?? "",
         ...env,
@@ -233,7 +246,7 @@ describe("the supervisor", () => {
 
   /** A computerd store, with SQLite's write-ahead log and shared memory files beside it, and a computerd that lists them. */
   const storeOnDisk = () => {
-    const dir = mkdtempSync(join(tmpdir(), "computerd-store-"));
+    const dir = temporaryDirectory("computerd-store-");
     const db = join(dir, "state.db");
 
     for (const file of [db, `${db}-wal`, `${db}-shm`]) writeFileSync(file, "sync state");
@@ -269,7 +282,7 @@ describe("the supervisor", () => {
 
   it("makes the Container's start marker anew before computerd starts, whatever a snapshot kept of it", async () => {
     const { port } = await reportServer();
-    const dir = mkdtempSync(join(tmpdir(), "start-marker-"));
+    const dir = temporaryDirectory("start-marker-");
     const marker = join(dir, "started");
 
     // A snapshot's marker: an older start's, with a content and times from long ago.
@@ -304,7 +317,7 @@ describe("the supervisor", () => {
 
 /** A fake earlyoom: it records its arguments and its pid, says it is up, and runs until it is stopped, as earlyoom does. */
 const fakeEarlyoom = () => {
-  const dir = mkdtempSync(join(tmpdir(), "earlyoom-"));
+  const dir = temporaryDirectory("earlyoom-");
   const path = join(dir, "earlyoom");
   const args = join(dir, "args");
   const pid = join(dir, "pid");
@@ -390,7 +403,7 @@ describe("the supervisor's memory guard", () => {
 
   it("clears the notes a snapshot kept before computerd starts: they are not this Container start's", async () => {
     const { port } = await reportServer();
-    const notes = join(mkdtempSync(join(tmpdir(), "memory-notes-")), "notes");
+    const notes = join(temporaryDirectory("memory-notes-"), "notes");
 
     mkdirSync(notes);
     writeFileSync(join(notes, "1700000000000000"), "an old note");
@@ -413,7 +426,7 @@ describe("the supervisor's memory guard", () => {
  * `launchEnv` is a launch's: the bridge with a token.
  */
 const fakeBridgeNode = () => {
-  const dir = mkdtempSync(join(tmpdir(), "bridge-"));
+  const dir = temporaryDirectory("bridge-");
   const node = join(dir, "node");
   const record = join(dir, "record");
   const pid = join(dir, "pid");

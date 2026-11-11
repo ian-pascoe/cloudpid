@@ -2,14 +2,20 @@
 // real, under bash, around a fake `dockerd` and `docker`.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off asyncFunction:off newPromise:off
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { hasFlock, hasSetsid } from "./host.fixture.ts";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 
 const helper = join(sandboxImageContext, "cloudpid-dockerd");
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 /**
  * A directory with a fake `dockerd`, which records its arguments and `DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE`, then
@@ -17,6 +23,8 @@ const helper = join(sandboxImageContext, "cloudpid-dockerd");
  */
 const fakes = (startSeconds: number) => {
   const dir = mkdtempSync(join(tmpdir(), "cloudpid-dockerd-"));
+
+  roots.push(dir);
 
   writeFileSync(
     join(dir, "dockerd"),
