@@ -2,6 +2,7 @@
 // temporary Workspace root, and the tests check what the system prompt and the tool results show, and that nothing a
 // request sent before changes in a later one. pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalRandom:off nodeBuiltinImport:off -- real files in a temporary directory, as pi-durable's Node environment reads them.
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ import { createEditTool, createReadTool, createWriteTool } from "@earendil-works
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   AgentsMdDoc,
   agentsMdExtension,
@@ -88,9 +89,16 @@ const Scripts = defineExtension({
   ],
 });
 
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /** A Workspace root in a temporary directory, with `files` (relative path to text) written in it. */
 const workspaceOf = async (files: Readonly<Record<string, string>>) => {
   const root = await mkdtemp(join(tmpdir(), "agents-md-"));
+  roots.push(root);
 
   for (const [path, content] of Object.entries(files)) {
     await mkdir(join(root, path, ".."), { recursive: true });
