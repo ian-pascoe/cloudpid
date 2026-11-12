@@ -1,5 +1,5 @@
 ---
-status: accepted, partly superseded by ADR-0055 (pnpm installs and runs the scripts, Vite+ runs the tasks instead of Turborepo, and type-aware lint runs on Vite+'s bundled tsgolint instead of tsrslint; tsrs still typechecks)
+status: accepted, partly superseded by ADR-0055 (pnpm installs and runs the scripts, Vite+ runs the tasks instead of Turborepo, and tsrslint becomes Vite+'s type-aware lint backend through a pnpm override instead of `scripts/link-tsrslint.sh`; tsrs still typechecks)
 ---
 
 # Bun installs and runs scripts, tsrs typechecks, and Vitest stays on Node
