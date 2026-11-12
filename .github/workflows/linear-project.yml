@@ -1,4 +1,4 @@
-# Puts each new GitHub issue's Linear copy into the Linear project cloudpid (scripts/linear-project.sh). Linear's GitHub
+# Puts each new GitHub issue's Linear copy into this repo's Linear project (LINEAR_PROJECT below; scripts/linear-project.sh). Linear's GitHub
 # Issues sync copies the issue into the team SPI but into no project, and agents read issues by project
 # (docs/agents/issue-tracker.md). It runs for `cloudpid-report` issues too: the GitHub App opens them, and an issue
 # opened by an App starts workflows (one opened with GITHUB_TOKEN would not). A dispatch takes an issue number, to retry
@@ -39,7 +39,7 @@ jobs:
       - name: Add to the project
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-          # The Linear project cloudpid (team SPI).
+          # This repo's Linear project (team SPI), by id: its name can change.
           LINEAR_PROJECT: c5b4ec54-51b3-4742-88a1-0a75c7c646a8
           ISSUE_URL: ${{ github.event.issue.html_url || format('{0}/{1}/issues/{2}', github.server_url, github.repository, inputs.issue) }}
         run: scripts/linear-project.sh
