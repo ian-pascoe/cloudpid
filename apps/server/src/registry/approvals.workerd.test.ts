@@ -14,7 +14,7 @@ import {
 } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   APPROVAL_LEASE_MS,
   type ApprovalAsk,

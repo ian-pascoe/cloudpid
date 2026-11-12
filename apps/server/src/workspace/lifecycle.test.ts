@@ -1,6 +1,6 @@
 // Removing a Workspace's object from the main Worker: wipe, then reset in a call of its own.
 // @effect-diagnostics asyncFunction:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type LifecycleHost,
   WORKSPACE_DELETED_REASON,

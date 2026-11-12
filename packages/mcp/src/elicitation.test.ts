@@ -7,7 +7,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AGENT, completed, run, TARGET, testDeps } from "./core.fixture.ts";
 import { ASK_TOOL, type FakeServer, fetchTo, legacyStatefulServer } from "./fakes.fixture.ts";
 import { connect, type McpDeps } from "./index.ts";

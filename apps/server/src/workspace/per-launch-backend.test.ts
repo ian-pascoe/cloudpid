@@ -2,7 +2,7 @@
 // Container settings): computer takes them when its backend is built. computer's backend is a fake.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type LaunchedBackend, PerLaunchContainerBackend } from "./per-launch-backend.ts";
 
 // SAFETY: the fake backends never read the host.

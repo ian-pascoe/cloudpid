@@ -2,7 +2,7 @@
 // row: the diagnostics a tool reports, a nested call's structured output, and the details.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MAX_ADDED_BYTES } from "./agents-md.ts";
 import { MAX_RESULT_IMAGE_CHARACTERS } from "./images.ts";
 import {

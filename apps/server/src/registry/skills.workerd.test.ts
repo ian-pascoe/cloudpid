@@ -13,7 +13,7 @@ import {
   skillField,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { EMPTY_SKILL_SET } from "../workspace/skill-set-schema.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import {

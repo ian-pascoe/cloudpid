@@ -11,16 +11,12 @@ permissions:
   contents: read
 
 env:
-  # `bun install` runs `prepare`: skip the git hooks. CI=true (set by Actions)
+  # `vp install` runs `prepare`: skip the git hooks. CI=true (set by Actions)
   # makes it skip the large reference-repo clones but keeps the effect-tsgo patch.
-  HUSKY: "0"
-  # Turbo's local cache, where the `check` job's cache step saves and restores it. Set, not left to turbo's default, so
-  # the two cannot drift apart.
-  TURBO_CACHE_DIR: .turbo/cache
+  VP_GIT_HOOKS: "0"
 
 jobs:
-  # Whether the change touches more than docs (`docs/**` and Markdown anywhere, which no build, test or deploy reads:
-  # turbo.json leaves `*.md` out of every task's inputs). A docs-only change runs only the format check (`docs`), not
+  # Whether the change touches more than docs (`docs/**` and Markdown anywhere, which no build, test or deploy reads). A docs-only change runs only the format check (`docs`), not
   # `checks`, the prod deploy or a preview. When the files cannot be listed, the change counts as code.
   changes:
     name: Changes
@@ -82,8 +78,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_REF: ${{ github.head_ref }}
 
-  # The whole check of a docs-only change: the formatter covers Markdown. oxfmt at the lockfile's version, without the
-  # install the other checks need.
+  # The whole check of a docs-only change: the formatter covers Markdown.
   docs:
     name: Format
     needs: changes
@@ -95,13 +90,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
+      # Vite+, Node, pnpm's store (cached by lockfile), and the install: `vp fmt` reads the root `vite.config.ts`.
+      - uses: ./.github/actions/setup
 
-      - run: |
-          version=$(sed -nE 's/^    "oxfmt": \["oxfmt@([^"]+)".*/\1/p' bun.lock)
-          bunx "oxfmt@$version" --check
+      - run: vp fmt --check
 
   # A pull request may only append to a migration manifest (`migrations.manifest.ts`): a plain `git revert` of the change
   # that added a migration removes its line too, which would let the next migration reuse its number (`docs/development/
@@ -123,9 +115,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
-  # What `bun run check` runs, split over runners so they run at once: the server's tests alone took about 4½ minutes on
+  # What `pnpm run check` runs, split over runners so they run at once: the server's tests alone took about 4½ minutes on
   # one runner, sharing its 4 cores with every other task, while the rest was done in about 1½. Each part has its own
-  # turbo cache, so a part whose inputs did not change replays its logs.
+  # Vite Task cache, so a task whose inputs did not change replays its logs.
   checks:
     name: ${{ matrix.name }}
     needs: changes
@@ -148,55 +140,54 @@ jobs:
           - name: Typecheck, lint, format, build
             part: static
             run: >-
-              bunx turbo run typecheck lint
-              && bun run format:check
-              && bunx turbo run build --filter @cloudpid/web
-              && bun run --cwd apps/server startup
+              vp check
+              && vp run -r typecheck
+              && vp run @cloudpid/web#build
+              && vp run @cloudpid/server#startup
           - name: Tests
             part: tests
-            run: bunx turbo run test --filter '!@cloudpid/server'
-          # vitest splits the server's test files (all its projects) over the shards; the shard is part of the task's
-          # hash, so each shard is cached on its own.
+            run: vp run --filter '*' --filter '!@cloudpid/server' --filter '!cloudpid' test
+          # vitest splits the server's test files (all its projects) over the shards; the shard is one of the task's
+          # arguments, so each shard is cached on its own.
           - name: Server tests (1/3)
             part: server-1
-            run: bunx turbo run test --filter @cloudpid/server -- --shard=1/3
+            run: vp run @cloudpid/server#test --shard=1/3
           - name: Server tests (2/3)
             part: server-2
-            run: bunx turbo run test --filter @cloudpid/server -- --shard=2/3
+            run: vp run @cloudpid/server#test --shard=2/3
           - name: Server tests (3/3)
             part: server-3
-            run: bunx turbo run test --filter @cloudpid/server -- --shard=3/3
-    env:
-      # A run summary per turbo run (`.turbo/runs`), naming every task's hash, for the cache pruning below.
-      TURBO_RUN_SUMMARY: "true"
+            run: vp run @cloudpid/server#test --shard=3/3
     steps:
       - uses: actions/checkout@v7
 
-      # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install.
+      # Vite+, Node, pnpm's store (cached by lockfile), and the install.
       - uses: ./.github/actions/setup
 
-      # This part's turbo cache: the newest one of this branch, else of main (a pull request can read its base's caches).
-      - uses: actions/cache@v6
+      # This part's Vite Task cache (`node_modules/.vite/task-cache`; docs/development/infra.md → CI), restored after the install,
+      # which recreates `node_modules`: the newest one of this branch, else of main (a pull request can read its base's
+      # caches). Each save is a new entry; the key holds no input, since Vite Task fingerprints those itself.
+      - id: task-cache
+        uses: actions/cache/restore@v6
         with:
-          path: ${{ env.TURBO_CACHE_DIR }}
-          key: turbo-${{ matrix.part }}-${{ runner.os }}-${{ github.sha }}
-          restore-keys: turbo-${{ matrix.part }}-${{ runner.os }}-
+          path: node_modules/.vite/task-cache
+          key: vite-task-${{ matrix.part }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vite-task-${{ matrix.part }}-${{ runner.os }}-
 
       - run: ${{ matrix.run }}
 
-      # Keep only the entries this commit's tasks used or made. Turbo never evicts, and each save carries the restored
-      # cache forward, so without this it grows with every commit. Every task of the part runs in every check, so what
-      # this run names is all a later run of the part can hit. Only after a passing run: a failed one stops early and
-      # names too few, and the cache step saves nothing then anyway.
-      - name: Prune turbo cache
+      # Vite Task never evicts, and each save carries the restored cache forward, so start over once it passes 1 GiB.
+      # Only after a passing run: a failed one leaves nothing worth keeping.
+      - name: Bound the Vite Task cache
         run: |
-          hashes=$(jq -r '.tasks[].hash' .turbo/runs/*.json | sort -u)
-          before=$(du -sh "$TURBO_CACHE_DIR" | cut -f1)
-          for file in "$TURBO_CACHE_DIR"/*; do
-            name=$(basename "$file")
-            grep -qxF "${name%%[-.]*}" <<<"$hashes" || rm -f "$file"
-          done
-          echo "Turbo cache: $before → $(du -sh "$TURBO_CACHE_DIR" | cut -f1), $(wc -l <<<"$hashes") tasks kept"
+          size=$(du -sk node_modules/.vite/task-cache | cut -f1)
+          echo "Vite Task cache: $((size / 1024)) MiB"
+          if [ "$size" -gt 1048576 ]; then vp cache clean; fi
+
+      - uses: actions/cache/save@v6
+        with:
+          path: node_modules/.vite/task-cache
+          key: ${{ steps.task-cache.outputs.cache-primary-key }}
 
   # The official MCP conformance suite against the core's scenario client and cloudpid's own MCP endpoint
   # (`packages/mcp/conformance`; `docs/architecture/mcp.md` → Testing and tracing → Conformance), once per mode: the spec
@@ -222,16 +213,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install.
+      # Vite+, Node, pnpm's store (cached by lockfile), and the install.
       - uses: ./.github/actions/setup
 
-      # `--cwd` after `run`: before it, Bun 1.4 prints its usage and exits 0, so every mode once passed without running a
-      # scenario (#619). So the step also needs `run.ts`'s last line, with a scenario run on each side: a command that
-      # never reaches `run.ts`, or a runner that runs nothing, fails it. `shell: bash` sets `pipefail`, so `tee` keeps
-      # `run.ts`'s exit code.
+      # A command that never reaches `run.ts` once passed every mode without running a scenario (#619), so the step also
+      # needs `run.ts`'s last line, with a scenario run on each side: a command that never reaches `run.ts`, or a runner
+      # that runs nothing, fails it. `shell: bash` sets `pipefail`, so `tee` keeps `run.ts`'s exit code.
       - shell: bash
         run: |
-          bun run --cwd packages/mcp conformance "$MODE" | tee "$RUNNER_TEMP/conformance.log"
+          pnpm --filter @cloudpid/mcp run conformance "$MODE" | tee "$RUNNER_TEMP/conformance.log"
           grep -q "^Conformance ($MODE): [1-9][0-9]* client and [1-9][0-9]* server scenarios ran$" "$RUNNER_TEMP/conformance.log"
         env:
           MODE: ${{ matrix.mode }}
@@ -256,11 +246,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install: the check runs on pi's own
-      # loader, a development dependency.
+      # Vite+, Node, pnpm's store (cached by lockfile), and the install: the check runs on pi's own loader, a development
+      # dependency.
       - uses: ./.github/actions/setup
 
-      - run: bun run --cwd packages/pi-cloudpid git-install:check
+      - run: pnpm --filter @cloudpid/pi-cloudpid run git-install:check
 
   # The one status the `main` ruleset requires (`Check`), and what the deploy jobs wait for: it passes only when every
   # part did, or for a docs-only change when `docs` did. It runs when one fails too (`!cancelled()`), so a failure
@@ -312,16 +302,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
       # No dependency cache in a job holding deploy credentials (cache poisoning).
-      - uses: actions/setup-node@v7
+      - uses: voidzero-dev/setup-vp@v1.22.0
         with:
-          node-version: lts/*
-
-      - run: bun install --frozen-lockfile
+          version-file: package.json
+          node-version: lts
+          run-install: |
+            - args: ["--frozen-lockfile"]
 
       # The web app's build, as the stack's `WebBuild` step runs it (apps/server/src/web-build.ts), before the plan: on a
       # checkout without `dist` the step plans an update, which leaves its outputs unknown, so `Server` (whose assets they
@@ -329,11 +316,11 @@ jobs:
       # app plans a noop, and so does `Server` when its bundle, assets and bindings are unchanged
       # (docs/development/infra.md → CI). No credentials here: the build runs the app's code and its tools.
       - name: Build the web app
-        run: bun run build
+        run: vp build
         working-directory: apps/web
 
       # The deploy credentials are scoped to this step: install scripts never see them.
-      - run: bun run deploy --stage prod --no-input --yes
+      - run: pnpm run deploy --stage prod --no-input --yes
         working-directory: infra
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -349,7 +336,7 @@ jobs:
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
           # The GitHub App the Workers mint GitHub tokens from (ADR-0025; read by `Config.Redacted`, bound as Worker
-          # secrets). Written into `production` and `preview` by `bun run github-app:setup` in `infra`.
+          # secrets). Written into `production` and `preview` by `pnpm run github-app:setup` in `infra`.
           CLOUDPID_GITHUB_APP_ID: ${{ secrets.CLOUDPID_GITHUB_APP_ID }}
           CLOUDPID_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLOUDPID_GITHUB_APP_PRIVATE_KEY }}
           # The read-only analytics token the Workspace DO reads its Containers' usage with (optional; bound as a Worker
@@ -416,10 +403,9 @@ jobs:
           ref: ${{ github.event.action == 'closed' && github.event.pull_request.head.sha || '' }}
           persist-credentials: false
 
-      # Bun's packages are only read here, never written: this job holds deploy credentials. Reading them adds no trust a
+      # pnpm's store is only read here, never written: this job holds deploy credentials. Reading it adds no trust a
       # preview did not already need: a pull request can read only its own caches (written by its `check` job, from the
-      # code this job deploys) and main's. Bun trusts its cache, so a poisoned one is the risk: only `check` jobs of
-      # this repository write it.
+      # code this job deploys) and main's, and pnpm checks each package against the lockfile's integrity hash.
       - uses: ./.github/actions/setup
         if: steps.pull-request.outputs.state != 'closed'
         with:
@@ -429,7 +415,7 @@ jobs:
       # `[Server] noop`. A destroy needs none.
       - name: Build the web app
         if: steps.pull-request.outputs.state != 'closed' && github.event.action != 'closed'
-        run: bun run build
+        run: vp build
         working-directory: apps/web
 
       # The deploy credentials are scoped to this step: install scripts never see them. `destroy` evaluates the stack,
@@ -438,7 +424,7 @@ jobs:
         if: steps.pull-request.outputs.state != 'closed'
         working-directory: infra
         run: >-
-          bunx alchemy
+          pnpm exec alchemy
           ${{ github.event.action == 'closed' && 'destroy' || 'deploy' }}
           --stage pr-${{ github.event.pull_request.number }} --no-input --yes
         env:

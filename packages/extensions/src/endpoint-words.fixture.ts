@@ -4,7 +4,7 @@
 // stated once.
 import { HARNESS_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 /** The tools a caller can be sent to: those the endpoint serves, and `session_start`, which `environment_create` names. */
 const SERVED: ReadonlyArray<string> = [...HARNESS_TOOL_NAMES, "session_start"];

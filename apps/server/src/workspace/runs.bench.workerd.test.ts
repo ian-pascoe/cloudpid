@@ -1,13 +1,14 @@
 // The Run copy measurements (docs/architecture/risks-and-spikes.md): the copy before a Run, the copy and the frozen list at
 // its end, and a live Run diff, in a Workspace DO, on the repos of 1,000, 5,000 and 20,000 tracked files the Changes
 // measurements use (`changes.setup.ts`), ten files edited before the Run and ten during it. Skipped unless
-// `CHANGES_BENCH=1`. Times are taken here, around each call: workerd's clock stands still while code runs.
+// `CHANGES_BENCH=1`. Times are taken here, around each call: workerd's clock stands still while code runs. From
+// `apps/server`:
 //
-//   CHANGES_BENCH=1 bun vitest run --project workerd-workspace --no-file-parallelism \
+//   CHANGES_BENCH=1 pnpm exec vitest run --project workerd-workspace --no-file-parallelism \
 //     src/workspace/runs.bench.workerd.test.ts
 // @effect-diagnostics asyncFunction:off globalConsole:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { env } from "cloudflare:workers";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it } from "vite-plus/test";
 import { MAX_TRACKED_FILES } from "./changes.ts";
 import { BENCH_EDITED, BENCH_SIZES, benchEdit, benchEdited, benchFile } from "./changes.repos.ts";
 

@@ -3,7 +3,7 @@
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import type { EntryId, EntryRecord } from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { capImages, fitEntry, middleCut, storedBytes } from "./import-bounds.ts";
 
 const entry = (text: string, extra: Partial<ToolResultMessage> = {}): EntryRecord => ({

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { byteSize, dollars, duration, relativeTime, spendLevel, tokenCount } from "./format.ts";
 
 const NOW = 1_700_000_000_000;

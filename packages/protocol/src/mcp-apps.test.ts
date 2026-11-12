@@ -1,6 +1,6 @@
 // App records' bounds and messages (`docs/architecture/mcp-apps.md` → App records, Socket messages).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   appAuditSummary,
   appRecordBytes,

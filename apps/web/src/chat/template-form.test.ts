@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- a menu's entries in native arrays.
 import { type McpMenuTemplate, type McpResourceMenu, MAX_RESOURCE_URI } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { detectTrigger } from "./completion.ts";
 import { completionFor, type MenuPick } from "./menu.ts";
 import {

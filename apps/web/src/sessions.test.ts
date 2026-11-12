@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { describe, expect, it } from "@effect/vitest";
-import { afterEach, vi } from "vitest";
+import { afterEach, vi } from "vite-plus/test";
 import { callIn, callOf } from "./calls.ts";
 import { exitFailure, failureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";

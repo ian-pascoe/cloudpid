@@ -6,7 +6,7 @@ import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ProposedBuild } from "../registry/builds.ts";
 import type { TestBuildState } from "../workspace/build-record.ts";
 import { type AuthorSource, sessionSource } from "./change-author.ts";

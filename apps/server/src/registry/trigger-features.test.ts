@@ -4,7 +4,7 @@
 import type { TriggerSourceInput } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { triggerGitHubHooksUnavailable, triggerGitHubHooksUnknown } from "./messages.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import { githubHookRefusal } from "./trigger-features.ts";

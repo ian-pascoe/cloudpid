@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off -- a command's run is a promise, awaited as the composer does.
 
 import { sessionCommandsFor } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 
 const run = () => null;

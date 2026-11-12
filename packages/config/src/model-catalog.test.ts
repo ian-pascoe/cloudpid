@@ -2,7 +2,7 @@
 // refused for each model it gives that the catalog does not list, and a lenient read that leaves out what the proxy no
 // longer serves, but nothing while the catalog is the fallback.
 // @effect-diagnostics preferEffectArray:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   FALLBACK_CATALOG,
   keepsSavedModel,

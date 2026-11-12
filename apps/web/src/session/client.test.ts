@@ -11,7 +11,7 @@ import * as Socket from "effect/socket/Socket";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import {
   HEARTBEAT_INTERVAL_MS,
   PONG_TIMEOUT_MS,

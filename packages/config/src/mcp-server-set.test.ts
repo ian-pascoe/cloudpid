@@ -3,7 +3,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type McpRepoLayer, resolveMcpServerSet } from "./mcp-server-set.ts";
 import { type McpServerValue, normalizeMcpServer } from "./mcp-servers.ts";
 import { resolveOverridesLeniently } from "./settings-overrides.ts";

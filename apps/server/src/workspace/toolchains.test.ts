@@ -12,7 +12,7 @@ import {
   ENVIRONMENT_START_FILE,
   SETUP_TIMED_OUT_MESSAGE,
 } from "@cloudpid/sandbox-image/toolchains";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { HoldOptions } from "./idle.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 

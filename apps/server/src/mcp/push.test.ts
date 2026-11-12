@@ -13,7 +13,7 @@ import {
   type McpPush,
 } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mcpPushes } from "./push.ts";
 
 // SAFETY: a result of a tag this build does not know, as a newer host answers it: the type cannot name it, so the edge's

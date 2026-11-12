@@ -6,7 +6,7 @@
 import type { McpCompletion } from "@cloudpid/protocol";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { CompletionAsk } from "./argument-completion.ts";
 import { ArgumentForm } from "./argument-form.tsx";
 

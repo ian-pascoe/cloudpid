@@ -2,7 +2,7 @@
 
 import { type McpPromptData, type McpPromptEntry, mcpPromptCallId } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SendingEntry } from "../session/state.ts";
 import {
   awaitedLine,

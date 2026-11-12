@@ -1,6 +1,6 @@
 // The Workspace DO's shared alarm: a step that fails does not keep the later ones from running.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { runAlarmSteps } from "./alarm.ts";
 
 describe("the alarm's steps", () => {

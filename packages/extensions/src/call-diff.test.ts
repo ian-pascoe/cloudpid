@@ -4,7 +4,7 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durable/env";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   BINARY_SCAN_BYTES,
   capturedDiffs,

@@ -1,7 +1,7 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- assistant-ui's messages carry a Date; the lanes are native arrays.
 
 import type { AppendMessage } from "@assistant-ui/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { queueAdapter, textOf, UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
 
 interface TextPart {

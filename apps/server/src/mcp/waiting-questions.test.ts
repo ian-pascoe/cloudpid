@@ -2,7 +2,7 @@
 // change gives a reason, and an answer that arrives after that is not sent on.
 // @effect-diagnostics asyncFunction:off newPromise:off
 import type { McpHostRequestHooks, McpInputAnswer } from "@cloudpid/mcp/types";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { END_TOLD_WITHIN_MS, waitingQuestions } from "./waiting-questions.ts";
 
 type Answer = typeof McpInputAnswer.Encoded;

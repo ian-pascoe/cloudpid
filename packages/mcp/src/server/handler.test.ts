@@ -16,7 +16,7 @@ import {
   MCP_TOOL_NAMES,
 } from "@cloudpid/protocol/mcp-api";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { clientOf } from "./caller.ts";
 import {
   DESCRIBE_TTL_MS,

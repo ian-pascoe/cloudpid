@@ -3,7 +3,7 @@
 // Project instructions after them win where the two disagree. workerd's APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
 describe("a Session's instruction sections", () => {

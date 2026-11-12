@@ -1,7 +1,7 @@
 // @effect-diagnostics schemaSync:off preferTypedSchemaDecoder:off -- the answers of a later build, decoded as they would cross the edge.
 /* oxlint-disable anti-slop-effect/no-manual-tagged-construction -- answers of a later build, as they cross the edge */
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   mcpStateIsProblem,
   McpReconnectView,

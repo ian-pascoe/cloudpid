@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ByteBudget } from "./budget.ts";
 import { discover } from "./calls.ts";
 import { Validators } from "./validators.ts";

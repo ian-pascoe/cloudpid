@@ -3,7 +3,7 @@
 // failure is remembered; and a repo's branches, for the draft's Start from menu.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalFetch:off
 import { MAX_REPO_BRANCHES } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type Json,
   BAD_CREDENTIALS,

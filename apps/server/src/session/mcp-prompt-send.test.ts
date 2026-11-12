@@ -2,7 +2,7 @@
 // @effect-diagnostics preferEffectArray:off -- plain fixtures.
 import type { PromptSummaries } from "@cloudpid/extensions/mcp";
 import { UPLOADS_ROOT } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   NO_SUMMARIES,
   promptContent,

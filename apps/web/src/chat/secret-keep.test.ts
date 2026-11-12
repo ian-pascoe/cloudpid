@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { chosenKeep } from "./secret-keep.ts";
 
 describe("the choice of what to do with the Secrets entered", () => {

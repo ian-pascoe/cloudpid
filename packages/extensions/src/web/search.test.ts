@@ -2,7 +2,7 @@
 // Exa and Parallel MCP endpoints do. The live check of each provider is in `search.live.test.ts`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off schemaSync:off
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { WebToolError } from "./errors.ts";
 import { openWebHarness } from "./harness.fixture.ts";
 import { selectSearchProvider } from "./search.ts";

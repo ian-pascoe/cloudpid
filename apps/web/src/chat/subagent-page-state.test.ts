@@ -1,5 +1,5 @@
 import type { GraphAgent, TaskGraphSummary } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { subagentOnPage } from "./subagent-page-state.ts";
 
 const agent = {

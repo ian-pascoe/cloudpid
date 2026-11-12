@@ -4,7 +4,7 @@
 // made it, and is shown in the root's thread, whose History holds the call; a call in a subagent's thread is not.
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { attachmentsAtom } from "../chat/attachments-state.ts";
 import { chatRegistry } from "../chat/chat.testing.ts";
 import { composerMountsAtom } from "../chat/composer-mounts.ts";

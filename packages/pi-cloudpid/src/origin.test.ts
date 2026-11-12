@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the extension carries no Effect runtime).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { matchEnvironments, normalizeRepoUrl } from "./origin.ts";
 
 describe("normalizeRepoUrl", () => {

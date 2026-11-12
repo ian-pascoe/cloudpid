@@ -30,7 +30,7 @@ import {
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import * as SchemaModule from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 

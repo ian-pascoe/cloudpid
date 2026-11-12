@@ -5,7 +5,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type BrowserHandoffRequest, makeBrowserHandoffs } from "./handoff.ts";
 import { fakeHandoffHost, LIVE_VIEW_LINKS, LIVE_VIEW_TOKEN } from "./host.fixture.ts";
 import { BrowserError, type BrowserHostService, type HandoffStatus } from "./host.ts";

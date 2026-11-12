@@ -14,7 +14,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { SessionRefusal } from "../registry/store.ts";
 import { endedBy } from "../session/mcp-follow.ts";
 import type { FollowState } from "../session/mcp-reads.ts";

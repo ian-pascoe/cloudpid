@@ -24,7 +24,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { DOCS, detailsOf, open, results, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, mcpExtension } from "./mcp.ts";
 import type { McpToolOptions } from "./mcp/tools.ts";

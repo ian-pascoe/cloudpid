@@ -6,7 +6,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { DOCS } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { MCP_ROUND_LOOK_TIMEOUT, lookAtRounds } from "./mcp/round-look.ts";

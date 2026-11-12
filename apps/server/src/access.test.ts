@@ -5,7 +5,7 @@ import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   ACCESS_ASSERTION_HEADER,
   AccessCaller,

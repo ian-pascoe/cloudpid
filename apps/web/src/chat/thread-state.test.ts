@@ -4,7 +4,7 @@
 import type { AppendMessage } from "@assistant-ui/react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import { opsFrame, RUN, settle } from "../session/client.testing.ts";
 import { chatRegistry, live, sent } from "./chat.testing.ts";

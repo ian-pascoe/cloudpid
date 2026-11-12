@@ -8,7 +8,7 @@ import { DEFAULT_ENVIRONMENT, MAX_ENVIRONMENT_SECRETS, SPARE_BRANCH } from "@clo
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { GLOBAL_DOCUMENT, globalSettingsOf, readGlobal, writeGlobal } from "./global.ts";
 import {

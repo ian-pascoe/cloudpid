@@ -6,7 +6,7 @@ import { HostFailed, McpSignInsTaken } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { CARRY_TIMEOUT, mcpSignInCarry } from "./sign-in-carry.ts";
 import { mcpHostName } from "./name.ts";
 

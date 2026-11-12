@@ -10,7 +10,7 @@ import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { elicitationLine, exportLinesOf, samplingLine } from "./mcp/export-lines.ts";
 import { type McpSamplingRecord, samplingRecords } from "./mcp/sampling-records.ts";
 import {

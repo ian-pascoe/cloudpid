@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { skillBlock } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MAX_EXPANDED_FILE_BYTES } from "@cloudpid/extensions/prompt-templates";
 import {
   expandMessage,

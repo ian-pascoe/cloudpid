@@ -1,3 +1,7 @@
+---
+status: accepted, partly superseded by ADR-0055 (pnpm installs and runs the scripts, Vite+ runs the tasks instead of Turborepo, and type-aware lint runs on Vite+'s bundled tsgolint instead of tsrslint; tsrs still typechecks)
+---
+
 # Bun installs and runs scripts, tsrs typechecks, and Vitest stays on Node
 
 The repo installs its dependencies with Bun instead of pnpm, and its scripts run through `bun run`. `bun.lock` replaces `pnpm-lock.yaml`; the workspaces, the patched dependencies and the packages allowed to run install scripts (`trustedDependencies`) are in the root `package.json`, and `bunfig.toml` holds the rest: the isolated linker (a pnpm-style layout, where a package sees only what it declares), the global store (one copy of each package in Bun's cache, which every checkout's `node_modules` links into) and the minimum release age (a day, as pnpm's default was). Bun's version is `packageManager`'s, pinned again in the repo's `mise.toml` for mise, locally and on a cloudpid Container.

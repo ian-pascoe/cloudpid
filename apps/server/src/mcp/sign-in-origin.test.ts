@@ -1,5 +1,5 @@
 // The origin a sign-in starts on (`docs/architecture/mcp-sign-in.md` → The client document and the callback outside Access).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { signInOrigin } from "./sign-in-origin.ts";
 
 const DEPLOYED = "https://cloudpid-server-pr-450.ian-g-pascoe.workers.dev";

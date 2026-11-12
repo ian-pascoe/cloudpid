@@ -2,7 +2,7 @@
 // Client registration, Sign-out): RFC 7009 revocation, `client_secret_expires_at`, the issuer pin and the size bounds.
 // The fakes answer `fetch(url, init)` only.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   boundedText,
   clientSecretExpiresAt,

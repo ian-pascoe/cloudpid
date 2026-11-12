@@ -12,10 +12,18 @@ const present = (command: string): boolean =>
   underCi || spawnSync(command, ["--version"]).status === 0;
 
 /**
+ * Whether the host's `command` is GNU's: its `--version` names `package`. Answering `--version` is not enough for
+ * coreutils: on macOS, Vite Task runs a cached task's `stat` as uutils' (`stat (uutils coreutils)`), whose `--printf`
+ * differs from GNU's.
+ */
+export const isGnu = (command: string, gnuPackage: string): boolean =>
+  underCi || String(spawnSync(command, ["--version"]).stdout ?? "").includes(`(GNU ${gnuPackage})`);
+
+/**
  * GNU coreutils, probed by its `stat`: `stat --printf`, `touch -d @<epoch>`, and a `head -c` that reads no more of a pipe
  * than it prints.
  */
-export const hasGnuCoreutils = present("stat");
+export const hasGnuCoreutils = isGnu("stat", "coreutils");
 
 /** util-linux's `flock`, which keeps two Sessions' scripts from running at once. */
 export const hasFlock = present("flock");

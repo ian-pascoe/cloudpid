@@ -2,14 +2,14 @@
 // and `readBlob`, and the whole listing, in a Workspace DO, on repos real git made of 1,000, 5,000 and 20,000 tracked
 // files (`changes.setup.ts`). Skipped unless `CHANGES_BENCH=1`. Times are taken here, around each call: workerd's clock
 // stands still while code runs. The heap is sampled from outside (`scripts/heap-poll.mjs`), so each phase is logged
-// with its start and end and kept apart by idle gaps:
+// with its start and end and kept apart by idle gaps, both from `apps/server`:
 //
-//   CHANGES_BENCH=1 bun vitest run --project workerd-workspace --inspect --no-file-parallelism \
+//   CHANGES_BENCH=1 pnpm exec vitest run --project workerd-workspace --inspect --no-file-parallelism \
 //     src/workspace/changes.bench.workerd.test.ts
 //   node scripts/heap-poll.mjs core:user:vitest-plugin-runner-workerd-workspace 20 > heap.log
 // @effect-diagnostics asyncFunction:off globalConsole:off globalDate:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off
 import { env } from "cloudflare:workers";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it } from "vite-plus/test";
 import { BENCH_EDITED, BENCH_SIZES, benchEdit, benchEdited, benchFile } from "./changes.repos.ts";
 
 const repos = inject("changesRepos");

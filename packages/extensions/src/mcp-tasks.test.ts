@@ -17,7 +17,7 @@ import type { TaskId, ToolExecutionApi } from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { open } from "./mcp.fixture.ts";
 import {
   makeMcpTools,

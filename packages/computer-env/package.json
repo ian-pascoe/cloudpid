@@ -7,11 +7,6 @@
     ".": "./src/index.ts",
     "./shell": "./src/shell.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@cloudflare/computer": "^0.9.0",
     "@earendil-works/chord": "^1.5.0",

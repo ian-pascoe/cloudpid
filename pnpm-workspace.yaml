@@ -1,0 +1,51 @@
+packages:
+  - apps/*
+  - infra
+  - packages/*
+
+# Workspace dependencies are plain versions (`"*"`), never `workspace:*`, so npm's production install of the root
+# (`pi install git:github.com/ian-pascoe/cloudpid`) can read them; this links them to the workspace's packages.
+linkWorkspacePackages: true
+
+# pnpm's default minimum release age (a day) holds; these vetted versions are exempt.
+minimumReleaseAgeExclude:
+  - "@pierre/diffs@1.6.2"
+  - "@pierre/highlights@0.3.0"
+
+allowBuilds:
+  "@google/genai": true
+  "@mongodb-js/zstd": false
+  core-js-pure: false
+  esbuild: true
+  node-liblzma: false
+  protobufjs: true
+  sharp: true
+  workerd: true
+
+patchedDependencies:
+  "@cloudflare/computer@0.9.0": patches/@cloudflare__computer@0.9.0.patch
+  "@cloudflare/vitest-plugin@1.5.1": patches/@cloudflare__vitest-plugin@1.5.1.patch
+  "@alchemy.run/cloudflare@2.0.0-beta.85": patches/@alchemy.run__cloudflare@2.0.0-beta.85.patch
+  "@earendil-works/pi-durable@1.5.0": patches/@earendil-works__pi-durable@1.5.0.patch
+
+overrides:
+  # Vite+ (docs/adr/0055-vite-plus-and-pnpm.md) brings its own Vite core and Vitest: every package that asks for `vite`
+  # or `vitest` gets those, so there is one of each. Plain versions, not a catalog: npm's production install of the root
+  # cannot read `catalog:`, as it cannot read `workspace:`.
+  vite@*: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vitest@*: 5.0.5
+  # One `ws` for every package: chord pins 8.21.0 and the rest resolve 8.22, and each `ws` is a peer variant of alchemy,
+  # whose two copies then fail the typecheck of `infra` (`AlchemyContext | AlchemyContext`).
+  ws: 8.22.1
+
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"
+
+# A package's peer variants are told apart by the peers' versions alone, not their whole dependency paths, so a package
+# is not copied once for each path its peers came by (two copies of `@cloudflare/computer` failed the server's typecheck).
+dedupePeers: true

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- expected lists of a test are native arrays.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mcpCredentialLiterals } from "./mcp-credentials.ts";
 
 const keys = (value: Parameters<typeof mcpCredentialLiterals>[0]) =>

@@ -5,7 +5,7 @@ import { env } from "cloudflare:test";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AssetLayer, serveAsset } from "./assets.ts";
 
 // SAFETY: the project binds the asset layer as `ASSETS` (vitest.config.ts).

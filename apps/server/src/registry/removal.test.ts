@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type RemovalRegistry, removals } from "./removal.ts";
 import type { WorkspaceRecord } from "./store.ts";
 

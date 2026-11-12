@@ -5,7 +5,7 @@
  * endpoint, `serveMcp` over `node:http`) (`docs/architecture/mcp.md` → Testing and tracing → Conformance;
  * `docs/architecture/mcp-endpoint.md` → Telemetry and testing; The MCP core #394 D25).
  *
- *   bun run --cwd packages/mcp conformance <2026-07-28 | 2025-11-25 | 2025-06-18 | 2025-03-26>
+ *   pnpm --filter @cloudpid/mcp run conformance <2026-07-28 | 2025-11-25 | 2025-06-18 | 2025-03-26>
  *
  * The runner's own baseline is a file of scenario names, which fails the run on a failure outside it (a regression)
  * and on a scenario in it that now passes (stale: remove the entry), so the baseline only shrinks. Its entries are

@@ -1,5 +1,5 @@
 // @effect-diagnostics schemaSync:off preferTypedSchemaDecoder:off preferEffectRecord:off -- plain assertions over decoded values.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   cleanPromptArgument,
   flatCut,

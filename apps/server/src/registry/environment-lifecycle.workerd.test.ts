@@ -5,7 +5,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import {
   addRepoAs,

@@ -2,7 +2,7 @@
 // workerd's `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildCsp } from "./csp.ts";
 import { FIXED_HEADERS } from "./headers.ts";
 import { PROXY_JS, proxyPage } from "./proxy.ts";

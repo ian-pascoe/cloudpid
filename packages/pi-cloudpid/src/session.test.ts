@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- runs on node, on the owner's machine.
 import { readFileSync } from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { snapshotOf } from "./session.ts";
 import { type DiskSession, makeSession } from "./stub.fixture.ts";
 

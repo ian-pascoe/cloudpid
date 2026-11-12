@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off preferEffectRecord:off schemaSync:off
 import { Schema } from "effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   VISUAL_CHECK_IMAGE_CHARACTERS,
   type VisualCheckInput,

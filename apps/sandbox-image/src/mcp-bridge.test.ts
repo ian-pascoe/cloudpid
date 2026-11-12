@@ -7,7 +7,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   type McpBridgeConfig,

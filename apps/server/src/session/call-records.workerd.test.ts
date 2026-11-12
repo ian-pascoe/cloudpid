@@ -9,7 +9,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestSession } from "./host.fixture.ts";
 import {
   callRecords,

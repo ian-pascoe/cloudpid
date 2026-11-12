@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { deviceMetrics, fromPage, pinch, screencastSize, toPage } from "./viewport.ts";
 
 describe("the tab's viewport", () => {

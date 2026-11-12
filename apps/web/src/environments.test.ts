@@ -9,7 +9,7 @@ import {
   type EnvironmentSecretRecord,
   type SessionRecord,
 } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   EMPTY_SECRET_DRAFT,
   GLOBAL,

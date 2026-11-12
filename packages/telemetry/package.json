@@ -7,11 +7,6 @@
     ".": "./src/index.ts",
     "./observability": "./src/observability.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@cloudpid/effect-durable": "*",
     "@earendil-works/pi-ai": "^1.5.0",

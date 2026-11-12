@@ -11,9 +11,6 @@
     "./github/app": "./src/github/app.ts"
   },
   "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run",
     "startup": "node scripts/startup.mjs"
   },
   "dependencies": {
@@ -46,6 +43,7 @@
     "@cloudflare/vitest-plugin": "^1.5.1",
     "@earendil-works/pi-schema": "^1.5.0",
     "@effect/platform-node": "^4.1.2",
-    "miniflare": "5.20261023.0-beta"
+    "miniflare": "5.20261023.0-beta",
+    "vitest": "5.0.5"
   }
 }

@@ -29,7 +29,10 @@ import type { AppliedSettingsChange, SettingsFieldChange } from "./settings.ts";
 export const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
 /** Whether two Overrides of a field are the same: both none, or both the same value. */
-export const sameOverride = (left: Option.Option<Schema.Json>, right: Option.Option<Schema.Json>) =>
+export const sameOverride = (
+  left: Option.Option<Schema.Json>,
+  right: Option.Option<Schema.Json>,
+) =>
   Option.isNone(left)
     ? Option.isNone(right)
     : Option.isSome(right) && sameJson(left.value, right.value);

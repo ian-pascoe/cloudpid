@@ -5,7 +5,7 @@
 import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import { CREATED_FIELD, GLOBAL_SCOPE, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type UpkeepChange, type UpkeepDeps, upkeepFor } from "./upkeep.ts";
 
 /** The upkeep's stand-ins over two Environments, each step noted when it runs, and `background` holding each until drained. */

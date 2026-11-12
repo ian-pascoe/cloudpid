@@ -8,11 +8,6 @@
     "./sqlite": "./src/sqlite.ts",
     "./sqlite/testing": "./src/sqlite-testing.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@earendil-works/chord": "^1.5.0",
     "@earendil-works/pi-ai": "^1.5.0",

@@ -9,7 +9,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SecretBuildMark } from "../registry/secret-changes.ts";
 import { HOLDS_SECRET, SECRETS_CHANGED, SECRETS_UNCHECKABLE } from "../registry/via-secrets.ts";
 import { type AuthorSource, sessionSource } from "./change-author.ts";

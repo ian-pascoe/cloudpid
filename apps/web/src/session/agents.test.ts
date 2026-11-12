@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- test code over native arrays.
 import type { GraphAgent, TaskGraphSummary } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   agentLabel,
   agentOfConversation,

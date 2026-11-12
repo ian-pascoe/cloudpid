@@ -4,7 +4,7 @@
 // (`TestWorkspace.fakeDevServer`).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off newPromise:off globalTimers:off
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { WorkspaceContainerPreviews } from "./worker.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 

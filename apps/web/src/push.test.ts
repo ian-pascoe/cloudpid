@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
-import { afterEach, vi } from "vitest";
+import { afterEach, vi } from "vite-plus/test";
 import {
   type BrowserSubscription,
   decodeKey,

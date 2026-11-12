@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SubagentsState } from "@cloudpid/extensions/subagents";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";

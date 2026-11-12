@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off
 import * as Effect from "effect/Effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { accessProps } from "./access-props.ts";
 import { ACCESS_AUDIENCE_VAR, LOCAL_MODE_VAR } from "./deployment.ts";
 

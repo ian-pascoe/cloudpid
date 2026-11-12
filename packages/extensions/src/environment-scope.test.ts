@@ -16,7 +16,7 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { Approvals } from "./approvals.ts";
 import {

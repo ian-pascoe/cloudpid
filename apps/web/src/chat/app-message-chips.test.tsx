@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App messages and App context. The chips above the composer's input: each App message with where
 // it came from, and Edit and Discard.
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   AppMessageChips,
   chipSource,

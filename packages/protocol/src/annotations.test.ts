@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { clampPageSource, isSamePage, type PageSource } from "./annotations.ts";
 import { MAX_PAGE_URL } from "./live-view.ts";
 

@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { DnsResolver, DOH_ENDPOINT, DohResolverLive } from "./dns.ts";
 import { WebToolError } from "./errors.ts";
 import { fakeTransport, ok } from "./web.fixture.ts";

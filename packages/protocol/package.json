@@ -16,11 +16,6 @@
     "./repo": "./src/repo.ts",
     "./visuals": "./src/visuals.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@cloudpid/config": "*",
     "@earendil-works/chord": "^1.5.0",

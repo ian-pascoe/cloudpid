@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { answer, call, context, openSubagentHarness } from "./subagents/harness.fixture.ts";
 import { COORDINATOR_TOOLS } from "./subagents.ts";
 import { fixedToolSearchSettings, isOffered, reloadToolSearch, ToolSearch } from "./tool-search.ts";

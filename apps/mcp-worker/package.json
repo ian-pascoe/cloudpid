@@ -8,11 +8,6 @@
     "./binding": "./src/binding.ts",
     "./engine": "./src/engine.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.85",
     "@cloudpid/mcp": "*",
@@ -28,6 +23,7 @@
     "@cloudpid/config": "*",
     "@cloudpid/protocol": "*",
     "@earendil-works/pi-mcp": "1.5.0",
-    "rolldown": "1.2.16"
+    "rolldown": "1.2.16",
+    "vitest": "5.0.5"
   }
 }

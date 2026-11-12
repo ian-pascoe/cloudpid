@@ -12,9 +12,6 @@
     "./server": "./src/server/index.ts"
   },
   "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run",
     "conformance": "node conformance/run.ts"
   },
   "dependencies": {

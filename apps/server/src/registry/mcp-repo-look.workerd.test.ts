@@ -11,7 +11,7 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fakeGithub } from "../github/skill-repo.fixture.ts";
 import { GithubReadError } from "../github/skill-fetch.ts";
 import { environmentMcpSet, mcpServerValuesAnswer, readsSecrets } from "./mcp-registry.ts";

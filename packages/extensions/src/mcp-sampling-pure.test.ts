@@ -3,7 +3,7 @@
 // model's reply becomes. Goldens of #387 D4, D11, D14, D15.
 // @effect-diagnostics preferEffectArray:off
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { chooseRole, type RoleModel, toolChoiceFor } from "./mcp/sampling-model.ts";
 import { type SamplingBlock, type SamplingMessage } from "./mcp/sampling-params.ts";
 import {

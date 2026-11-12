@@ -11,7 +11,7 @@ import {
 } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { DOCS, deferredIn, detailsOf, open, results, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

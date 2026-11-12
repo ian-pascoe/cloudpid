@@ -7,7 +7,7 @@ import {
   EXIT_REPORT_HOST,
   EXIT_REPORT_PATH,
 } from "@cloudpid/sandbox-image/supervisor";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type ExitReport,
   type ExitReportRedaction,

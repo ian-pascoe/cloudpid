@@ -10,7 +10,7 @@ import {
   type ListableBrowserSessionStore,
   type StoredBrowserSession,
 } from "agents/browser";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabStatesIn, tabsIn } from "./tab.ts";
 
 const memoryStore = (): ListableBrowserSessionStore & {

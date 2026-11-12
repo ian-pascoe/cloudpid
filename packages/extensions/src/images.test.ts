@@ -2,7 +2,7 @@
 // and is otherwise scaled and re-encoded until its base64 fits `MAX_IMAGE_CHARACTERS`, or left out with the reason.
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_IMAGE_LIMITS } from "@earendil-works/pi-durable/tools";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fakeImage, fakeImages } from "./images.fixture.ts";
 import {
   cloudflareImages,

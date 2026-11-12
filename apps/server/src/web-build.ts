@@ -22,19 +22,18 @@ import type { BuildProps } from "alchemy/Command";
  */
 export const webBuildProps = (webDirectory: string) =>
   ({
-    command: "bun run build",
+    command: "pnpm run build",
     cwd: webDirectory,
     outdir: "dist",
     memo: {
       // The app imports the protocol package's source, which the default scope (the app's own files) would miss.
       include: ["**/*", "../../packages/protocol/src/**"],
       // An `exclude` replaces the `.gitignore` rules alchemy would otherwise apply, so this restates the ones that
-      // reach these files (`node_modules/`, `dist/`, `.turbo/`). `**` matches no `../` path, so the protocol's tests
+      // reach these files (`node_modules/`, `dist/`). `**` matches no `../` path, so the protocol's tests
       // and helpers are named on their own.
       exclude: [
         "node_modules/**",
         "dist/**",
-        ".turbo/**",
         "**/*.test.ts",
         "**/*.test.tsx",
         "**/*.testing.ts",

@@ -12,7 +12,7 @@ import {
 } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AgentChangeAuthor, openAgentChanges } from "./agent-changes.ts";
 import { MCP_NOTICE_WINDOW_MS } from "./mcp-change-notice.ts";
 import type { RegistryMethods } from "./Registry.ts";

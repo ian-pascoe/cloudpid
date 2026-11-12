@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { markdownHtml } from "./markdown-html.ts";
 
 describe("a copied message's HTML", () => {

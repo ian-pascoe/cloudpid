@@ -3,7 +3,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { inBash } from "./shell.ts";
 
 const DASH = "/bin/dash";

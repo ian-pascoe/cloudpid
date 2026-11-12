@@ -3,7 +3,7 @@
  * (`docs/architecture/mcp-connections.md` → Discovery and the MCP inventory).
  */
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { xMcpHeaders } from "./tool-headers.ts";
 import { xMcpHeaderProblems } from "./types.ts";
 

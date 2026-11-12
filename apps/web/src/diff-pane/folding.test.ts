@@ -1,5 +1,5 @@
 import type { ChangeEntry } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { foldReason, LARGE_FILE_LINES } from "./folding.ts";
 
 const modified = (path: string, more: Partial<ChangeEntry> = {}): ChangeEntry => ({

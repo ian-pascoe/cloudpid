@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 import { EMPTY_SKILL_SET } from "./skill-set-schema.ts";
 import { FILE_PREFIX, skillSetStore } from "./skill-set.ts";

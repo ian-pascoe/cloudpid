@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { hasSetsid } from "./host.fixture.ts";
 import { variableNameProblem } from "@cloudpid/config";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
@@ -462,81 +462,9 @@ describe("the Container's global pnpm configuration", () => {
   });
 });
 
-describe("the Container's global Bun configuration", () => {
-  const configOf = (home: string) => join(home, ".bunfig.toml");
+describe("the Container's global pnpm configuration file", () => {
+  const configOf = (home: string) => join(home, ".config/pnpm/config.yaml");
 
-  it("switches the global store on, so a repo's node_modules links into Bun's cache on the Container's disk", () => {
-    const { home, run } = sandbox();
-
-    expect(run().status).toBe(0);
-    expect(readFileSync(configOf(home), "utf8")).toBe("[install]\nglobalStore = true\n");
-  });
-  it("adds the key under the file's own [install] table, keeping the rest", () => {
-    const { home, run } = sandbox();
-
-    writeFileSync(
-      configOf(home),
-      [
-        'registry = "https://example.test/"',
-        "",
-        "[install]",
-        "exact = true",
-        "",
-        "[run]",
-        "bun = true",
-        "",
-      ].join("\n"),
-    );
-
-    run();
-
-    expect(readFileSync(configOf(home), "utf8")).toBe(
-      [
-        'registry = "https://example.test/"',
-        "",
-        "[install]",
-        "globalStore = true",
-        "exact = true",
-        "",
-        "[run]",
-        "bun = true",
-        "",
-      ].join("\n"),
-    );
-  });
-
-  it("adds an [install] table on a new line when the file has none and does not end with a newline", () => {
-    const { home, run } = sandbox();
-
-    writeFileSync(configOf(home), "[run]\nbun = true");
-
-    run();
-
-    expect(readFileSync(configOf(home), "utf8")).toBe(
-      "[run]\nbun = true\n[install]\nglobalStore = true\n",
-    );
-  });
-
-  it("keeps a setting the file has, in its table or dotted, quoted or not", () => {
-    for (const own of [
-      "[install]\nglobalStore = false\n",
-      '[install]\n  "globalStore" = false\n',
-      "install.globalStore = false\n",
-    ]) {
-      const { home, run } = sandbox();
-
-      writeFileSync(configOf(home), own);
-      run();
-
-      expect(readFileSync(configOf(home), "utf8")).toBe(own);
-    }
-  });
-});
-
-describe.each([
-  ["pnpm", (home: string) => join(home, ".config/pnpm/config.yaml"), "pnpm/config.yaml"],
-  ["Bun", (home: string) => join(home, ".bunfig.toml"), ".bunfig.toml"],
-])("the Container's global %s configuration file", (_name, configOf, xdgPath) => {
   it("is written once: a second start leaves the file as it is", () => {
     const { home, run } = sandbox();
 
@@ -549,13 +477,13 @@ describe.each([
     expect(readFileSync(configOf(home), "utf8")).toBe(first);
   });
 
-  it("is written where its tool looks for it when XDG_CONFIG_HOME is set", () => {
+  it("is written where pnpm looks for it when XDG_CONFIG_HOME is set", () => {
     const { base, home, run } = sandbox();
     const xdg = join(base, "xdg");
 
     run({ XDG_CONFIG_HOME: xdg });
 
-    expect(existsSync(join(xdg, xdgPath))).toBe(true);
+    expect(existsSync(join(xdg, "pnpm/config.yaml"))).toBe(true);
     expect(existsSync(configOf(home))).toBe(false);
   });
 });

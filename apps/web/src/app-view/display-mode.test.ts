@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App Panes (Modes).
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's own `params`, as a case sends them */
 // @effect-diagnostics asyncFunction:off -- the handler answers a promise.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
 
 const context = { signal: new AbortController().signal };

@@ -5,7 +5,7 @@
  * is stored before the new access token is used, a refresh that fails asks for a sign-in, and a redirect on a bearer
  * request is read as an expired token, never followed.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { AuthEntry, AuthStore } from "./auth-store.ts";
 import { type Config, endpointKey } from "./config.ts";
 import { connectEndpoint } from "./endpoint.ts";

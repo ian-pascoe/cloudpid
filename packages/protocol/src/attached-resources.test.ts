@@ -2,7 +2,7 @@
 // messages that carry it (`docs/architecture/mcp-in-a-session.md` → Attached resources).
 // @effect-diagnostics preferEffectArray:off
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   attachableUriProblem,
   attachedResourceGoneMessage,

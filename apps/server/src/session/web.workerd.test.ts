@@ -9,7 +9,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 const PAGE = `<html><head><title>Hello page</title></head><body><nav>NavAlpha</nav>
 <main><h1>Hello</h1><p>world <strong>wide</strong> and <a href="https://example.com/x">linked</a></p></main></body></html>`;

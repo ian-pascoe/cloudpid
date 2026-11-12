@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
 import type { Mutable } from "effect/Types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MCP_HOST_FEATURES } from "@cloudpid/mcp/types";
 import {
   makeMcpTools,

@@ -5,7 +5,7 @@
 // the next Fires, the per-day delivery counts and the Trigger URL. The words a row shows are copy, and are held by
 // `settings/triggers.test.tsx` only as far as the markup has them.
 import { fireTimeWords, type TriggerDefinition } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   deliveryDays,
   emptyTriggerDraft,

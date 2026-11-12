@@ -1,8 +1,9 @@
+import { tasks } from "@cloudpid/config/tasks";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig, type ServerOptions } from "vite";
+import { defineConfig, type ServerOptions } from "vite-plus";
 
-/** Where `alchemy dev` serves the main Worker (`bun run --cwd infra dev`). */
+/** Where `alchemy dev` serves the main Worker (`vp run @cloudpid/infra#dev`). */
 const WORKER = "http://localhost:1337";
 
 // The main Worker serves the build as static assets (apps/server/src/worker.ts). `vite dev` proxies the Worker's
@@ -24,4 +25,6 @@ const server: ServerOptions = {
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server,
+  // The shared tasks (packages/config/src/tasks.ts); the build is a `package.json` script, which the WebBuild step runs.
+  run: { tasks },
 });

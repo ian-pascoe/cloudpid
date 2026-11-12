@@ -6,7 +6,7 @@
 import type { McpAppAuditEntry, McpAppRequestAnswer } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { RpcError } from "../sandbox-frame/frame-protocol.ts";
 import { SessionCommandError } from "../session/client.ts";
 import { auditLog, viewLogSink, viewRequestHandlers, type AppRequestClient } from "./requests.ts";

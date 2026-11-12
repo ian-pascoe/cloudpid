@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over values.
 import type { ConversationId, LastRun, RunDiff, TranscriptMessage } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { RUN_SOURCE, runSourceOf, sourceOfValue, sourceOptions, sourceValue } from "./branch.ts";
 import {
   notCapturedText,

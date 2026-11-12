@@ -12,7 +12,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ByteBudget } from "./budget.ts";
 import { discover, request } from "./calls.ts";
 import { promptsLeftOut, scrubValues, toolsLeftOut, vetListed } from "./scrub.ts";

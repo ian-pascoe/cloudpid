@@ -8,7 +8,7 @@ import {
 } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { earliest, onIdle, wakeAt } from "./wake.ts";
 
 const test = (name: string, body: () => Effect.Effect<void, unknown>) =>

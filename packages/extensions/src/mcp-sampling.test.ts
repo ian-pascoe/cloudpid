@@ -19,7 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as Predicate from "effect/Predicate";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createMcpSampling,
   MCP_SAMPLINGS_PER_CALL,

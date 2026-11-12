@@ -6,7 +6,7 @@
 // @effect-diagnostics preferEffectRecord:off preferEffectArray:off preferTypedSchemaDecoder:off schemaSync:off missedPipeableOpportunity:off
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MCP_TOOL_NAMES } from "./mcp-api.ts";
 import {
   EnvironmentField,

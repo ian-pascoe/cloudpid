@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DEFAULT_SETTINGS,
   FALLBACK_CATALOG,

@@ -1,6 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { testTimeout } from "@cloudpid/config/vitest";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 
 /**
  * A stand-in for the Workspaces Worker's Container previews entrypoint (`WorkspaceContainerPreviews`), which the browser

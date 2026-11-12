@@ -2,7 +2,7 @@
 // the entry an `update`'s `set` makes, and the entry a Repo's copy makes.
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { copiedEntry, credentialLiterals, entryWithSet } from "./settings-mcp-entry.ts";
 
 describe("credentialLiterals", () => {

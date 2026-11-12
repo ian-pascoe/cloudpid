@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { parseWorkState, workStateScript } from "@cloudpid/sandbox-image/workspaces";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { type ChangesFiles, type ContainerOnly, WorkspaceChangesModule } from "./changes.ts";
 import { WORK_STATE_BRANCH as BRANCH } from "./changes.repos.ts";
 import { porcelainLines, WorkspaceWorkStateModule } from "./work-state.ts";

@@ -4,7 +4,7 @@ import { RegistryContext } from "@effect/atom-react";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { composerMountsAtom, useComposerMounted } from "./composer-mounts.ts";
 import { conversationKey } from "./conversation.ts";
 

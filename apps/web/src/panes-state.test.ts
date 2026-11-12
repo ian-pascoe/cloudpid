@@ -4,7 +4,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
-import { afterEach, vi } from "vitest";
+import { afterEach, vi } from "vite-plus/test";
 import {
   clampPaneWidth,
   DEFAULT_PANE_WIDTH,

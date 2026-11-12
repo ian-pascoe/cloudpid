@@ -1,7 +1,7 @@
 // The Container's idle stop (docs/architecture/container.md): a Workspace stops its Container once no command
 // has used it for the idle time. The Workspace DO's alarm and storage are faked; the clock is a number the test moves.
 // @effect-diagnostics asyncFunction:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { CONTAINER_HOLD_CAP_MS, type ContainerHold, type HeldStop, IdleStop } from "./idle.ts";
 
 const MINUTE = 60_000;

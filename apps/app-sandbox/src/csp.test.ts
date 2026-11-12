@@ -4,7 +4,7 @@ import {
   VISUAL_SANDBOX_DIRECTIVE,
   visualCheckPolicy,
 } from "@cloudpid/protocol/visuals";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildCsp } from "./csp.ts";
 
 const ANCESTOR = "https://pi.ianpascoe.dev";

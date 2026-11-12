@@ -20,7 +20,7 @@ import { MAX_MCP_RESOURCE_PREVIEW_BYTES } from "@cloudpid/protocol";
 import { jsonBytesOf, MAX_MCP_RESOURCE_ANSWER_BYTES } from "./mcp/resource-preview.ts";
 import { DECODE_SLOT_OVER, PREVIEW_SLOT_OVER, takeDecodeSlot } from "./mcp/stream.ts";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { build, DOCS, startOf } from "./mcp.fixture.ts";
 import { MCP_NO_START_FEATURE, makeMcpTools, type McpResourcePreviewInput } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

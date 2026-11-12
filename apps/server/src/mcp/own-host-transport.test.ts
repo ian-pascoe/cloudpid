@@ -7,7 +7,7 @@ import { type McpPublicFetchRequest, McpPublicFetchResult } from "@cloudpid/mcp/
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { guardedOAuthFetch } from "./oauth-fetch.ts";
 import { ownHostRouted, type PublicReader, readsFromMcpWorker } from "./own-host-transport.ts";
 

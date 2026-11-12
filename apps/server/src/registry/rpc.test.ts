@@ -68,7 +68,7 @@ import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { isRegistryRpc } from "../routes.ts";
 import type { ForkPlan } from "../session/fork.ts";

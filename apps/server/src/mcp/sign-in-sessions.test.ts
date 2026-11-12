@@ -4,7 +4,7 @@
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { mcpSignInSessions, SESSION_CARRY_TIMEOUT } from "./sign-in-sessions.ts";
 
 const resolved = [

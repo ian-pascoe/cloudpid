@@ -4,7 +4,7 @@ import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SUBAGENT_WORKSPACE_PREFIX, type TestWorkspaceSession } from "./session.fixture.ts";
 import { call, uniqueWorkspace } from "./session.workerd.helpers.ts";
 

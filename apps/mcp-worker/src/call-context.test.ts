@@ -2,7 +2,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ByteBudget, makeBudget } from "./budget.ts";
 import { progressTo, withCall } from "./call-context.ts";
 import { MiB } from "./units.ts";

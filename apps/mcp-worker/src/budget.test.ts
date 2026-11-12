@@ -1,6 +1,6 @@
 // The budget's leases are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeBudget, POOL_CALL_LIMIT } from "./budget.ts";
 import { MiB } from "./units.ts";
 

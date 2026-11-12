@@ -6,7 +6,7 @@ import { defineExtension, type Task, type TaskRuntime } from "@earendil-works/pi
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ChordContext } from "./chord.ts";
 import { callDurable, type HarnessError } from "./Harness.ts";
 import { context, openFauxHarness } from "./harness.fixture.ts";

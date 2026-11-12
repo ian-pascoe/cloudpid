@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- a fake textarea's log over native arrays.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { BACKSPACE, ENTER, keyPress, type CdpCommand } from "./cdp.ts";
 import type { Field, FocusedElement } from "./field-map.ts";
 import { Keyboard, type TypingTextarea } from "./keyboard.ts";

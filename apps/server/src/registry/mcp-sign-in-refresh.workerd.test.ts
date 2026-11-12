@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { completeMcpSignIn, type FlowDeps, startMcpSignIn } from "./mcp-sign-in-flow.ts";
 import { MAX_BACKOFF_MS } from "./mcp-sign-in-backoff.ts";
 import { mcpTokenRefresh } from "./mcp-sign-in-refresh.ts";

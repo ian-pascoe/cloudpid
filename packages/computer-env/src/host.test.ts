@@ -4,7 +4,7 @@
 import type { Workspace } from "@cloudflare/computer";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ContainerAccess } from "./container-files.ts";
 import { WorkspaceEnvHost } from "./host.ts";
 import type { EnvRequest } from "./wire.ts";

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { trimGitHubBody } from "./trigger-github.ts";
 
 const sample = (name: string): string =>

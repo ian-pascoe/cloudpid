@@ -16,7 +16,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { installFakeFrames, ORIGIN } from "../app-view/frame-kit.testing.ts";
 import { ShownSession, ThreadPlace } from "../chat/conversation.ts";
 import { PaneArea } from "../pane-area.tsx";

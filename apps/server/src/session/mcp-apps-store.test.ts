@@ -16,7 +16,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { McpApps, type McpAppsService } from "./mcp-apps.ts";
 import { type McpAppsStorage, sessionMcpApps } from "./mcp-apps-store.ts";
 

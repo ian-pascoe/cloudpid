@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- windows over native arrays, as the code under test keeps them.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { selectWindow, stripOf, windowClosed, type WindowStrip } from "./windows.ts";
 
 const tab = { targetId: "T", link: "wss://x/T" };

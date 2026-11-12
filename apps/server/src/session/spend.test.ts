@@ -17,7 +17,7 @@ import {
   Harness,
   MemoryStorage,
 } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { pricedModels } from "./priced.fixture.ts";
 import {
   addTotals,

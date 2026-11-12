@@ -12,7 +12,7 @@ import {
   type SessionVia,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 

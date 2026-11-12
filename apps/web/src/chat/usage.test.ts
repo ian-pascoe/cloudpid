@@ -1,5 +1,5 @@
 import type { ContainerUsage, ContextUsage, SessionUsage } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { contextLevel, contextPercent, liveContainerUsage, totalSpend } from "./usage.ts";
 
 const context = (tokens: number, compactAt: number | null = 160_000): ContextUsage => ({

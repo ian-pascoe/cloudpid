@@ -1,6 +1,6 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Where it renders, Remounting), App Panes. Which place mounts
 // a View, how it moves, and that the next place mounts only once the last one's frame has gone.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AppPlaces, PLACE_NAMES, placeKey, type AppPlace } from "./places.ts";
 
 /** A store, and a way to make a place that claims a call and wants its View. */

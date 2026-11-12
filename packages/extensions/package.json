@@ -59,11 +59,6 @@
     "./mcp": "./src/mcp.ts",
     "./visuals": "./src/visuals.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@cloudpid/config": "*",
     "@cloudpid/effect-durable": "*",

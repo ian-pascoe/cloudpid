@@ -4,7 +4,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { effectTelemetry } from "./adapter.ts";
 
 /** A tracer that keeps every span it makes, as Effect's own `NativeSpan`s, in creation order. */

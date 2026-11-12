@@ -6,11 +6,6 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.85",
     "@cloudpid/protocol": "*",
@@ -21,6 +16,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.5.1",
-    "@cloudpid/config": "*"
+    "@cloudpid/config": "*",
+    "vitest": "5.0.5"
   }
 }

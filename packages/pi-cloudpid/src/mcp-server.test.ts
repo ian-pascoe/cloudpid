@@ -12,7 +12,7 @@ import type {
   ExtensionContext,
   McpServerConfig,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import register from "./index.ts";
 import { MCP_SERVER_DESCRIPTION, MCP_SERVER_NAME } from "./mcp-server.ts";
 import { scriptedUi } from "./stub.fixture.ts";

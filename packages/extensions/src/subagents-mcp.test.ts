@@ -6,7 +6,7 @@
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, ISSUES, open, startOf } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";

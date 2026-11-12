@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { FileListings, fileListingsLayer } from "../session/file-search.ts";
 import { type WorkspaceLookups, workspaceLookups } from "../session/lookups.ts";
 import { uniqueWorkspace } from "./session.workerd.helpers.ts";

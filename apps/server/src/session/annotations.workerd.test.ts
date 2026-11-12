@@ -24,7 +24,7 @@ import {
 import { secretReference } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { ChangesFixture, TestSession } from "./host.fixture.ts";

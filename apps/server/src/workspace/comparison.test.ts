@@ -8,7 +8,7 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { WORKSPACE_ROOT } from "@cloudpid/protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ChangesFiles } from "./changes.ts";
 import { isSafeBase, KEPT_COMPARISONS, WorkspaceComparisonModule } from "./comparison.ts";
 import { githubRepoOf } from "./github-pulls.ts";

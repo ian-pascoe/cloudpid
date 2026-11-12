@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 import { MAX_FILE_BYTES, MAX_SKILL_BYTES } from "@cloudpid/extensions/skill-checks";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fetchSkills, fetchSkillsAt, GithubReadError, type RepoReader } from "./skill-fetch.ts";
 import { parseSkillSource } from "./skill-source.ts";
 

@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import type { Schema } from "effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { BrowserGoneError, type CdpEvent } from "./cdp.ts";
 import {
   fakeTransport,

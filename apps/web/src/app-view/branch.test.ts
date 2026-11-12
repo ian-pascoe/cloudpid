@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Remounting).
 // @effect-diagnostics preferEffectArray:off -- messages and entries in native lists.
 import type { McpAppEntry, TranscriptMessage } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { callsDroppedBy } from "./branch.ts";
 
 const assistant = (id: string, ...calls: string[]): TranscriptMessage => ({

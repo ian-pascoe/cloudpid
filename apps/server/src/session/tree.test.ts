@@ -5,7 +5,7 @@ import {
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
 import type { ConversationId, EntryId, EntryRecord, Tx } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   abandonedEntries,
   activateBranch,

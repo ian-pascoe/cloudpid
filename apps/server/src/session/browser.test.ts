@@ -2,7 +2,7 @@
 // @effect-diagnostics asyncFunction:off
 import { BrowserError } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { remoteBrowserHost } from "./browser.ts";
 
 /** A Session with no Workspace: the host is told none. */

@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- Pane keys in native arrays, as the code under test keeps them.
 
 import { liveViewPaneKey } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   appPaneKey,
   applyPaneAction,

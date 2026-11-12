@@ -1,6 +1,7 @@
 node_modules/
-.repos/
+# Turborepo's, from before Vite+ (docs/adr/0055-vite-plus-and-pnpm.md), still in older checkouts.
 .turbo/
+.repos/
 .worktrees/
 .scratch/
 .alchemy/
@@ -12,3 +13,4 @@ dist/
 
 # The conformance runner's results.
 packages/mcp/conformance/results/
+.vitest/

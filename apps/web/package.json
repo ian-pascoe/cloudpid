@@ -4,11 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
+    "dev": "vp dev",
+    "build": "vp build"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.32",
@@ -47,6 +44,8 @@
     "@vitejs/plugin-react": "^6.2.1",
     "happy-dom": "^21.0.4",
     "tailwindcss": "^4.3.4",
-    "vite": "^8.3.5"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
+    "vite-plus": "1.4.0",
+    "vitest": "5.0.5"
   }
 }

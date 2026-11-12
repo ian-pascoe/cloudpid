@@ -1,6 +1,6 @@
 import type { NestedTool } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { liveCalls, omittedCalls, settledCalls } from "./nested-calls.ts";
 
 const nested = (change: Partial<NestedTool>): NestedTool => ({

@@ -4,7 +4,7 @@
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fakeHandoffHost } from "./host.fixture.ts";
 import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
 import { type BrowserStorage, makeBrowserSession, WATCH_WRITE_MS } from "./session.ts";

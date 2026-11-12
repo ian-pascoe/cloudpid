@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off schemaSync:off
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   CLIENT_ASSERTION_TYPE,
   clientAssertionClaims,

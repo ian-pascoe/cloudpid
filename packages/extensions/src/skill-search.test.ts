@@ -14,7 +14,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { runProgram, runSized } from "./program.fixture.ts";
 import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
 import { MAX_LIMIT, queryProblem, readSkillSearch, skillSearchUrl } from "./skill-search.ts";

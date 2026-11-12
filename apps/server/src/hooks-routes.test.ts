@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { hooksRoute } from "./hooks-routes.ts";
 
 const id = "0190f0a8-1b2c-7d3e-8f40-123456789abc";

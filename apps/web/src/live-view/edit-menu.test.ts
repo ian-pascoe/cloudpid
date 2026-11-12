@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { menuItems, MenuProbe, menuProbeScript, placeMenu, wordAtScript } from "./edit-menu.ts";

@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off strictEffectProvide:off
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import type { WorkspaceChanges } from "@cloudpid/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";

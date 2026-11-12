@@ -9,7 +9,7 @@
 import { WIDENING_REFUSAL_TAIL } from "@cloudpid/protocol";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mcpReloadCore, SETTINGS_REPLAYED, settingsEndpointCores } from "./settings-endpoint.ts";
 import { DEFAULT, DOCS, FILES, REASON, STAGING, field, setup } from "./settings-mcp.fixture.ts";
 

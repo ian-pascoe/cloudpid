@@ -1,7 +1,7 @@
 // The notices a Session shows of its Workspace's held stops (docs/architecture/container.md → Idle stop).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { projectEntry } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { HeldStop } from "../workspace/idle.ts";
 import { HELD_STOPS_SEEN_KEY, heldStopEntry, showHeldStops } from "./held-stops.ts";
 

@@ -6,7 +6,7 @@
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MCP_TASK_NOTICE_KIND } from "./mcp.ts";
 import type { FakeMcpServer } from "./mcp.testing.ts";
 import {

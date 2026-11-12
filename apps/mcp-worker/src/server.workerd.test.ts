@@ -17,7 +17,7 @@ import {
   type WaitResult,
 } from "@cloudpid/protocol/mcp-api";
 import { McpClient, StreamableHttpTransport } from "@earendil-works/pi-mcp";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { McpServerBinding } from "./binding.ts";
 
 declare global {

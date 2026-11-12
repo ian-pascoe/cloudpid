@@ -1,5 +1,5 @@
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import {
   attachmentRoute,
   isAssetPath,

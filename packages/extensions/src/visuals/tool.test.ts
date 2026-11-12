@@ -5,7 +5,7 @@
 // over plain maps.
 import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durable/env";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { visualFilesOf } from "./tool.ts";
 
 type Env = Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "canonicalPath" | "readBinaryFile">;

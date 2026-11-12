@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off newPromise:off globalTimers:off
 import { env, exports } from "cloudflare:workers";
 import { MCP_BRIDGE_CONFIG_HEADER } from "@cloudpid/sandbox-image/mcp-bridge";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { workspacePreparation } from "./prepare.ts";
 import type { WorkspaceMcpBridge } from "./worker.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";

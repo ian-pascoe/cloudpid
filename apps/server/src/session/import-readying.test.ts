@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off -- the readying is a Promise.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ImportRecord } from "./import-staging.ts";
 import { IMPORT_NOT_READIED, importReadying } from "./import-readying.ts";
 import type { SettingsKv } from "./settings.ts";

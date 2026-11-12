@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { hasFlock, hasSetsid } from "./host.fixture.ts";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 

@@ -4,7 +4,7 @@
 // browser is gone is said to be gone rather than replaced unasked.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { MAX_PAGE_SELECTION_READ, OWNER_TAB_GONE } from "@cloudpid/extensions/browser/contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { BrowserGoneError } from "./cdp.ts";
 import { fakeTransport, linkTo, page, records, TOKEN } from "./cdp.testing.ts";
 import { OwnerTabs, ownerTabScope, SELECTION } from "./owner-tabs.ts";

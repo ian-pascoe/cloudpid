@@ -5,7 +5,7 @@
 import { type JsonObject, MCP_STREAM_HOLD_MS } from "@cloudpid/mcp/types";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { boundedMeta, MAX_META_BYTES } from "./mcp/details.ts";
 import { headWithin, MAX_TEXT_BYTES, MAX_TEXT_LINES } from "./mcp/head.ts";
 import { resultFor } from "./mcp/result.ts";

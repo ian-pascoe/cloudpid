@@ -4,7 +4,7 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 

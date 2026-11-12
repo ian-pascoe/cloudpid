@@ -12,7 +12,7 @@ import type {
   WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Mutable } from "effect/Types";
 import { type TriggerState, TriggerUnreachable } from "../trigger/object.ts";
 import { triggerGitHubHooksUnavailable } from "../registry/messages.ts";

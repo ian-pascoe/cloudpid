@@ -3,7 +3,7 @@
 // so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ownerRollover, PREPARE_ENTRY, rolloverPrompt } from "./context.ts";
 import { PREPARE_PROMPT } from "./context/rollover.ts";
 import { SubagentsDoc } from "./subagents.ts";

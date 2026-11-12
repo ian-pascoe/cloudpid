@@ -1,6 +1,6 @@
 // docs/architecture/visuals.md → The frame. What a sandboxed frame is told of its host that App Views and Visuals share: the
 // style variables, and the difference between two host contexts.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { changedContext, hostStyleVariables } from "./host-context.ts";
 
 const readProperty = (property: string) => (property === "--background" ? " #000 " : "");

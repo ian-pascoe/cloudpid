@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Complete, McpDeps, McpTarget, Outcome, RowStore, TaskStarted } from "./index.ts";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import type { McpCallContext, McpError } from "./types.ts";
 
 export const TARGET: McpTarget = { url: "https://mcp.example.test/mcp" };

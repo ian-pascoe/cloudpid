@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import type { McpEngineMethods, McpEnginePriorEncoded } from "@cloudpid/mcp/types";
 import { McpEngineDiscoverResult, McpEngineRequestResult } from "@cloudpid/mcp/types";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 declare global {
   namespace Cloudflare {

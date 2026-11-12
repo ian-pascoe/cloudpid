@@ -4,7 +4,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { ConversationId } from "@cloudpid/protocol";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";

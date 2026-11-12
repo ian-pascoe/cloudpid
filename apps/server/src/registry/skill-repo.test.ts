@@ -1,7 +1,7 @@
 // What the repo page joins to the Skills GitHub lists (`docs/architecture/workspace.md` → _The Skill directory_): installs
 // from the Skill directory's search, badges from the Skills the Registry keeps, matched exactly by repo and folder.
 // @effect-diagnostics preferEffectArray:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { InstalledSkillRef } from "./skill-badges.ts";
 import { skillIdOf } from "../github/skill-fetch.ts";
 import { joinRepoSkills, type SkillRepoRows } from "./skill-repo.ts";

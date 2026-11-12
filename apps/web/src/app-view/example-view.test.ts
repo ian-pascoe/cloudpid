@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { McpUiToolResultNotification } from "@modelcontextprotocol/ext-apps";
 import { Window } from "happy-dom";
 import { build } from "vite";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { PROXY_JS, proxyPage } from "../../../app-sandbox/src/proxy.ts";
 import type { IncomingMessage } from "../sandbox-frame/frame-protocol.ts";
 import { createBridge, type Bridge, type BridgeEvent } from "./bridge.ts";

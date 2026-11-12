@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off preferEffectRecord:off missedPipeableOpportunity:off instanceOfSchema:off -- a fake of GitHub over native arrays.
 import { SkillRepoError } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { githubContents } from "../github/contents.ts";
 import { fakeGithub, skillMd } from "../github/skill-repo.fixture.ts";
 import { fetchSkills, GithubReadError } from "../github/skill-fetch.ts";

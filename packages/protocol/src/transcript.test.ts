@@ -1,6 +1,6 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Annotation, PageAnnotation } from "./annotations.ts";
 import { cropLabel, renderReview, reviewMessage } from "./review.ts";
 import { fencePayload } from "./trigger-payload.ts";

@@ -1,5 +1,5 @@
 import { MAX_ANNOTATION_CROP } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { cropRegion, fittedCrop } from "./crop.ts";
 
 describe("cropRegion", () => {

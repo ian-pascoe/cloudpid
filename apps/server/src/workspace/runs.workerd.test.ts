@@ -4,7 +4,7 @@
 // work over computer's provider. The test Worker has no Container: a fake one counts what is asked of it.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { env } from "cloudflare:workers";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it } from "vite-plus/test";
 import type { RepoFiles } from "./changes.repos.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 

@@ -27,7 +27,7 @@ import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ShownSession, ThreadPlace } from "../chat/conversation.ts";
 import { useBranchMove } from "../chat/tree-actions.ts";
 import { sessionTreeAtom } from "../chat/tree-state.ts";

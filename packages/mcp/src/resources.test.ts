@@ -6,7 +6,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AGENT, completed, failedWith, run, settled, TARGET, testDeps } from "./core.fixture.ts";
 import {
   type FakeOptions,

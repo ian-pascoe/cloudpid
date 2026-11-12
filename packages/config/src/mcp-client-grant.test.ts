@@ -1,6 +1,6 @@
 // A server that signs in on its own (`docs/architecture/mcp-sign-in.md` → Client Credentials, Settings): which entries do,
 // and the row that says so, with no action to press.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mcpClientGrantRow, MCP_CLIENT_GRANT_CHIP, signsInOnItsOwn } from "./mcp-client-grant.ts";
 
 describe("signsInOnItsOwn", () => {

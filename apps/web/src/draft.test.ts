@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
 import type { RepoBranches } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   baseChoices,
   baseWarning,

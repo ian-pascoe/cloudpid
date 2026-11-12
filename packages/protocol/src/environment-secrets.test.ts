@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   keptSecretField,
   MAX_ENVIRONMENT_SECRET_BYTES,

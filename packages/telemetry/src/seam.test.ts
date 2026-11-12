@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InMemoryTelemetryContext } from "@earendil-works/pi-telemetry";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { tracingModels } from "./models.ts";
 import { makeToolSpans, type ToolSpanRegistry } from "@cloudpid/effect-durable";
 import { tracingTools } from "./tools.ts";

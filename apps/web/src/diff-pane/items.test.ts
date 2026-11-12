@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- fixtures over native arrays.
 import type { ChangeEntry } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fileDiffOf } from "./file-diff.ts";
 import { itemsOf } from "./items.ts";
 import { lineUp } from "./line-up.ts";

@@ -8,10 +8,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "git-install:check": "node git-install-check.ts",
-    "lint": "oxlint",
-    "test": "vitest run"
+    "git-install:check": "node git-install-check.ts"
   },
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.13.0",

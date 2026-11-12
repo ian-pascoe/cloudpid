@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { type Comparison, MAX_VIEWED, type ViewedFile } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AnnotationStorage } from "./annotations.ts";
 import { makeViewedStore } from "./viewed.ts";
 

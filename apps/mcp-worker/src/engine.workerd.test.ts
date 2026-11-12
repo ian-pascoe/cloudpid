@@ -16,7 +16,7 @@ import {
 } from "@cloudpid/mcp/types";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished } from "vite-plus/test";
 import { MiB } from "./units.ts";
 import type { Caller } from "./workerd.fixture.ts";
 

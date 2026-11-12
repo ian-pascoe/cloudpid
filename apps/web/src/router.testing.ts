@@ -3,7 +3,7 @@
 // A window whose history a test drives: `navigate`, `replaceSearch` and the back and forward buttons all reach
 // `pathAtom` and `searchAtom`, over a real stack of entries, so a test can tell a push from a replace.
 
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 
 const ORIGIN = "https://example.test";
 

@@ -4,7 +4,7 @@ import cloudflare from "@alchemy.run/cloudflare-runtime/rolldown";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import config, { testTimeout } from "@cloudpid/config/vitest";
 import { rolldown } from "rolldown";
-import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest/config";
+import { configDefaults, defineConfig, defineProject, mergeConfig } from "vite-plus";
 import { MCP_WORKER_COMPATIBILITY } from "./src/compatibility.ts";
 
 const COMPATIBILITY_DATE = MCP_WORKER_COMPATIBILITY.date;

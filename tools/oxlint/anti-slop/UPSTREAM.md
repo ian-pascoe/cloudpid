@@ -13,8 +13,8 @@
 
 ## Intentional deviations
 
-- None in the plugin source.
+- In the plugin source, only the imports: `@oxlint/plugins` became `vite-plus/lint/plugins`, which re-exports it (docs/adr/0055-vite-plus-and-pnpm.md).
 - Configuration outside this directory:
-  - `.oxlintrc.json` and `.oxfmtrc.json` also ignore `.repos/**`, the read-only reference clones.
+  - The root `vite.config.ts` loads the plugins (`lint.jsPlugins`) and leaves this directory and `.repos/**`, the read-only reference clones, out of `vp lint` and `vp fmt`.
   - The root `tsconfig.json` excludes `tools/oxlint/anti-slop`. That file targets Cloudflare Workers with Effect language-service rules, and the plugin is Oxlint tooling that imports `.ts` paths.
-- Dependency: `@oxlint/plugins` is pinned exactly to `1.88.0`, the same version as `oxlint`.
+- Dependency: none of its own; `@oxlint/plugins` comes with `vite-plus`, at the version the root `package.json` pins.

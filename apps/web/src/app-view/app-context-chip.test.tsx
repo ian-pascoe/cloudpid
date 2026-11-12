@@ -2,7 +2,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectRecord:off -- promises a speech handler answers, and the keys of the speech a card offers.
 import * as Effect from "effect/Effect";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AppContextChip, SHOWN_CHARS } from "./app-context-chip.tsx";
 import { speechOf } from "./app-call.tsx";
 

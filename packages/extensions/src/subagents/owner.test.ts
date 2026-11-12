@@ -2,7 +2,7 @@
 // its followers' `tasks/cancel` (docs/architecture/mcp-server-requests.md → MCP tasks, Cancellation).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off
 import { type ConversationId, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type BeforeAbort, type OwnerHarness, stopConversation } from "./owner.ts";
 import { type AgentRecord, EMPTY_STATE, type SubagentsState } from "./state.ts";
 import { context } from "./harness.fixture.ts";

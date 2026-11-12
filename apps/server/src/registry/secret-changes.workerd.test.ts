@@ -8,7 +8,7 @@ import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { DEFAULT_ENVIRONMENT, secretBuildField } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { keepSecretAs, openEnvironmentSecrets, type SecretKept } from "./environment-secrets.ts";
 import { deleteSecretAs, markSecretBuildAs } from "./secret-changes.ts";

@@ -13,7 +13,7 @@ import {
 } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { build, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

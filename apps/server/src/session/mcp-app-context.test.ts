@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AppContextCall, appContextsOver } from "./mcp-app-context.ts";
 import { SessionError } from "./errors.ts";
 import type { SessionKv } from "./session-kv.ts";

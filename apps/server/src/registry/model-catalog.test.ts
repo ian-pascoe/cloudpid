@@ -3,7 +3,7 @@
 // before any read succeeds, and one read for calls made at once.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { FALLBACK_CATALOG } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { COMMISSARY_MODELS_PAGE } from "./commissary-models.fixture.ts";
 import {
   CATALOG_RETRY_MS,

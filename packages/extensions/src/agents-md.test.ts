@@ -29,7 +29,7 @@ import { createEditTool, createReadTool, createWriteTool } from "@earendil-works
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   AgentsMdDoc,
   agentsMdExtension,

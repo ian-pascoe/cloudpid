@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   actionOf,
   bodyOf,

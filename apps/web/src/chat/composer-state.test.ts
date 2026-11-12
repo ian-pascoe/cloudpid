@@ -4,7 +4,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { callOf } from "../calls.ts";
 import { exitFailure } from "../registry.ts";
 import { settled } from "../registry.testing.ts";

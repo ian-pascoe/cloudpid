@@ -1,7 +1,7 @@
 // What a socket's limited requests have in common (`./socket-requests.ts`): the minute's count, what is in flight, and the
 // end of a socket.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { socketRequests } from "./socket-requests.ts";
 
 // SAFETY: the registry only keys its counts by the socket, and never calls it.

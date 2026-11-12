@@ -1,5 +1,5 @@
 import type { CodeViewDiffItem, DiffLineAnnotation } from "@pierre/diffs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AnnotationSlot } from "../review/drafts.ts";
 import { placeholderDiff } from "./file-diff.ts";
 import { annotatedItems } from "./annotated-items.ts";

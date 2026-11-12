@@ -6,7 +6,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalJsonInEffect:off
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Prepared } from "./approval-cores.ts";
 import { expectEndpointWords } from "./endpoint-words.fixture.ts";
 import { type McpApprovalCores, mcpApprovalCores } from "./settings-mcp-approvals.ts";

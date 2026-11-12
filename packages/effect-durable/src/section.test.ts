@@ -4,7 +4,7 @@ import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { answer, callTool, openFauxHarness } from "./harness.fixture.ts";
 import { effectSection, frozenSection } from "./section.ts";
 import { obj } from "@earendil-works/pi-schema";

@@ -2,7 +2,7 @@
 // escape and what they never hold.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { MCP_SIGN_IN_FAILURES, type McpSignInFailure } from "@cloudpid/mcp/types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   CALLBACK_SCRIPT,
   callbackPage,

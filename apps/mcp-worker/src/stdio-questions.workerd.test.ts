@@ -21,7 +21,7 @@ import { MCP_BRIDGE_LEVEL_HEADER } from "@cloudpid/sandbox-image/mcp-bridge";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { McpBridgeBinding } from "./binding.ts";
 import { ByteBudget } from "./budget.ts";
 import { request } from "./calls.ts";

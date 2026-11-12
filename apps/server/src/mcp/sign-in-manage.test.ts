@@ -5,7 +5,7 @@
 import { McpNoSignIn, McpSignedOut, McpSignInsListing, McpUnavailable } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   APP_ORIGIN_VAR,
   LOCAL_MODE_VAR,

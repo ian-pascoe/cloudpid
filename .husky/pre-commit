@@ -1,3 +1,0 @@
-# Lint and format staged files. Run sequentially so `oxlint --fix` and `oxfmt`
-# never write the same file at once.
-bunx lint-staged --concurrent false

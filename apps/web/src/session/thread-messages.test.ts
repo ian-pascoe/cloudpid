@@ -6,7 +6,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   answerOf,
   entriesOf,

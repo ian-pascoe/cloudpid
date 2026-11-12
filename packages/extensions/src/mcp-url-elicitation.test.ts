@@ -16,7 +16,7 @@ import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeMcpTools, mcpExtension, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, open } from "./mcp.fixture.ts";
 import { type FakeMcpAnswer, fakeMcpHost } from "./mcp.testing.ts";

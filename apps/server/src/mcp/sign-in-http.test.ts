@@ -12,7 +12,7 @@ import type {
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { type McpSignInCarry, noSignInCarry } from "./sign-in-carry.ts";
 import {
   serveCallback,

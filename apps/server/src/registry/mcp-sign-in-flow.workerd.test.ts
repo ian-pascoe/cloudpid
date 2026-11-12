@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ACCESS_ISSUER, selfUseRedirectUri } from "../mcp-access.ts";
 import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
 import { ownHostRouted } from "../mcp/own-host-transport.ts";

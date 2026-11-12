@@ -5,7 +5,7 @@
 import type { Annotation } from "@cloudpid/protocol";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AnnotationStorage, makeAnnotationStore } from "./annotations.ts";
 import { annotationsPruningTools } from "./reviews.ts";
 

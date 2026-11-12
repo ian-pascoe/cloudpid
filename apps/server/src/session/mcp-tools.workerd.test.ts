@@ -20,7 +20,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { McpApplySet, McpEngineDiscoverResult } from "@cloudpid/mcp/types";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { eventually } from "../durable-waits.fixture.ts";
 import type { EngineScript } from "../mcp/host.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";

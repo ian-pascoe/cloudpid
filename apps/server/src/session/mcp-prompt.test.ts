@@ -5,7 +5,7 @@ import type { McpServerInventory } from "@cloudpid/mcp/types";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { promptMessage, type PromptFile, type PromptInput } from "./mcp-prompt.ts";
 import { promptCatalog } from "./mcp-prompt-catalog.ts";
 

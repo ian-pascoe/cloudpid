@@ -551,9 +551,10 @@ const SCAN_SINCE_START_VARIABLE = "CLOUDPID_SCAN_SINCE_START";
  * the store at the mount's root and a virtual store in `node_modules`, took 62 s, 7 s without them). The rest of `node_modules` (`.cache`, `.vite`, what a command wrote there) is
  * searched.
  *
- * Directories named `.bun` are not searched either, for the same reason: Bun's cache (`/root/.bun/install/cache`, with
- * the global store the Container's global Bun configuration switches on, `links`) and the isolated linker's project
- * store in `node_modules` (`.bun`, `BUN_DIRECTORY_NAME`) hold only the packages Bun installed.
+ * Directories named `.bun` are not searched either, for the same reason, for a repo that installs with Bun: Bun's cache
+ * (`/root/.bun/install/cache`, with the global store in it, `links`, when the repo's `bunfig.toml` switches it on) and
+ * the isolated linker's project store in `node_modules` (`.bun`, `BUN_DIRECTORY_NAME`) hold only the packages Bun
+ * installed.
  *
  * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command
  * line. One search over all of them finds the files; then, for the first `ATTRIBUTED_FILES` of those only, a search per

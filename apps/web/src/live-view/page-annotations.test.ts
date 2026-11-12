@@ -7,7 +7,7 @@ import {
   MAX_QUOTE_LINES,
   type PageAnnotation,
 } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   areaBetween,
   draftsOnPage,

@@ -2,7 +2,7 @@
 // script, its storage and alarm in memory. The scripts themselves run for real in `@cloudpid/sandbox-image`'s tests.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off newPromise:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { HeldSecrets } from "./environment-secrets.ts";
 import { type BuildRequest, buildKey, type EnvironmentBuild } from "./build-record.ts";
 import {

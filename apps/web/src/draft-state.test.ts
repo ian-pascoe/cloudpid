@@ -12,7 +12,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as Socket from "effect/socket/Socket";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { addDraftAttachmentsAtom, draftAttachmentsAtom } from "./chat/attachments-state.ts";
 import { fakeImages, fakeUploads } from "./chat/chat.testing.ts";
 import {

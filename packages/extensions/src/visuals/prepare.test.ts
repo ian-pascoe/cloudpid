@@ -6,7 +6,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { secretReference } from "../secrets/references.ts";
 import { isSpecialPath, prepareVisual, type VisualFiles, type VisualShowInput } from "./prepare.ts";
 

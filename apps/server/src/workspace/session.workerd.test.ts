@@ -4,7 +4,7 @@ import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
 describe("a Session's coding tools", () => {

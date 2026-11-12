@@ -9,7 +9,7 @@ import type { EnvironmentSecretRecord, TriggerDefinition } from "@cloudpid/proto
 import type { SessionRecord, WorkspaceRecord } from "../registry/store.ts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AgentChangeAuthor } from "../registry/agent-changes.ts";
 import { type AuthorSource, sessionSource } from "./change-author.ts";
 import {

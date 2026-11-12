@@ -1,6 +1,6 @@
 // The migration checks are Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Migration } from "./sqlite.ts";
 import { migrationDigests, refusingStorage, shippedMigrationProblems } from "./sqlite-testing.ts";
 

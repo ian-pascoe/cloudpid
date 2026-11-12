@@ -16,7 +16,7 @@ import {
   MemoryStorage,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { boundImages, MAX_RESULT_IMAGE_CHARACTERS, ResultImages } from "./images.ts";
 import { obj } from "@earendil-works/pi-schema";
 

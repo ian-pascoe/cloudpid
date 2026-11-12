@@ -17,7 +17,7 @@ import type {
 import { env } from "cloudflare:workers";
 import { viewHash } from "../view-hash.ts";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 
 declare global {

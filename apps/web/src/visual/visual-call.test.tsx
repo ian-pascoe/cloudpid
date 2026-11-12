@@ -10,7 +10,7 @@ import { RegistryContext } from "@effect/atom-react";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ShownSession } from "../chat/conversation.ts";
 import { ToolCallCard } from "../chat/parts.tsx";
 import { appChoiceAtom } from "../session-layout-state.ts";

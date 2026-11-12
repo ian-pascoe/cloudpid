@@ -13,7 +13,7 @@ import {
   type SessionFireRequest,
   type SessionWhenBusy,
 } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { poll, pollFor } from "../poll.fixture.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { REQUEST_COST, type TestSession } from "./host.fixture.ts";

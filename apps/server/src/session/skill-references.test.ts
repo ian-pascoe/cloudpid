@@ -1,7 +1,7 @@
 // Ported whole from the owner's pi-skills-selector (`test/skill-references.test.ts`), but for the cases of
 // `getSkillReferencePrefix`, the composer's completion, which the Session does not port; the catalogue entries use
 // `filePath`, as the Session's Skills do. The last cases are the Session's own.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { linkSkillReferences, type ReferencedSkill } from "./skill-references.ts";
 
 const skills: ReferencedSkill[] = [

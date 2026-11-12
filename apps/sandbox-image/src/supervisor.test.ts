@@ -18,7 +18,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import { MCP_BRIDGE_TOKEN_ENV } from "@cloudpid/sandbox-image/mcp-bridge";
 import { MEMORY_GUARD_AVOID } from "@cloudpid/sandbox-image/memory-guard";

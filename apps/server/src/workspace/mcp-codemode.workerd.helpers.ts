@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off missingPipeableSignature:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { expect, vi } from "vitest";
+import { expect, vi } from "vite-plus/test";
 import type { TestMcpCodemodeSession } from "./mcp-codemode.fixture.ts";
 
 declare global {

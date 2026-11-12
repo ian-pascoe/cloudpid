@@ -1,7 +1,7 @@
 // Taking the GitHub token out of a command's output, however its bytes arrive (docs/architecture/workspace.md → Git).
 // @effect-diagnostics preferEffectArray:off
 import { secretReference } from "@cloudpid/extensions/secrets/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Redaction, Redactor, redactText } from "./redact.ts";
 
 const encode = (text: string) => new TextEncoder().encode(text);

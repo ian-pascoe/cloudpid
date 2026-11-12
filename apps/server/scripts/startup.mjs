@@ -9,10 +9,10 @@
 //   coarse one.
 //
 // The bundle is alchemy's own (`WorkerBundle`, as a deploy makes it: the generated entry, rolldown's Cloudflare plugins,
-// minified), written with its profile to `node_modules/.cache/startup/`. Run it with Node (Bun's WebSocket loses the
-// inspector's answers):
+// minified), written with its profile to `node_modules/.cache/startup/`. Run it with Node, as the package's `startup`
+// script does:
 //
-//   bun run --cwd apps/server startup
+//   pnpm --filter @cloudpid/server run startup
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";

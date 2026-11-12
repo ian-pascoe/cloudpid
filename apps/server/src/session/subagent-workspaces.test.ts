@@ -2,7 +2,7 @@
 import type { RepoWorkState } from "@cloudpid/extensions/subagents";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SubagentWorkspaceRefusal, WorkspaceRecord } from "../registry/store.ts";
 import { sessionSubagentWorkspaces, spawnWarnings } from "./subagent-workspaces.ts";
 import { workspacePlacement } from "./workspace.ts";

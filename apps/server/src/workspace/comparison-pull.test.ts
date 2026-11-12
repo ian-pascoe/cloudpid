@@ -8,7 +8,7 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Comparison, WORKSPACE_ROOT } from "@cloudpid/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { poll } from "../poll.fixture.ts";
 import type { ChangesFiles } from "./changes.ts";
 import { graphqlList, type JsonObject } from "./github-pulls.fixtures.ts";

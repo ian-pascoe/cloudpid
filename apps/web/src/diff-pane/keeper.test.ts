@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { keeperOf } from "./keeper.ts";
 
 /** A clock whose timers run when the test says so. */

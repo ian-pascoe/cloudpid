@@ -16,7 +16,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { openAgentChanges, revertAgentChange } from "../registry/agent-changes.ts";
 import { mcpServerNamesOf, pendingMcpPushes, recordMcpPushed } from "../registry/mcp-registry.ts";
 import {

@@ -4,7 +4,7 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off -- reads a stylesheet into small native maps.
 import { readFileSync } from "node:fs";
 import { TOKEN_VALUES, TOKENS, visualStyleVariables } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 

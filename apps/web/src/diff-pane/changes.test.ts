@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- fixtures and assertions over native arrays.
 import type { ChangeEntry, RepoChanges } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   changedFiles,
   changeId,

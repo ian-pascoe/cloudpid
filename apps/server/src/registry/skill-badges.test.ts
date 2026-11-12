@@ -1,6 +1,6 @@
 // How the Skill directory's rows say where their Skill is installed (GLOSSARY.md → Skill directory): matched by Skill
 // source repo and path, not by name alone.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { installedIn, type InstalledSkillRef, withInstalled } from "./skill-badges.ts";
 
 const ref = (
