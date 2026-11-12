@@ -147,7 +147,8 @@ jobs:
               && vp run @cloudpid/server#startup
           - name: Tests
             part: tests
-            run: vp run --filter '*' --filter '!@cloudpid/server' --filter '!cloudpid' test
+            # `--fail-if-no-match`: a filter that matches nothing otherwise runs nothing and passes.
+            run: vp run --fail-if-no-match --filter '@cloudpid/*' --filter '!@cloudpid/server' test
           # vitest splits the server's test files (all its projects) over the shards; the shard is one of the task's
           # arguments, so each shard is cached on its own.
           - name: Server tests (1/3)
