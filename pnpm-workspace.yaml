@@ -37,8 +37,8 @@ overrides:
   # One `ws` for every package: chord pins 8.21.0 and the rest resolve 8.22, and each `ws` is a peer variant of alchemy,
   # whose two copies then fail the typecheck of `infra` (`AlchemyContext | AlchemyContext`).
   ws: 8.22.1
-  # Vite+'s type-aware lint backend runs tsrslint instead of tsgolint (tools/tsrslint-shim/bin/tsgolint.js).
-  oxlint-tsgolint: link:./tools/tsrslint-shim
+  # Vite+'s type-aware lint backend runs tsrs's linter instead of tsgolint (tools/tsrs-lint-shim/bin/tsgolint.js).
+  oxlint-tsgolint: link:./tools/tsrs-lint-shim
 
 # Vite+'s core stands in for `vite`, and packages that peer an older `vite` or `vitest` accept it (`vp migrate`'s rule).
 peerDependencyRules:
