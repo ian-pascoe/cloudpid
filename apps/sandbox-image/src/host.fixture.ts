@@ -16,7 +16,7 @@ const present = (command: string): boolean =>
  * coreutils: on macOS, Vite Task runs a cached task's `stat` as uutils' (`stat (uutils coreutils)`), whose `--printf`
  * differs from GNU's.
  */
-export const isGnu = (command: string, gnuPackage: string): boolean =>
+const isGnu = (command: string, gnuPackage: string): boolean =>
   underCi || String(spawnSync(command, ["--version"]).stdout ?? "").includes(`(GNU ${gnuPackage})`);
 
 /**

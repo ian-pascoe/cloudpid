@@ -1,17 +1,27 @@
-// Every workspace package's `typecheck` and `test` tasks for Vite+'s task runner (`vp run`; docs/adr/0055-vite-plus-
-// and-pnpm.md). Each package's `vite.config.ts` passes them to `run.tasks`. Tasks, not `package.json` scripts, so they are
-// cached and say which environment variables a test reads: a cached task runs in a clean environment, with only the
-// variables its `cache` names.
+// Every workspace package's `typecheck` and `test` tasks for Vite+'s task runner (`vp run`;
+// docs/adr/0055-vite-plus-and-pnpm.md). Each package's `vite.config.ts` passes them to `run.tasks`. Tasks, not
+// `package.json` scripts, so they are cached and say which environment variables a test reads: a cached task runs in a
+// clean environment, with only the variables its `cache` names.
 import type { UserConfig } from "vite-plus";
 
 type Tasks = NonNullable<NonNullable<UserConfig["run"]>["tasks"]>;
 
 /**
  * Variables that change what a test checks, so a change to one misses the cache: under `CI`, the Container's scripts'
- * tests never skip for a missing Linux tool; `MODEL_PROXY_URL`, `WEB_TOOLS_LIVE` and `VISUAL_LIBS_CHECK` switch on the
- * live tests; `UPDATE_SNAPSHOT=1` rewrites the harness snapshot.
+ * tests never skip for a missing Linux tool; `MODEL_PROXY_URL` with `MODEL_PROXY_API_KEY`, `WEB_TOOLS_LIVE` and
+ * `VISUAL_LIBS_CHECK` switch on the live tests, and `CHANGES_BENCH` the server's benchmarks
+ * (docs/development/testing.md); `UPDATE_SNAPSHOT=1` rewrites the harness snapshot. The other live tests' keys only
+ * authenticate what their switch turned on.
  */
-const testEnv = ["CI", "MODEL_PROXY_URL", "WEB_TOOLS_LIVE", "VISUAL_LIBS_CHECK", "UPDATE_SNAPSHOT"];
+const testEnv = [
+  "CI",
+  "MODEL_PROXY_URL",
+  "MODEL_PROXY_API_KEY",
+  "WEB_TOOLS_LIVE",
+  "VISUAL_LIBS_CHECK",
+  "CHANGES_BENCH",
+  "UPDATE_SNAPSHOT",
+];
 
 export const tasks = {
   // tsrs with the Effect language service's diagnostics (docs/adr/0028-bun-for-installs-and-scripts-and-tsrs-for-

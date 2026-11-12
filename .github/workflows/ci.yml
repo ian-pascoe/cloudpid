@@ -16,7 +16,8 @@ env:
   VP_GIT_HOOKS: "0"
 
 jobs:
-  # Whether the change touches more than docs (`docs/**` and Markdown anywhere, which no build, test or deploy reads). A docs-only change runs only the format check (`docs`), not
+  # Whether the change touches more than docs (`docs/**` and Markdown anywhere, which no build, test or deploy
+  # reads). A docs-only change runs only the format check (`docs`), not
   # `checks`, the prod deploy or a preview. When the files cannot be listed, the change counts as code.
   changes:
     name: Changes
@@ -164,9 +165,9 @@ jobs:
       # Vite+, Node, pnpm's store (cached by lockfile), and the install.
       - uses: ./.github/actions/setup
 
-      # This part's Vite Task cache (`node_modules/.vite/task-cache`; docs/development/infra.md → CI), restored after the install,
-      # which recreates `node_modules`: the newest one of this branch, else of main (a pull request can read its base's
-      # caches). Each save is a new entry; the key holds no input, since Vite Task fingerprints those itself.
+      # This part's Vite Task cache (`node_modules/.vite/task-cache`; docs/development/infra.md → CI), restored after
+      # the install, which recreates `node_modules`: the newest one of this branch, else of main (a pull request can
+      # read its base's caches). Each save is a new entry; the key holds no input, since Vite Task fingerprints those.
       - id: task-cache
         uses: actions/cache/restore@v6
         with:
@@ -303,12 +304,9 @@ jobs:
           persist-credentials: false
 
       # No dependency cache in a job holding deploy credentials (cache poisoning).
-      - uses: voidzero-dev/setup-vp@v1.22.0
+      - uses: ./.github/actions/setup
         with:
-          version-file: package.json
-          node-version: lts
-          run-install: |
-            - args: ["--frozen-lockfile"]
+          cache: "false"
 
       # The web app's build, as the stack's `WebBuild` step runs it (apps/server/src/web-build.ts), before the plan: on a
       # checkout without `dist` the step plans an update, which leaves its outputs unknown, so `Server` (whose assets they

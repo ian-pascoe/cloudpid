@@ -2,10 +2,13 @@ name: Set up Vite+ and dependencies
 description: >-
   Vite+ (the `vite-plus` version in the root package.json, so the global `vp` runs the project's own toolchain), the
   Node.js it manages, pnpm (the version in package.json's `packageManager`), and `vp install --frozen-lockfile`.
-  pnpm's store is cached by the lockfile. With `save-cache: false` the cache is only read, for jobs that hold deploy
-  credentials.
+  pnpm's store is cached by the lockfile. With `save-cache: false` the cache is only read; with `cache: false` there is
+  none, for jobs that hold deploy credentials.
 
 inputs:
+  cache:
+    description: Restore and save pnpm's store in the cache (`false` uses none at all).
+    default: "true"
   save-cache:
     description: Write the store back to the cache when the lockfile's key missed (`false` only restores).
     default: "true"
@@ -17,7 +20,7 @@ runs:
       with:
         version-file: package.json
         node-version: lts
-        cache: true
+        cache: ${{ inputs.cache }}
         cache-save: ${{ inputs.save-cache }}
         run-install: |
           - args: ["--frozen-lockfile"]

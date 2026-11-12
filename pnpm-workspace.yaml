@@ -38,6 +38,7 @@ overrides:
   # whose two copies then fail the typecheck of `infra` (`AlchemyContext | AlchemyContext`).
   ws: 8.22.1
 
+# Vite+'s core stands in for `vite`, and packages that peer an older `vite` or `vitest` accept it (`vp migrate`'s rule).
 peerDependencyRules:
   allowAny:
     - vite
@@ -49,3 +50,6 @@ peerDependencyRules:
 # A package's peer variants are told apart by the peers' versions alone, not their whole dependency paths, so a package
 # is not copied once for each path its peers came by (two copies of `@cloudflare/computer` failed the server's typecheck).
 dedupePeers: true
+
+# The workspace's packages never depend on each other in a cycle (docs/architecture/mcp-apps.md → The App sandbox).
+disallowWorkspaceCycles: true

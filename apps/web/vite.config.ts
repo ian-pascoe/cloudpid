@@ -3,7 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type ServerOptions } from "vite-plus";
 
-/** Where `alchemy dev` serves the main Worker (`vp run @cloudpid/infra#dev`). */
+/** Where `alchemy dev` serves the main Worker (`pnpm --filter @cloudpid/infra run dev`). */
 const WORKER = "http://localhost:1337";
 
 // The main Worker serves the build as static assets (apps/server/src/worker.ts). `vite dev` proxies the Worker's

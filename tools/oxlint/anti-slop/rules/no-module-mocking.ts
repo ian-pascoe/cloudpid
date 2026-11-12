@@ -33,7 +33,11 @@ function isTestFrameworkObject(
     }
     const source = definition.parent.source.value;
     const name = importedName(definition.node);
-    return (source === "vitest" && name === "vi") || (source === "@jest/globals" && name === "jest");
+    // `vite-plus/test` re-exports Vitest's `vi` (this repo imports it from there: docs/adr/0055-vite-plus-and-pnpm.md).
+    return (
+      ((source === "vitest" || source === "vite-plus/test") && name === "vi") ||
+      (source === "@jest/globals" && name === "jest")
+    );
   });
 }
 

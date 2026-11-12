@@ -24,6 +24,7 @@ const hasRg = spawnSync("rg", ["--version"]).status === 0;
 // uutils', whose `--printf` differs.
 const gnu = (command: string, gnuPackage: string) =>
   String(spawnSync(command, ["--version"]).stdout ?? "").includes(`(GNU ${gnuPackage})`);
+
 const hasGnuTools =
   process.env["CI"] !== undefined || (gnu("stat", "coreutils") && gnu("find", "findutils"));
 
