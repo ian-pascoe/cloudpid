@@ -6,12 +6,14 @@
 // workspace package declares `oxlint-tsgolint`, which would take its place). It has no `package.json` on purpose:
 // `effect-tsgo patch` (the root `prepare`) looks for Vite+'s `oxlint-tsgolint` by its `package.json`, and would then fail
 // the install looking for tsgolint's platform binary, which this replaces.
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-// `tsrs`'s `tsrs-lint` command (its `bin/tsrs-lint`) loads this launcher, which reads `process.argv` from its third
-// entry on, as this script's are.
-const tsrs = dirname(createRequire(import.meta.url).resolve("tsrs/package.json"));
+// The `tsrs` package's `tsrs-lint` command, by its `bin` entry, run in this process: it reads `process.argv` from its
+// third entry on, as this script's are.
+const manifest = createRequire(import.meta.url).resolve("tsrs/package.json");
+const { bin } = JSON.parse(readFileSync(manifest, "utf8"));
 
-await import(pathToFileURL(join(tsrs, "lib", "tsrs-lint.js")).href);
+await import(pathToFileURL(join(dirname(manifest), bin["tsrs-lint"])).href);
