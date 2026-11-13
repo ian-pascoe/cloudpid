@@ -7,7 +7,7 @@
 import type { McpAppEntry, McpAppTool, SessionView, TranscriptMessage } from "@cloudpid/protocol";
 import { EMPTY_VIEW } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";

@@ -1,5 +1,5 @@
 import type { CursorState, WaitingRequest } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState } from "./mcp-reads.ts";
 

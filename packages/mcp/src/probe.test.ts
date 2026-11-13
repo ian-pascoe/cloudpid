@@ -7,7 +7,7 @@
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { recordingClock, run, TARGET, testDeps, failedWith } from "./core.fixture.ts";
 import {
   type FakeServer,

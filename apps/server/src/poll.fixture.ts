@@ -2,7 +2,7 @@
 // A loaded CI runner once took over 3 s to answer a first watch (#300), so a wait is bounded by the test's own timeout,
 // not by a count of polls, and every wait in a test shares that one deadline.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off missingPipeableSignature:off
-import { TestRunner } from "vitest";
+import { TestRunner } from "vite-plus/test";
 
 /** How long before the test's timeout its waits give up, so the one that was never met fails with its own message. */
 const MARGIN_MS = 2_000;

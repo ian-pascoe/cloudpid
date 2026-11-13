@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off
 import * as Effect from "effect/Effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { bypassAccessProps, bypassApplicationProps } from "./bypass-access.ts";
 import { appOrigin } from "./deployment.ts";
 import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";

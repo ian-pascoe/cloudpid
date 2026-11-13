@@ -1,7 +1,7 @@
 // The default-branch heads the Build's daily look asks for (docs/architecture/container.md → Builds): GitHub's REST API as the
 // GitHub App for a GitHub repo, git's smart HTTP for another host, each fetch faked.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { remoteHeads } from "./remote-heads.ts";
 
 const APP = "a".repeat(40);

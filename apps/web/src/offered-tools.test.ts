@@ -1,5 +1,5 @@
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { badOfferedEntries, offeredFromText } from "./offered-tools.ts";
 
 describe("the offered tools text", () => {

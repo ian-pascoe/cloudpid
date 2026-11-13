@@ -18,7 +18,7 @@ import { modernTaskServer, REPORT_TOOL } from "@cloudpid/mcp/testing";
 import { env } from "cloudflare:workers";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { poll } from "../poll.fixture.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 

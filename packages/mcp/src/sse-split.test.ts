@@ -5,7 +5,7 @@
  */
 // @effect-diagnostics preferEffectArray:off
 import { createParser } from "eventsource-parser";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { crFollowsLf, EventSplitter, eventFields } from "./tap.ts";
 
 /** A small seeded generator (mulberry32), so a failure is the same every run. */

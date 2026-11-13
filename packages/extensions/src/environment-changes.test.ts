@@ -4,7 +4,7 @@
 // kept Secrets itself. The cores' use of it is `environment.test.ts`'s and `environment-secret-marks.test.ts`'s.
 // @effect-diagnostics missedPipeableOpportunity:off
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { DeployCredentials, EnvironmentsError } from "./environment.ts";
 import { endpointTextCheck } from "./environment-changes.ts";
 import { secretReference } from "./secrets/references.ts";

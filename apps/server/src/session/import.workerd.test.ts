@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { MAX_MCP_INPUT_BYTES } from "@cloudpid/protocol";
 import type { ApiResult, SessionVia, StageImportBegin } from "@cloudpid/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { destroyedWorkspaces, type TestSession } from "./host.fixture.ts";
 import {

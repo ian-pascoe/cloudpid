@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { triggerObjects, WAKE_RETRIES } from "./objects.ts";
 
 /** Trigger objects whose `sync` fails `failures` times before it answers, each try's object name in `asked`. */

@@ -1113,8 +1113,9 @@ export type McpHttpServer = McpCommon & {
 export type McpServerEntry = McpStdioServer | McpHttpServer;
 
 /** pi's `codemode-deferred` is `codemode`. */
-export const normalizedExposure = (exposure: McpExposure | typeof CODEMODE_DEFERRED): McpExposure =>
-  exposure === CODEMODE_DEFERRED ? "codemode" : exposure;
+export const normalizedExposure = (
+  exposure: McpExposure | typeof CODEMODE_DEFERRED,
+): McpExposure => (exposure === CODEMODE_DEFERRED ? "codemode" : exposure);
 
 /** The default `timeout`, in seconds. */
 export const DEFAULT_MCP_TIMEOUT = 60;

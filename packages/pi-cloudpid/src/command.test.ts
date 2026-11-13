@@ -3,7 +3,7 @@
  * The `/cloudpid` command line (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Command): the verbs, the
  * instruction kept verbatim, and the completions.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { completionsFor, parseCommand } from "./command.ts";
 
 describe("parseCommand", () => {

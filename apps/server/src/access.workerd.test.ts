@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { admit, teamKeys } from "./access.ts";
 import { ACCESS_TEAM_DOMAIN, OWNER_EMAIL } from "./deployment.ts";
 

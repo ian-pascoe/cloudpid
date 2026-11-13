@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fileDiffOf } from "./file-diff.ts";
 import { lineUp } from "./line-up.ts";
 

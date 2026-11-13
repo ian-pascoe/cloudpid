@@ -7,7 +7,7 @@ import { sessionCommandsFor, skillBlock } from "@cloudpid/protocol";
 import type { UserInput } from "@earendil-works/pi-durable";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { FakeWorkspace } from "./fake-workspace.fixture.ts";
 import { idle } from "../durable-waits.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";

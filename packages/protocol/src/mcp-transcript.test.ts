@@ -1,6 +1,6 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   ENTRY_TEXT_CHARS,
   middleCut,

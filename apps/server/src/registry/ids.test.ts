@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import { isWorkspaceId } from "@cloudpid/protocol";

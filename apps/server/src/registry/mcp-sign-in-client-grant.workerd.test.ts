@@ -17,7 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
 import { startMcpSignIn, type FlowDeps } from "./mcp-sign-in-flow.ts";
 import {

@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { KEPT_REFRESH_MS, KEPT_RETRY_MS, type KeptSecret } from "./kept.ts";
 import { secretReference } from "./references.ts";
 import {

@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the extension carries no Effect runtime).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fileBytes, sha256Hex, type Slice, sliceAt } from "./slices.ts";
 
 /** Every slice of `bytes` of at most `max` bytes, as the upload cuts them. */

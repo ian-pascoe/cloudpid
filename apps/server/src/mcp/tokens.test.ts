@@ -5,7 +5,7 @@
 import type { McpAccessTokenAnswer, McpAccessTokenInput, McpSignInNote } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   McpRegistryPort,
   McpRegistryUnavailable,

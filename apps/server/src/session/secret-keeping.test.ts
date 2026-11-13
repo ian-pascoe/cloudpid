@@ -3,7 +3,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { KeepRequest } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { KeptAsked } from "../registry/Registry.ts";
 import { runChanges } from "./agent-changes.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";

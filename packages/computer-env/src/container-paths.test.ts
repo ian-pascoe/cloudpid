@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isContainerOnly, withHarnessKept } from "./container-paths.ts";
 
 /** A launch's Container-only paths: some built-in ones, then an Environment's own. */

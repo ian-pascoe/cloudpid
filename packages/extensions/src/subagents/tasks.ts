@@ -9,7 +9,7 @@
 // - A wait task is what `subagent_wait` blocks on. It ends when a commit gives its waiter a result, when a steer is
 //   queued for the caller, or at its deadline, which a timer of its invocation marks.
 // @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off missingPipeableSignature:off
-import type { Draft } from "@earendil-works/chord";
+import type { Draft } from "@earendil-works/chord/delta";
 import type { Context } from "@earendil-works/chord/context";
 import {
   type ConversationId,

@@ -7,7 +7,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OWNER, run, settled, TARGET, testDeps } from "./core.fixture.ts";
 import {
   type FakePrompt,

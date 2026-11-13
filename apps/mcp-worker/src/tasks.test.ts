@@ -21,7 +21,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ByteBudget } from "./budget.ts";
 import { request } from "./calls.ts";
 import { Validators } from "./validators.ts";

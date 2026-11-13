@@ -6,7 +6,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { DEBOUNCE_MS, MAX_WAIT_MS } from "./notify.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 

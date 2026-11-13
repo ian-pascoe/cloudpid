@@ -1,6 +1,6 @@
 import type { SessionRecord } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { pageSessions, type SessionsPage } from "./session-page.ts";
 
 const session = (index: number, extra: Partial<SessionRecord> = {}): SessionRecord => ({

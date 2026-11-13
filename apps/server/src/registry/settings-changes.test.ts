@@ -5,7 +5,7 @@ import { type AgentChange, MAX_AGENT_CHANGES, SETTINGS_SCOPE } from "@cloudpid/p
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AgentChangeAuthor, type AgentChanges, asRecorded } from "./agent-changes.ts";
 import {
   changeSettings,

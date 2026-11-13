@@ -2,7 +2,7 @@
 
 import type { McpMenuResource, McpPromptEntry, McpResourceMenu } from "@cloudpid/protocol";
 import * as Match from "effect/Match";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ComposerCommand } from "./commands.ts";
 import { detectTrigger } from "./completion.ts";
 import {

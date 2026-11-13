@@ -7,7 +7,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { poll } from "../poll.fixture.ts";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";

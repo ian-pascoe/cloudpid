@@ -3,7 +3,7 @@
 import type { Op } from "@earendil-works/chord/delta";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   limitEntryImages,
   limitImages,

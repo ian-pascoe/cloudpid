@@ -15,7 +15,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { MCP_RUN_STOPPED_REASON } from "./mcp/question-records.ts";
 import { createMcpQuestions, McpQuestionsError } from "./mcp/questions.ts";
 import { createMcpSampling, type McpSamplingAsk, type McpSamplingOutcome } from "./mcp/sampling.ts";

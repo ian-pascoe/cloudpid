@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off nodeBuiltinImport:off globalDate:off preferEffectArray:off preferEffectRecord:off -- WebCrypto and `fetch` are Promise APIs; node:crypto makes the test keys.
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GitHubApp, githubAppKeyProblem, GitHubRefused, type MintedToken } from "./app.ts";
 
 const MINUTE = 60_000;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { INPUT_SENTINEL, TypedText, textDiff } from "./typed-text.ts";
 
 const typedAfterSentinel = (text: string) => `${INPUT_SENTINEL}${text}`;

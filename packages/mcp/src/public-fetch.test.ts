@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off schemaSync:off
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { MAX_METADATA_BYTES } from "./oauth-http.ts";
 import * as Schema from "effect/Schema";
 import {

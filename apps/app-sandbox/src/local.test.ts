@@ -2,7 +2,7 @@
 // docs/architecture/mcp-apps.md → The App sandbox (Who deploys it). The local mode `alchemy dev` serves the Worker in: one
 // shared origin, framed only by the main Worker's two local origins, named by the page and checked against a fixed set.
 import { LOCAL_APP_ORIGINS, SANDBOX_LOCAL_VAR } from "@cloudpid/server/view-host";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildCsp } from "./csp.ts";
 import { FIXED_HEADERS } from "./headers.ts";
 import { PROXY_JS, proxyPage } from "./proxy.ts";

@@ -2,7 +2,7 @@
 // The `SKILL.md` path rules, held to the `skills` CLI's own cases: the `findSkillMdPaths` tests of vercel-labs/skills'
 // `tests/nested-container-discovery.test.ts` (MIT, Copyright (c) 2026 Vercel, Inc.; the licence is in `skill-paths.ts`),
 // then cases for the rest of the function as `skills@1.7.4` runs it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   findSkillMdPaths,
   folderHashOf,

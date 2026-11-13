@@ -3,7 +3,7 @@
 // own host behaves as a WebSocket, carried over HTTP.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { ContainerPreview } from "./container-preview.ts";
 import { CONTAINER_PREVIEW_SCRIPT } from "./container-preview-script.ts";
 

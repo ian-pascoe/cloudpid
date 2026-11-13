@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { FILE_SEARCH_DEBOUNCE_MS } from "./chat/file-search.ts";
 import {
   draftCatalogAtom,

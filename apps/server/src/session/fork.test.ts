@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type { AgentState, EntryRecord } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { McpQuestionCopy, McpQuestionRecord } from "@cloudpid/extensions/mcp";
 import type { McpAppCopy, VisualCopy } from "@cloudpid/protocol";
 import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE, toolResultIds } from "./fork.ts";

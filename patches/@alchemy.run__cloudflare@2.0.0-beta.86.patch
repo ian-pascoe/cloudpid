@@ -1,0 +1,290 @@
+diff --git a/lib/Containers/DurableObjectApplication.d.ts b/lib/Containers/DurableObjectApplication.d.ts
+index 2df91cb52ee9763562b723b3333106805ed38c7b..fc3b7f00f16fbb59a237b6d336f66a2d61002ea5 100644
+--- a/lib/Containers/DurableObjectApplication.d.ts
++++ b/lib/Containers/DurableObjectApplication.d.ts
+@@ -74,6 +74,15 @@ export declare const declareDurableObjectApplication: (worker: {
+ export declare const retryNamespacePropagation: <A, E extends {
+     readonly _tag: string;
+ }, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
++/**
++ * Retry an application create while its namespace is not Container-enabled
++ * yet: an existing Worker that gains a Container enables it with its own
++ * upload, which runs concurrently. Bounded at ~8 minutes.
++ */
++export declare const retryContainerEnablement: <A, E extends {
++    readonly _tag: string;
++    readonly message?: unknown;
++}, R>(effect: Effect.Effect<A, E, R>, onWait: Effect.Effect<void>) => Effect.Effect<A, E, R>;
+ export declare const LiveDurableObjectApplicationProvider: () => import("effect/Layer").Layer<Provider.Provider<DurableObjectApplication>, never, CloudflareEnvironment | import("alchemy").Stack | import("alchemy").Stage | Containers.CloudflareOpContext>;
+ /**
+  * Local (dev) provider: `alchemy dev` runs every image through workerd and
+diff --git a/lib/Containers/DurableObjectApplication.js b/lib/Containers/DurableObjectApplication.js
+index 7ce39672813c09657b158256e9ea1db48f743753..9cbd9899a3296a8834085e99ad20ae3c761bd7ff 100644
+--- a/lib/Containers/DurableObjectApplication.js
++++ b/lib/Containers/DurableObjectApplication.js
+@@ -36,6 +36,31 @@ export const retryNamespacePropagation = (effect) => effect.pipe(Effect.tapError
+     schedule: Schedule.spaced("2 seconds"),
+     times: 15,
+ }));
++/**
++ * Whether the containers API rejected the application because its namespace is
++ * not Container-enabled yet. Cloudflare reports it either with the documented
++ * code (`DurableObjectNotContainerEnabled`) or as a plain 400
++ * `{"error":"VALIDATE_INPUT","details":{"durable_objects":"Durable Object namespace is not Container-enabled"}}`.
++ */
++const isNamespaceNotContainerEnabled = (error) => error._tag === "DurableObjectNotContainerEnabled" ||
++    (error._tag === "BadRequest" &&
++        typeof error.message === "string" &&
++        error.message.includes("not Container-enabled"));
++/**
++ * A namespace becomes Container-enabled when its Worker uploads a version
++ * whose `containers` metadata names the class. A new Worker does that in its
++ * precreate placeholder, before the application is created. An EXISTING
++ * Worker that gains a Container is a cycle peer being updated: it publishes
++ * its previous attributes (with the namespace id) before its upload, which
++ * waits for the image build, so the application's create runs first and is
++ * rejected. Wait for that upload instead of failing the deploy, bounded at
++ * ~8 minutes to cover a cold image build and push.
++ */
++export const retryContainerEnablement = (effect, onWait) => effect.pipe(Effect.tapError((error) => (isNamespaceNotContainerEnabled(error) ? onWait : Effect.void)), Effect.retry({
++    while: isNamespaceNotContainerEnabled,
++    schedule: Schedule.spaced("5 seconds"),
++    times: 96,
++}));
+ /** Whether an application id names a created, live application (not a placeholder). */
+ const isLiveApplication = (id) => !!id && isLiveId(id);
+ /** The one namespace every bound Container attaches the application to. */
+@@ -171,7 +196,14 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+         // 2. Ensure
+         if (!application) {
+             yield* session.note(`Creating container application ${name}...`);
+-            application = yield* retryNamespacePropagation(Containers.createDurableObjectContainerApplication({
++            let waitNoted = false;
++            const noteWait = Effect.suspend(() => {
++                if (waitNoted)
++                    return Effect.void;
++                waitNoted = true;
++                return session.note(`Waiting for the Worker upload to enable containers on Durable Object namespace ${durableObjects.namespaceId}...`);
++            });
++            application = yield* retryContainerEnablement(retryNamespacePropagation(Containers.createDurableObjectContainerApplication({
+                 accountId,
+                 name,
+                 schedulingPolicy: "durable_object",
+@@ -183,7 +215,7 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+                         : {}),
+                 },
+                 observability: settings.observability,
+-            })).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
++            })), noteWait).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
+         }
+         yield* assertServesNamespace(application);
+         // 3. Sync declared settings and reset settings no Container declares anymore.
+diff --git a/lib/Workers/WorkerProvider.d.ts b/lib/Workers/WorkerProvider.d.ts
+index b251f6b4d732c1693966fd4e9ecfa033378c8a13..77fc51cc3073945289d68c927f6b37718901e6b5 100644
+--- a/lib/Workers/WorkerProvider.d.ts
++++ b/lib/Workers/WorkerProvider.d.ts
+@@ -225,6 +225,18 @@ export interface ResolvedWorkersDev {
+     enabled: boolean;
+     previewsEnabled: boolean;
+ }
++/**
++ * Retry a read of a Worker script's deployments right after its PUT while
++ * Cloudflare still answers `WorkerNotFound` (10007): the deployments endpoint
++ * can lag the script registry by minutes for a script it
++ * registered moments ago, after the settings read (which retries the same
++ * 404) has already caught up. The script exists — its PUT returned 200 — so
++ * wait instead of failing the deploy. Backs off from 200ms to 5s, bounded at
++ * 64 retries (~5 minutes); every other failure is returned at once.
++ */
++export declare const retryDeploymentsRead: <A, E extends {
++    readonly _tag: string;
++}, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+ /**
+  * Resolve the `workersDev` prop to its full shape. `true` / omitted means
+  * "default workers.dev behavior" (stable URL + version previews), `false`
+diff --git a/lib/Workers/WorkerProvider.js b/lib/Workers/WorkerProvider.js
+index aa0797af9f107d287690c644b0c352ac63e37773..45b7dd1152b5d39e0e9b7084ab7742b114d5564c 100644
+--- a/lib/Workers/WorkerProvider.js
++++ b/lib/Workers/WorkerProvider.js
+@@ -621,6 +621,20 @@ const bindingTargetNotFoundRetrySchedule = () => Schedule.max([Schedule.fixed("2
+  */
+ const isScriptPutTransportError = (e) => isHttpClientError(e) && e.reason._tag === "TransportError";
+ const retryableScriptPut = (e) => isBindingTargetNotFound(e) || isScriptPutTransportError(e);
++/**
++ * Retry a read of a Worker script's deployments right after its PUT while
++ * Cloudflare still answers `WorkerNotFound` (10007): the deployments endpoint
++ * can lag the script registry by minutes for a script it
++ * registered moments ago, after the settings read (which retries the same
++ * 404) has already caught up. The script exists — its PUT returned 200 — so
++ * wait instead of failing the deploy. Backs off from 200ms to 5s, bounded at
++ * 64 retries (~5 minutes); every other failure is returned at once.
++ */
++export const retryDeploymentsRead = (effect) => effect.pipe(Effect.retry({
++    while: (error) => error._tag === "WorkerNotFound",
++    schedule: Schedule.min([Schedule.exponential(200), Schedule.spaced("5 seconds")]),
++    times: 64,
++}));
+ /**
+  * Upsert a Worker script, routing to the dispatch-namespace endpoint when
+  * `dispatchNamespace` is set. The metadata/files contract is identical, and
+@@ -3432,12 +3446,8 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+             // Same eventual-consistency window as `setWorkerSubdomain`: on a
+             // Worker's first deploy, GET /deployments can still return
+             // `WorkerNotFound` (code 10007) after `putScript` succeeded (#2999).
+-            const { deployments } = yield* workers
+-                .listScriptDeployments({ accountId, scriptName: name })
+-                .pipe(Effect.retry({
+-                while: (error) => error._tag === "WorkerNotFound",
+-                schedule: Schedule.max([Schedule.exponential(200), Schedule.recurs(8)]),
+-            }));
++            // cloudpid: retried for about five minutes, not upstream's ~51 s (#615).
++            const { deployments } = yield* retryDeploymentsRead(workers.listScriptDeployments({ accountId, scriptName: name }));
+             const active = deployments[0];
+             deploymentId = active?.id;
+             versionId = active?.versions.find((version) => version.percentage === 100)?.versionId;
+diff --git a/src/Containers/DurableObjectApplication.ts b/src/Containers/DurableObjectApplication.ts
+index b61bab19f26a54c36fd9378cd871ca58d2947835..48f2485bb08d7f29c7c545e59217e95a8f209ca9 100644
+--- a/src/Containers/DurableObjectApplication.ts
++++ b/src/Containers/DurableObjectApplication.ts
+@@ -114,6 +114,45 @@ export const retryNamespacePropagation = <A, E extends { readonly _tag: string }
+     }),
+   );
+ 
++/**
++ * Whether the containers API rejected the application because its namespace is
++ * not Container-enabled yet. Cloudflare reports it either with the documented
++ * code (`DurableObjectNotContainerEnabled`) or as a plain 400
++ * `{"error":"VALIDATE_INPUT","details":{"durable_objects":"Durable Object namespace is not Container-enabled"}}`.
++ */
++const isNamespaceNotContainerEnabled = (error: { readonly _tag: string; readonly message?: unknown }) =>
++  error._tag === "DurableObjectNotContainerEnabled" ||
++  (error._tag === "BadRequest" &&
++    typeof error.message === "string" &&
++    error.message.includes("not Container-enabled"));
++
++/**
++ * A namespace becomes Container-enabled when its Worker uploads a version
++ * whose `containers` metadata names the class. A new Worker does that in its
++ * precreate placeholder, before the application is created. An EXISTING
++ * Worker that gains a Container is a cycle peer being updated: it publishes
++ * its previous attributes (with the namespace id) before its upload, which
++ * waits for the image build, so the application's create runs first and is
++ * rejected. Wait for that upload instead of failing the deploy, bounded at
++ * ~8 minutes to cover a cold image build and push.
++ */
++export const retryContainerEnablement = <
++  A,
++  E extends { readonly _tag: string; readonly message?: unknown },
++  R,
++>(
++  effect: Effect.Effect<A, E, R>,
++  onWait: Effect.Effect<void>,
++) =>
++  effect.pipe(
++    Effect.tapError((error) => (isNamespaceNotContainerEnabled(error) ? onWait : Effect.void)),
++    Effect.retry({
++      while: isNamespaceNotContainerEnabled,
++      schedule: Schedule.spaced("5 seconds"),
++      times: 96,
++    }),
++  );
++
+ /** Whether an application id names a created, live application (not a placeholder). */
+ const isLiveApplication = (id: string | undefined): id is string => !!id && isLiveId(id);
+ 
+@@ -293,20 +332,31 @@ export const LiveDurableObjectApplicationProvider = () =>
+       // 2. Ensure
+       if (!application) {
+         yield* session.note(`Creating container application ${name}...`);
+-        application = yield* retryNamespacePropagation(
+-          Containers.createDurableObjectContainerApplication({
+-            accountId,
+-            name,
+-            schedulingPolicy: "durable_object",
+-            durableObjects,
+-            configuration: {
+-              ...(settings.ssh !== undefined ? { wranglerSsh: settings.ssh } : {}),
+-              ...(settings.authorizedKeys !== undefined
+-                ? { authorizedKeys: settings.authorizedKeys }
+-                : {}),
+-            },
+-            observability: settings.observability,
+-          }),
++        let waitNoted = false;
++        const noteWait = Effect.suspend(() => {
++          if (waitNoted) return Effect.void;
++          waitNoted = true;
++          return session.note(
++            `Waiting for the Worker upload to enable containers on Durable Object namespace ${durableObjects.namespaceId}...`,
++          );
++        });
++        application = yield* retryContainerEnablement(
++          retryNamespacePropagation(
++            Containers.createDurableObjectContainerApplication({
++              accountId,
++              name,
++              schedulingPolicy: "durable_object",
++              durableObjects,
++              configuration: {
++                ...(settings.ssh !== undefined ? { wranglerSsh: settings.ssh } : {}),
++                ...(settings.authorizedKeys !== undefined
++                  ? { authorizedKeys: settings.authorizedKeys }
++                  : {}),
++              },
++              observability: settings.observability,
++            }),
++          ),
++          noteWait,
+         ).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
+       }
+       yield* assertServesNamespace(application);
+diff --git a/src/Workers/WorkerProvider.ts b/src/Workers/WorkerProvider.ts
+index adfb2fec7d5e059a117f66218aad150a108fedbd..ccca475c23fa5bb61cdd63df89a01fff826c3a2b 100644
+--- a/src/Workers/WorkerProvider.ts
++++ b/src/Workers/WorkerProvider.ts
+@@ -824,6 +824,26 @@ const isScriptPutTransportError = (e: { _tag?: string }): boolean =>
+ const retryableScriptPut = (e: Parameters<typeof isBindingTargetNotFound>[0]): boolean =>
+   isBindingTargetNotFound(e) || isScriptPutTransportError(e);
+ 
++/**
++ * Retry a read of a Worker script's deployments right after its PUT while
++ * Cloudflare still answers `WorkerNotFound` (10007): the deployments endpoint
++ * can lag the script registry by minutes for a script it
++ * registered moments ago, after the settings read (which retries the same
++ * 404) has already caught up. The script exists — its PUT returned 200 — so
++ * wait instead of failing the deploy. Backs off from 200ms to 5s, bounded at
++ * 64 retries (~5 minutes); every other failure is returned at once.
++ */
++export const retryDeploymentsRead = <A, E extends { readonly _tag: string }, R>(
++  effect: Effect.Effect<A, E, R>,
++): Effect.Effect<A, E, R> =>
++  effect.pipe(
++    Effect.retry({
++      while: (error) => error._tag === "WorkerNotFound",
++      schedule: Schedule.min([Schedule.exponential(200), Schedule.spaced("5 seconds")]),
++      times: 64,
++    }),
++  );
++
+ /**
+  * Upsert a Worker script, routing to the dispatch-namespace endpoint when
+  * `dispatchNamespace` is set. The metadata/files contract is identical, and
+@@ -4449,14 +4469,10 @@ export const LiveWorkerProvider = () =>
+           // Same eventual-consistency window as `setWorkerSubdomain`: on a
+           // Worker's first deploy, GET /deployments can still return
+           // `WorkerNotFound` (code 10007) after `putScript` succeeded (#2999).
+-          const { deployments } = yield* workers
+-            .listScriptDeployments({ accountId, scriptName: name })
+-            .pipe(
+-              Effect.retry({
+-                while: (error) => error._tag === "WorkerNotFound",
+-                schedule: Schedule.max([Schedule.exponential(200), Schedule.recurs(8)]),
+-              }),
+-            );
++          // cloudpid: retried for about five minutes, not upstream's ~51 s (#615).
++          const { deployments } = yield* retryDeploymentsRead(
++            workers.listScriptDeployments({ accountId, scriptName: name }),
++          );
+           const active = deployments[0];
+           deploymentId = active?.id;
+           versionId = active?.versions.find((version) => version.percentage === 100)?.versionId;

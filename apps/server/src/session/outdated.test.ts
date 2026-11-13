@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over lines.
 import type { DiffAnnotation, RepoChanges } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { checked, checkQuote, comparedFile, linesOf, listedFile, sideLines } from "./outdated.ts";
 
 const draft = (overrides: Partial<DiffAnnotation> = {}): DiffAnnotation => ({

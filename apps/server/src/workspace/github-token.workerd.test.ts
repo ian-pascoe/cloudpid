@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { CONTAINER_GITHUB_PERMISSIONS } from "@cloudpid/config";
 import { env } from "cloudflare:workers";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it } from "vite-plus/test";
 import { graphqlList } from "./github-pulls.fixtures.ts";
 import { GITHUB_APP_WORKSPACE, type TestWorkspace } from "./workerd.fixture.ts";
 

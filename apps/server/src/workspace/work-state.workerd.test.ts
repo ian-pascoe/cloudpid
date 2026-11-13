@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { parseWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { env } from "cloudflare:workers";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it } from "vite-plus/test";
 import { type RepoFiles, WORK_STATE_BRANCH } from "./changes.repos.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 

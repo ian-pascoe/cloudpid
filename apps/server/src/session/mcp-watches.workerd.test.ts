@@ -18,7 +18,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { EngineScript } from "../mcp/host.fixture.ts";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
 import { poll } from "../poll.fixture.ts";

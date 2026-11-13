@@ -4,7 +4,7 @@
 import { type ContainerSettings, DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   patchEnvironmentSettings,
   readEnvironmentSettings,

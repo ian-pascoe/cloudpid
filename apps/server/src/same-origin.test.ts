@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { crossOriginReason, serveOwnerCalls } from "./same-origin.ts";
 
 const WORKER = ["localhost:1337"];

@@ -13,7 +13,7 @@ import {
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type * as Types from "effect/Types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestTrigger } from "./object.fixture.ts";
 import type { Delivery, DeliveryHeaders } from "./object.ts";

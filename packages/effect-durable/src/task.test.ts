@@ -1,12 +1,12 @@
 // pi-durable's Harness is Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Chord from "@earendil-works/chord/context";
 import { defineExtension, type Task, type TaskRuntime } from "@earendil-works/pi-durable";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ChordContext } from "./chord.ts";
 import { callDurable, type HarnessError } from "./Harness.ts";
 import { context, openFauxHarness } from "./harness.fixture.ts";

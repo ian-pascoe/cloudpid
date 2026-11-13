@@ -5,7 +5,7 @@
 // Approvals that answer as the test says.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import { MAX_APPROVAL_NOTE, MAX_APPROVAL_NOTES } from "./approvals.ts";
 import type { FakeMcpServer } from "./mcp.testing.ts";

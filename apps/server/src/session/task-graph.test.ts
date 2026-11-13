@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectRecord:off preferEffectArray:off -- test data built with native arrays and records.
 import type { AgentRecord, SubagentsState } from "@cloudpid/extensions/subagents";
 import type { ConversationId, TaskGraph, TaskGraphNode, TaskId } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MAX_BACKGROUND_TASKS, summarizeTaskGraph } from "./task-graph.ts";
 
 // SAFETY: test IDs; pi-durable's IDs are positive integers branded for the type system only.

@@ -17,7 +17,7 @@ import type {
 import { env } from "cloudflare:workers";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 
 declare global {

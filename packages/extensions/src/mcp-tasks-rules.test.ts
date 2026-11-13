@@ -14,7 +14,7 @@ import {
   UnknownServer,
 } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { HostLost, type McpHostClientService } from "./mcp/client.ts";
 import {
   detachedText,

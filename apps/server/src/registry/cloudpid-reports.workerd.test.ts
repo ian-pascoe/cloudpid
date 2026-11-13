@@ -6,7 +6,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GitHubNotInstalled } from "../github/app.ts";
 import { poll } from "../poll.fixture.ts";
 import {

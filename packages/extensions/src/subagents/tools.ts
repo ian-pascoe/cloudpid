@@ -3,7 +3,7 @@
 // Subagents document and the tasks in `./tasks.ts`. Each tool that changes state decides in one commit and records its
 // result for its own call, so a call rerun after a restart (`replay: "safe"`) returns what the first run decided.
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
-import type { Draft } from "@earendil-works/chord";
+import type { Draft } from "@earendil-works/chord/delta";
 import type { Context as ChordContextValue } from "@earendil-works/chord/context";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import {

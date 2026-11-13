@@ -8,7 +8,7 @@ import {
   type FileListEntry,
 } from "@earendil-works/pi-durable/env";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   discoverPrompts,
   expandTemplate,

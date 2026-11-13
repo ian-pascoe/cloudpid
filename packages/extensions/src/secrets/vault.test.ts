@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { openKeptVault, openVault } from "./vault.ts";
 
 const MASTER = "test-master-key-0123456789abcdef0123456789";

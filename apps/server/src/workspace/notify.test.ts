@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import type { WorkspaceObserver, WorkspaceSpan } from "@cloudflare/computer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ChangedPath, RevisionRange } from "./change-log.ts";
 import {
   DEBOUNCE_MS,

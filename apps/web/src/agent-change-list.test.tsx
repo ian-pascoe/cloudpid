@@ -4,7 +4,7 @@
 // on/off or exposure lines, a whole entry as a line diff, and the note that a value was Global's.
 
 import type { AgentChange } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentChangeRow } from "./agent-change-list.tsx";
 

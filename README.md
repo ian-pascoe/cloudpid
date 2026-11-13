@@ -25,17 +25,17 @@ It has a single user: only the owner gets past Cloudflare Access.
 
 ## Development
 
-You need Node, Bun (the version in `package.json`'s `packageManager`, which `mise.toml` pins too), and Docker with `buildx` to build the Container image.
+You need Node, pnpm (the version in `package.json`'s `packageManager`, which `mise.toml` pins too), and Docker with `buildx` to build the Container image. Vite+ (`vp`) is a development dependency: run it as `pnpm exec vp`, or through the scripts.
 
 ```sh
-bun install
-bun run check                               # typecheck, lint, test, format check
-bun run --cwd infra dev                     # workerd on http://localhost:1337
-bun run --cwd apps/web dev                  # the web app, proxied to the dev server
+pnpm install
+pnpm run check                                     # format, lint, typecheck, test
+pnpm --filter @cloudpid/infra run dev              # workerd on http://localhost:1337
+pnpm --filter @cloudpid/web run dev                # the web app, proxied to the dev server
 ```
 
 Deploying needs the secrets listed in [`docs/development/infra.md`](docs/development/infra.md) → _Secrets and variables_:
 
 ```sh
-bun run --cwd infra deploy --stage dev_$USER
+pnpm --filter @cloudpid/infra run deploy --stage dev_$USER
 ```

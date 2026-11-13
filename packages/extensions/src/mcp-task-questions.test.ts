@@ -18,7 +18,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createMcpSampling } from "./mcp/sampling.ts";
 import type { McpTasksTiming } from "./mcp/task-port.ts";
 import { observeQuestions, type TaskStore, taskStoreOf } from "./mcp/task-questions.ts";

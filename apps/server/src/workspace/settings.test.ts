@@ -2,7 +2,7 @@
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { workspaceSettingsStore } from "./settings.ts";
 
 const open = (initial?: Schema.Json) => {

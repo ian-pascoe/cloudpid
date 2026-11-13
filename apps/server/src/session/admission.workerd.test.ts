@@ -7,7 +7,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectRecord:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { NAVIGATE_WHILE_PREPARING } from "./branches.ts";
 import { eventually, idle } from "../durable-waits.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";

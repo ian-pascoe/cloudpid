@@ -1,7 +1,7 @@
 // The tool seam: a scripted model calls `web_fetch` through a real Harness, over a fake network. Pages and the paging
 // and output expectations follow pi-web-tools' `test/web-fetch.test.ts` (MIT; see ../../NOTICE.md).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalDate:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { WebToolError } from "./errors.ts";
 import { openWebHarness } from "./harness.fixture.ts";
 import { type WebRequest } from "./transport.ts";

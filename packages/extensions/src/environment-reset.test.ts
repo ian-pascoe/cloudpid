@@ -25,7 +25,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type * as Types from "effect/Types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type ApprovalAsk, Approvals, type ApprovalsService, makeApprovals } from "./approvals.ts";
 import {
   AgentChangeLog,

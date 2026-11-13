@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live).
 // @effect-diagnostics preferEffectArray:off -- messages and entries in native lists.
 import type { McpAppEntry, TranscriptMessage } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   callsOfScript,
   isAppLive,

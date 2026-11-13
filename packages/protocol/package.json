@@ -16,17 +16,12 @@
     "./repo": "./src/repo.ts",
     "./visuals": "./src/visuals.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
     "@cloudpid/config": "*",
-    "@earendil-works/chord": "^1.5.0",
-    "@earendil-works/pi-ai": "^1.5.0",
-    "@earendil-works/pi-durable": "^1.5.0",
+    "@earendil-works/chord": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-durable": "^1.5.2",
     "croner": "^11.0.0",
-    "effect": "^4.1.2"
+    "effect": "^4.1.4"
   }
 }

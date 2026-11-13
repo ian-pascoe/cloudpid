@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off -- the helper under test is a promise, awaited here.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ChunkLoadError, loadChunk } from "./lazy-chunk.ts";
 
 describe("loadChunk", () => {

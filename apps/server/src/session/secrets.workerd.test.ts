@@ -14,7 +14,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { idle, PAST_THE_RESTART_LIMIT, restartRepeatedly } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";

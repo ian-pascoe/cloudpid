@@ -37,7 +37,7 @@ import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ShownSession } from "../chat/conversation.ts";
 import { ToolCallCard } from "../chat/parts.tsx";
 import { RegistryClient } from "../registry.ts";

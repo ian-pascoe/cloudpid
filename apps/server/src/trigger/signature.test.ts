@@ -1,7 +1,7 @@
 // The checks are Promise-based (Web Crypto), so this test is too.
 // @effect-diagnostics asyncFunction:off globalDate:off nodeBuiltinImport:off preferEffectArray:off
 import { createHmac } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   checkGitHubSignature,
   checkStandardSignature,

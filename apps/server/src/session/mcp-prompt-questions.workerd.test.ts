@@ -28,7 +28,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { TestSession } from "./host.fixture.ts";
 
 const decode = Schema.decodeUnknownEffect(ServerMessageJson);

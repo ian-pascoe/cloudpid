@@ -19,7 +19,7 @@ import type {
 } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EngineScript, RequestScript, TestMcpHost } from "./host.fixture.ts";
 
 declare global {

@@ -19,7 +19,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { installFakeFrames, ORIGIN, viewOf } from "../app-view/frame-kit.testing.ts";
 import { ShownSession } from "../chat/conversation.ts";
 import { INITIALIZE_TIMEOUT_MS } from "../sandbox-frame/frame-protocol.ts";

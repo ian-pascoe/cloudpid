@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { containedSize } from "./frame-view.ts";
 
 describe("the frame's size in the Pane", () => {

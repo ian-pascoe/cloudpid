@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isOwnHost } from "./own-hosts.ts";
 
 describe("cloudpid's own hosts", () => {

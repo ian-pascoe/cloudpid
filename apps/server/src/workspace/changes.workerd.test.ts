@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { MAX_CHANGED_FILES } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it } from "vite-plus/test";
 import { lines, REWRITE_LINES, type RepoFiles } from "./changes.repos.ts";
 import { MAX_PACK_BYTES } from "./git.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";

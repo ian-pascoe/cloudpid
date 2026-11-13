@@ -58,7 +58,7 @@ import {
   type WorkspaceTriggerInput,
   whenBusyProblem,
 } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";

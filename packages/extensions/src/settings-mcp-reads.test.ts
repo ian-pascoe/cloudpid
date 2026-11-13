@@ -15,7 +15,7 @@ import type { SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { SettingsAccessError } from "./settings.ts";
 import {

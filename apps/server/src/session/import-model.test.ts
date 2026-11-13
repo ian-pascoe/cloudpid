@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type { Model } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   CONTEXT_OVER_WINDOW_RATIO,
   contextOverWindow,

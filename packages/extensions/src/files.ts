@@ -15,7 +15,7 @@
 // short name weighs more as an entry than as a line) says so in `structured_truncated`.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
   defineExtension,
   type ToolExecutionApi,

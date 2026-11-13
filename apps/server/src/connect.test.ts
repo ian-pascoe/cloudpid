@@ -2,7 +2,7 @@
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { connectSession } from "./connect.ts";
 
 const known = "0190f0a8-1b2c-7d3e-8f40-123456789abc";

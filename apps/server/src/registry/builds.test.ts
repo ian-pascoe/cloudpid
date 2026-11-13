@@ -1,5 +1,5 @@
 // What the Build upkeep asks a Build object for (docs/architecture/container.md → Builds): the daily look and its retry.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { BuildState } from "../workspace/build-record.ts";
 import { BUILD_LOOK_INTERVAL_MS, buildDue } from "./builds.ts";
 

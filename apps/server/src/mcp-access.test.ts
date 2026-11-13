@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { ACCESS_TEAM_DOMAIN, OWNER_EMAIL, appOrigin } from "./deployment.ts";
 import {
   ACCESS_ISSUER,

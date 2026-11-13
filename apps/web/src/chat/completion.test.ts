@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { detectTrigger, parseCommand, replaceTrigger } from "./completion.ts";
 
 describe("detecting a trigger before the caret", () => {

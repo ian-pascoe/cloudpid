@@ -13,7 +13,7 @@ import {
   Unsupported,
 } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { build, DOCS, startOf } from "./mcp.fixture.ts";
 import { MCP_COMPLETIONS_FEATURE, makeMcpTools, type McpCompletionInput } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

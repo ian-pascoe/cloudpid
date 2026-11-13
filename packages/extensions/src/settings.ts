@@ -34,7 +34,7 @@ import {
   type Surface,
   whoWords,
 } from "@cloudpid/protocol/harness-tools";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";

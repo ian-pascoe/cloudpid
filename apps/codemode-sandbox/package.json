@@ -7,19 +7,15 @@
     ".": "./src/index.ts",
     "./binding": "./src/binding.ts"
   },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
-  },
   "dependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.85",
+    "@alchemy.run/cloudflare": "2.0.0-beta.86",
     "@cloudpid/telemetry": "*",
-    "@earendil-works/pi-codemode": "^1.5.0",
-    "alchemy": "2.0.0-beta.85"
+    "@earendil-works/pi-codemode": "^1.5.2",
+    "alchemy": "2.0.0-beta.86"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.5.1",
-    "@cloudpid/config": "*"
+    "@cloudflare/vitest-plugin": "^1.8.0",
+    "@cloudpid/config": "*",
+    "vitest": "5.0.5"
   }
 }

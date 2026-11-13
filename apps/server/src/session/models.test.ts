@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DEFAULT_SETTINGS,
   FALLBACK_CATALOG,
@@ -102,14 +102,14 @@ describe("the proxy's catalog as pi-ai models", () => {
   });
 
   it("takes a newer Claude model's metadata from the newest of its family pi-ai has", () => {
-    const fable = byId.get("claude-fable-5-2");
-    const template = piAi("claude-fable-5-1");
+    const fable = byId.get("claude-fable-5-3");
+    const template = piAi("claude-fable-5-2");
 
     expect(template).toBeDefined();
-    expect(piAi("claude-fable-5-2")).toBeUndefined();
+    expect(piAi("claude-fable-5-3")).toBeUndefined();
     expect(fable).toMatchObject({
-      id: "claude-fable-5-2",
-      name: "Claude Fable 5.2",
+      id: "claude-fable-5-3",
+      name: "Claude Fable 5.3",
       reasoning: template?.reasoning,
       cost: template?.cost,
       thinkingLevelMap: template?.thinkingLevelMap,
@@ -140,12 +140,12 @@ describe("the proxy's catalog as pi-ai models", () => {
     let held: ModelCatalog = FALLBACK_CATALOG;
     const models = proxyModels(PROXY, () => held);
 
-    expect(models.getModel("anthropic", "claude-fable-5-2")).toBeUndefined();
+    expect(models.getModel("anthropic", "claude-fable-5-3")).toBeUndefined();
 
     held = fixtureCatalog();
 
-    expect(models.getModel("anthropic", "claude-fable-5-2")?.cost).toEqual(
-      piAi("claude-fable-5-1")?.cost,
+    expect(models.getModel("anthropic", "claude-fable-5-3")?.cost).toEqual(
+      piAi("claude-fable-5-2")?.cost,
     );
   });
 });

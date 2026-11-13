@@ -6,7 +6,7 @@ import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { loadQuickJSWasm, InlineCodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
@@ -30,7 +30,7 @@ import { err, FileError, type Result } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { MAX_DIFF_INPUT_BYTES } from "./call-diff.ts";
 import { codingToolsWith } from "./coding-tools.ts";
 

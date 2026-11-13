@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   CONTAINER_LABEL_LIMITS,
   containerAnalytics,

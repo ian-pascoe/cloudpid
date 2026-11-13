@@ -12,7 +12,7 @@ import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-work
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import type { Mutable } from "effect/Types";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { build, DOCS, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, MCP_SAMPLING_FEATURE, type McpToolOptions, type PromptAsk } from "./mcp.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";

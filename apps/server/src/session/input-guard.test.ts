@@ -14,7 +14,7 @@ import {
   renderReview,
   reviewMessage,
 } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { cropParts, fitCrops } from "./crops.ts";
 import { inputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 

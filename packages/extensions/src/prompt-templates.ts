@@ -5,7 +5,7 @@
 // uses, so the Workspace DO runs it next to its files, as it does for skills. Like `skills-discovery.ts`, a module of its
 // own the Workspaces Worker loads without the harness.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain string functions, ported as pi wrote them.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as Arr from "effect/Array";

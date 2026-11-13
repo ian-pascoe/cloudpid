@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { guardedFetch, MAX_REDIRECTS } from "./guarded-fetch.ts";
 import { fakeResolver, fakeTransport, ok, redirect } from "./web.fixture.ts";
 

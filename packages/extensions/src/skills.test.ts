@@ -22,7 +22,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ContextManagement } from "./context.ts";
 import {
   SKILL_SET_DIRECTORY,

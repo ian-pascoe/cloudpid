@@ -3,7 +3,7 @@
 // calling conversation (`/workspace/.cloudpid/tmp`), as `bash` does, through the call's environment, which writes
 // into the Workspace without waking the Container.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- pi-durable's environment is Promise-based.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 

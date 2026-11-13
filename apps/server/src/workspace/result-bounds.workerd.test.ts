@@ -6,7 +6,7 @@
 import { MAX_CODEMODE_CALLS_BYTES } from "@cloudpid/extensions/result-bounds";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import { call, uniqueWorkspace } from "./session.workerd.helpers.ts";
 

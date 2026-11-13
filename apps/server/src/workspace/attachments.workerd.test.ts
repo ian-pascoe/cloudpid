@@ -7,7 +7,7 @@ import { MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { env } from "cloudflare:workers";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { answerAttachment, workspaceAttachmentFiles } from "../attachments.ts";
 import { attachmentRoute } from "../routes.ts";
 import type { WorkspaceNamespace } from "../session/workspace.ts";

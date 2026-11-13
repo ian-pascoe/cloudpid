@@ -18,7 +18,7 @@ import {
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { sessionMcpWatches } from "./mcp-watches-store.ts";
 import type { SessionKv } from "./session-kv.ts";
 

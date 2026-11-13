@@ -1,7 +1,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { BrowserHostRpc } from "@cloudpid/extensions/browser/contract";
 import type { ContainerPreviewProps } from "./container-preview.ts";
 

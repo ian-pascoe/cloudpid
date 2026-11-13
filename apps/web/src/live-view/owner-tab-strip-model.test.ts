@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off
 import type { ConversationId, OwnerTabDriver } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { stripOf } from "./owner-tab-strip-model.ts";
 
 const driver = (ownerTabId: string, conversationId: number): OwnerTabDriver => ({

@@ -1,6 +1,6 @@
 // Ported from @ian-pascoe/pi-web-tools (`test/json-reindent.test.ts`, MIT; see ../../NOTICE.md).
 // @effect-diagnostics preferEffectArray:off
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { JSON_REINDENT_MAX_BYTES, reindentJson } from "./json-reindent.ts";
 
 describe("reindentJson", () => {

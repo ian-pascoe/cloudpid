@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import { settle } from "../session/client.testing.ts";
 import { askCatalogAtom, CATALOG_RETRY_MS, CATALOG_TTL_MS, catalogAtom } from "./catalog.ts";

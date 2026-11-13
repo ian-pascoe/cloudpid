@@ -1,6 +1,6 @@
 // docs/architecture/mcp-apps.md → The App sandbox. Which origins the page frames an App View at, what of a declared CSP it keeps,
 // and the proxy URL it builds.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   LOCAL_APP_ORIGINS as SERVER_LOCAL_APP_ORIGINS,
   LOCAL_SANDBOX_ORIGIN as SERVER_LOCAL_ORIGIN,

@@ -12,7 +12,7 @@ import {
 } from "@cloudpid/protocol";
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestTrigger } from "./object.fixture.ts";
 import { MAX_FIRE_ATTEMPTS, RETRY_MS } from "./object.ts";

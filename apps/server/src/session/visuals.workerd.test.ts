@@ -25,7 +25,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
 import { poll } from "../poll.fixture.ts";

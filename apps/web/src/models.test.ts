@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off
 import type { CatalogModel, ModelCatalog } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   agentSelect,
   FOLLOW_DEFAULT,

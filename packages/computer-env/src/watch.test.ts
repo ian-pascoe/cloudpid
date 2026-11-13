@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow, type FileChange } from "@earendil-works/pi-durable/env";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { caller } from "./client.ts";
 import { PollingWatcher } from "./watch.ts";
 import type { Snapshot } from "./wire.ts";

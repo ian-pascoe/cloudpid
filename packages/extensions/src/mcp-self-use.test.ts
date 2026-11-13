@@ -7,7 +7,7 @@ import { MCP_TOOL_NAMES } from "@cloudpid/protocol/mcp-api";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { build, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

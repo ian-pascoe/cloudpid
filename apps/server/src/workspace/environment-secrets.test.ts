@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { workspaceSecretsStore } from "./environment-secrets.ts";
 import type { SettingsStorage } from "./settings.ts";
 

@@ -17,7 +17,7 @@ import {
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { poll } from "../poll.fixture.ts";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import { uniqueWorkspace } from "./session.workerd.helpers.ts";

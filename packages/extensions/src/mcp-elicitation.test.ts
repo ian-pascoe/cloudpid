@@ -14,7 +14,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, open, startOf } from "./mcp.fixture.ts";
 import { fakeMcpHost, type FakeMcpAnswer } from "./mcp.testing.ts";

@@ -13,7 +13,7 @@ import type { ScopedPlanStatusSession } from "alchemy/Report";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { webBuildProps } from "./web-build.ts";
 
 /**
@@ -28,12 +28,12 @@ mkdirSync("dist", { recursive: true });
 writeFileSync("dist/index.html", bundled.map((file) => readFileSync(file, "utf8")).join("\\n"));
 `;
 
-/** The fixture's build, in place of `bun run build`: the step runs it, and so does CI before the plan. */
+/** The fixture's build, in place of `pnpm run build`: the step runs it, and so does CI before the plan. */
 const BUILD_COMMAND = "node build.mjs";
 
 /** A checkout in miniature, laid out as the repository is: the app, the protocol package it imports, the lockfile. */
 const FILES = {
-  "bun.lock": "lockfile\n",
+  "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
   "apps/web/package.json": '{ "name": "@cloudpid/web" }\n',
   "apps/web/index.html": '<script type="module" src="/src/app.tsx"></script>\n',
   "apps/web/build.mjs": BUILD_SCRIPT,
@@ -46,7 +46,6 @@ const FILES = {
   "apps/web/tsconfig.tsbuildinfo": '{"root":["./src/app.tsx","./src/app.test.tsx"]}\n',
   // Written by tools, never read by the build: the `.gitignore` rules the step's `exclude` restates.
   "apps/web/node_modules/.vite/deps.json": "{}\n",
-  "apps/web/.turbo/turbo-build.log": "built\n",
   "packages/protocol/src/session.ts": "export const session = 1;\n",
   "packages/protocol/src/session.test.ts": "it('decodes', () => {});\n",
   // Bundled, but not among the step's inputs (`web-build.ts`).
@@ -170,7 +169,6 @@ describe("the WebBuild step's plan", { timeout: 30_000 }, () => {
     "apps/web/DESIGN.md",
     "apps/web/tsconfig.tsbuildinfo",
     "apps/web/node_modules/.vite/deps.json",
-    "apps/web/.turbo/turbo-build.log",
   ])("plans a noop when only %s changed", async (changed) => {
     const { props, fresh, edit, build } = checkout();
     const deployed = await deploy(props);
@@ -186,7 +184,7 @@ describe("the WebBuild step's plan", { timeout: 30_000 }, () => {
     "apps/web/src/app.tsx",
     "apps/web/index.html",
     "packages/protocol/src/session.ts",
-    "bun.lock",
+    "pnpm-lock.yaml",
     "apps/web/package.json",
     // Not an input, but `dist` is built before the plan, so its hash shows the change.
     "packages/config/src/index.ts",

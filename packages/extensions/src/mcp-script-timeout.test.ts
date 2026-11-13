@@ -3,7 +3,7 @@
 // and whose result is the library's own failure for it.
 import type { ToolExecutionResult, ToolHookCall } from "@earendil-works/pi-durable";
 import type { Mutable } from "effect/Types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { endedByTimeout } from "./mcp/tools.ts";
 
 const TIMED = `// @options: {"timeout_ms": 300}\nawait tools.mcp__docs__ask({});`;

@@ -8,7 +8,7 @@ import type {
   OwnerTabListing,
   VisualTheme,
 } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Predicate from "effect/Predicate";
 
 /**

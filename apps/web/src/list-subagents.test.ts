@@ -4,7 +4,7 @@ import type { SessionAgent } from "@cloudpid/protocol";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   forgetDismissedAtom,
   indentOf,

@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { type ApprovalAsk, Approvals, type ApprovalsService, makeApprovals } from "./approvals.ts";
 import {
   AgentChangeLog,

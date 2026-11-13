@@ -3,7 +3,7 @@
 // @effect-diagnostics preferEffectArray:off
 import type { AuthorizationServerMetadata } from "@cloudpid/mcp/oauth";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   authorizationUrl,
   clientDocument,

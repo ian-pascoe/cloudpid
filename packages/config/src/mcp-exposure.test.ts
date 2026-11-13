@@ -1,7 +1,7 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { checkMcpWidening, type McpReach, resolveExposure } from "./mcp-exposure.ts";
 import { resolveMcpServerSet } from "./mcp-server-set.ts";
 import type { McpExposure } from "./mcp-servers.ts";

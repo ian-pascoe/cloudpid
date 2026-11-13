@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- tests of plain functions over values.
 import type { PullSource, RepoChanges, ViewedFile } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { foldedFiles, isViewed, paneFilesOf, viewedFileIds } from "./pane-files.ts";
 
 const source: PullSource = {

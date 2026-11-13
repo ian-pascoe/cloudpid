@@ -6,7 +6,7 @@
 // @effect-diagnostics asyncFunction:off
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestMcpCodemodeSession } from "./mcp-codemode.fixture.ts";
 import { asked, idle, pending, sent, session } from "./mcp-codemode.workerd.helpers.ts";
 

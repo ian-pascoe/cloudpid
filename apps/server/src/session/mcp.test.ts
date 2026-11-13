@@ -14,7 +14,7 @@ import type {
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SessionHost } from "./host.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import type { FollowState } from "./mcp-reads.ts";

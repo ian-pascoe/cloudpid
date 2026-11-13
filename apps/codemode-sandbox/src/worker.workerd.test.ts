@@ -3,7 +3,7 @@
 import { env } from "cloudflare:workers";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import { RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 declare global {
   namespace Cloudflare {

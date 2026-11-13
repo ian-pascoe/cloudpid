@@ -16,7 +16,7 @@ import { DEFAULT_ENVIRONMENT, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { MODEL_CATALOG_DOCUMENT } from "./model-catalog.ts";
 import {

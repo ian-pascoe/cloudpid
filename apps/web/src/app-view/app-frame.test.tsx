@@ -10,7 +10,7 @@ import type { McpAppRecord, McpAppRequestAnswer } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { AppFrame, type AppFrameProps } from "./app-frame.tsx";
 import { TEARDOWN_TIMEOUT_MS } from "../sandbox-frame/frame-protocol.ts";
 import { afterTeardown, appViews, EVERY_VIEW } from "./teardown.ts";

@@ -1,6 +1,6 @@
 import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { CompactionPolicy, ContextView } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { compactionThreshold, contextUsageOf } from "./context-usage.ts";
 
 const POLICY: CompactionPolicy = {

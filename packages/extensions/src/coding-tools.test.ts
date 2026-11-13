@@ -3,7 +3,7 @@
 // naming only the tools a request offers; and `read` reducing an image to fit the conversation's bound.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { probeScript } from "./bash-routing.ts";
 import { codingToolsWith } from "./coding-tools.ts";
 import { type BackendCall, openCodingHarness, type Respond } from "./coding-tools.fixture.ts";

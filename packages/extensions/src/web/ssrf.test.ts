@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { blockedAddressReason, blockedHostReason } from "./ssrf.ts";
 
 /** The host of `url` as the fetch guard sees it: after the WHATWG URL parser has normalised it. */

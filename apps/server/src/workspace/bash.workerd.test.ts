@@ -13,7 +13,7 @@ import {
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MAX_PACK_BYTES } from "./git.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 

@@ -9,7 +9,7 @@ import {
   type ContainerSettings,
   type InstanceType,
 } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { EnvironmentBuild } from "./build-record.ts";
 import type { ScanCoverage } from "./snapshots.ts";
 import {

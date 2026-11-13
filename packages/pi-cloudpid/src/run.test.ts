@@ -3,7 +3,7 @@
  * What each `/cloudpid` subcommand does (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Command): the
  * usage and the configured endpoint, `login`, `logout` (one endpoint's sign-in only), and `import`'s routing.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { parseCommand, USAGE } from "./command.ts";
 import { type Config, SETUP_STEPS } from "./config.ts";
 import { Refusal } from "./errors.ts";

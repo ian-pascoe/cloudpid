@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off nodeBuiltinImport:off -- the service worker is plain JavaScript run here against a fake `self`.
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const source = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
 

@@ -12,7 +12,7 @@ import {
 import { DEFAULT_ENVIRONMENT, MAX_ENVIRONMENT_SECRETS, variableField } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type AgentChangeAuthor,
   changeEnvironment,

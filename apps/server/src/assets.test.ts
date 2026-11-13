@@ -2,7 +2,7 @@
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { serveAsset } from "./assets.ts";
 
 const serve = (request: Request, layer: (request: Request) => Promise<Response>) =>

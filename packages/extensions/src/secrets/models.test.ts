@@ -13,7 +13,7 @@ import {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { scrubbingModels } from "./models.ts";
 import { secretReference } from "./references.ts";
 import { Secrets, secretsLayer, type SecretsService, type SecretStorage } from "./store.ts";

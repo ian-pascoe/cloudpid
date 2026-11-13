@@ -18,7 +18,7 @@ import {
 import { BROWSER_IDLE_MS } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { idle } from "../durable-waits.fixture.ts";
 import { poll, pollFor } from "../poll.fixture.ts";
 import { describeEvent } from "../push/notification.ts";

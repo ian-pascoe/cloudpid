@@ -1,7 +1,7 @@
 // What the owner is told of an MCP task (`mcp-task.ts`).
 import type { ConversationId, McpTask } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { clock, endText, liveTasks, taskLine, taskOfCall } from "./mcp-task.ts";
 
 const task = (more: Partial<McpTask> = {}): McpTask => ({

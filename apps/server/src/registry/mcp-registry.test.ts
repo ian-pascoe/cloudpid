@@ -5,7 +5,7 @@
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MCP_HANDED_DOCUMENT } from "./mcp-registry.ts";
 import { SIGN_INS_REVISION_DOCUMENT } from "./mcp-sign-ins.ts";
 import {

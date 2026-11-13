@@ -110,7 +110,7 @@ import {
   fencePayload,
   type TriggerPayloadChip,
 } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isBase, type Op } from "@earendil-works/chord/delta";
 import type { Models, Usage } from "@earendil-works/pi-ai";

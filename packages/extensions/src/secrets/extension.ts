@@ -19,7 +19,7 @@
 import { isMcpExtensionToolName } from "@cloudpid/config";
 import { defineEffectTool, effectHook, effectSection, reachedWait } from "@cloudpid/effect-durable";
 import { SecretKeep } from "@cloudpid/protocol";
-import type { JsonValue as DetailsJson } from "@earendil-works/chord";
+import type { JsonValue as DetailsJson } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import {

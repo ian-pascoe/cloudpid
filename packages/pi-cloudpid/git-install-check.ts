@@ -7,7 +7,7 @@
  * when npm cannot install the workspaces (a `workspace:` version, which npm does not know), when `prepare` fails without
  * the development tools, or when the extension the root manifest names does not load or registers no `/cloudpid`.
  *
- *   bun run --cwd packages/pi-cloudpid git-install:check
+ *   pnpm --filter @cloudpid/pi-cloudpid run git-install:check
  */
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";

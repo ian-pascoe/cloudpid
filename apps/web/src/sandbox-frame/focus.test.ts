@@ -3,7 +3,7 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live). Which View holds the keyboard focus:
 // the one whose frame is the document's active element, which moving focus from one frame to another does not announce.
 // @effect-diagnostics globalTimers:off -- a poll on native timers, driven by hand.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { FocusWatch, POLL_MS } from "./focus.ts";
 
 let one: HTMLIFrameElement;

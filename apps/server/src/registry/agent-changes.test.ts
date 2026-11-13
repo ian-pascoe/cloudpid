@@ -6,7 +6,7 @@ import {
   type ContainerSettingsOverrides,
   DEFAULT_CONTAINER_SETTINGS,
 } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { globalChangeReach, type ReachedEnvironment, wantsNewBuild } from "./agent-changes.ts";
 
 const repos = [{ name: "app", url: "https://github.com/o/app.git" }];

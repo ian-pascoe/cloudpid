@@ -13,7 +13,7 @@ import { migrate } from "@cloudpid/effect-durable/sqlite";
 import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildKey } from "../workspace/build-record.ts";
 import { GLOBAL_DOCUMENT, globalSettingsOf, workspaceOverridesOf } from "./global.ts";
 import { openAgentChanges } from "./agent-changes.ts";

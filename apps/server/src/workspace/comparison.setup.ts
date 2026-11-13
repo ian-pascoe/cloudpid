@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { blobsScript, comparisonScript } from "@cloudpid/sandbox-image/comparison";
-import type { TestProject } from "vitest/node";
+import type { TestProject } from "vite-plus/test/node";
 import { collect } from "./changes.collect.ts";
 import { lines } from "./changes.repos.ts";
 import type { ComparisonRepos } from "./comparison.repos.ts";

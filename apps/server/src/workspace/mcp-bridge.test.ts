@@ -7,7 +7,7 @@ import {
   MCP_BRIDGE_HEALTH_PATH,
   mcpBridgeRefusalCode,
 } from "@cloudpid/sandbox-image/mcp-bridge";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { McpBridge, type McpBridgeDeps, mcpBridgeRefusal, refuse } from "./mcp-bridge.ts";
 
 type Fake = {

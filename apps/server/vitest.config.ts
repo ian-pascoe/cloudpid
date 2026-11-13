@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import config, { testTimeout } from "@cloudpid/config/vitest";
 import { WEB_NOT_FOUND_HANDLING } from "./src/assets-config.ts";
-import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest/config";
+import { configDefaults, defineConfig, defineProject, mergeConfig } from "vite-plus";
 
 const workerd = "src/**/*.workerd.test.ts";
 

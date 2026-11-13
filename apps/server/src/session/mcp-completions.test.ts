@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off
 import { MCP_COMPLETION_STATUS, type McpCompletion } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { socketCompletions } from "./mcp-completions.ts";
 
 // A socket is only a key here.

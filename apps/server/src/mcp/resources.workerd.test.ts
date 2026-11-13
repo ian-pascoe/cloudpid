@@ -19,7 +19,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 import { DAY_MS } from "./time.ts";
 

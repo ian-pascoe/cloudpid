@@ -7,7 +7,7 @@
 import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import { GLOBAL_ID } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { changingRegistry, harnessHosts, harnessUpkeep } from "./registry.fixture.ts";
 import { harnessServices } from "./services.ts";
 

@@ -7,7 +7,7 @@
 // row is checked against.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain walks over JSON.
 import { isJsonObject, type McpProgress } from "@cloudpid/mcp/types";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";

@@ -9,7 +9,7 @@
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import type { FakeMcpServer } from "./mcp.testing.ts";
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { nextToolKeys } from "./settings-mcp-changes.ts";
 import {
   DEFAULT,

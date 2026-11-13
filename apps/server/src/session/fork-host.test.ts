@@ -4,7 +4,7 @@
 import type { McpQuestionCopier, McpQuestionCopies } from "@cloudpid/extensions/mcp";
 import type { EntryRecord, Harness } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { sessionForks } from "./fork-host.ts";
 
 type Fixture = { readonly [key: string]: string | number | readonly unknown[] };

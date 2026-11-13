@@ -1,6 +1,6 @@
 // The line diff of an Agent change's long values (docs/architecture/agent-changes.md).
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { changeDiff, diffLines, foldDiff, skillFileDiffs } from "./line-diff.ts";
 
 /** A text of `count` lines, each made by `line`. */

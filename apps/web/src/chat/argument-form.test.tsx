@@ -1,5 +1,5 @@
 import type { McpPromptArgument } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { formKey, shownSuggestions, suggestionKey } from "./argument-form.ts";
 import { ArgumentForm, requiredFilled } from "./argument-form.tsx";

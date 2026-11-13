@@ -5,8 +5,8 @@
 // without them, as in CI.
 //
 //   MODEL_PROXY_URL=https://api.ai.ianpascoe.dev MODEL_PROXY_API_KEY=<a Commissary key> \
-//     bun --cwd apps/server vitest run src/registry/model-catalog-live.test.ts
-import { describe, expect, it } from "vitest";
+//     pnpm exec vitest run src/registry/model-catalog-live.test.ts   # in apps/server
+import { describe, expect, it } from "vite-plus/test";
 import { catalogModels } from "../session/models.ts";
 import { fetchCommissaryCatalog } from "./model-catalog.ts";
 

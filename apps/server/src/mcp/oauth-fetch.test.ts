@@ -4,7 +4,7 @@ import { DnsResolver, type WebRequest, WebToolError, WebTransport } from "@cloud
 import { MAX_METADATA_BYTES } from "@cloudpid/mcp/oauth";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { guardedOAuthFetch } from "./oauth-fetch.ts";
 
 const HOSTS = new Map<string, ReadonlyArray<string>>([

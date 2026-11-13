@@ -5,7 +5,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fakeGitHub, type FakeGitHubState, fakeGitHubState } from "./github.fixture.ts";
 import { orphanHooks, type RepoHooks, triggerGitHub } from "./github-hook.ts";
 

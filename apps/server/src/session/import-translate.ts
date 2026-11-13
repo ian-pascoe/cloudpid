@@ -12,7 +12,7 @@ import { mcpToolNameFromPi } from "@cloudpid/config";
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { TodoState } from "@cloudpid/extensions/todo";
 import type { ImportSummary } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ImageContent, Message, TextContent, UserMessage } from "@earendil-works/pi-ai";
 import { type EntryId, type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";

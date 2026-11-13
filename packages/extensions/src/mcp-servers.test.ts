@@ -2,7 +2,7 @@
 // the `mcp_servers` section): which servers it lists, how each line reads, its caps and its states.
 // @effect-diagnostics preferEffectArray:off
 import { MCP_RESOURCE_TOOL_NAMES } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   EMPTY_LISTING,
   type McpIntroFeatures,

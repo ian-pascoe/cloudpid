@@ -16,7 +16,7 @@ import * as Predicate from "effect/Predicate";
 import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   type HookDeliver,
   hooksTelemetry,
@@ -277,6 +277,8 @@ describe("the composition the Worker serves with", () => {
           HttpServerRequest.fromWeb(
             new Request(`${origin}${path}`, {
               method,
+              // oxlint 1.89 (Vite+ 1.4.0) reports any `body` beside a `method` that may be GET; a GET's is `null`.
+              // oxlint-disable-next-line unicorn/no-invalid-fetch-options
               body: method === "POST" ? "{}" : null,
               headers: { host: new URL(origin).host },
             }),

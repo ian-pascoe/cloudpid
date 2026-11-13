@@ -10,64 +10,36 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "turbo run build",
-    "check": "turbo run typecheck lint test --continue && bun run format:check",
-    "format": "oxfmt",
-    "format:check": "oxfmt --check",
-    "lint": "turbo run lint",
-    "lint:fix": "turbo run lint -- --fix",
+    "build": "vp run -r build",
+    "check": "vp check && vp run -r typecheck && vp run -r test",
+    "format": "vp fmt",
+    "format:check": "vp fmt --check",
+    "lint": "vp lint",
+    "lint:fix": "vp lint --fix",
     "prepare": "./scripts/prepare.sh",
-    "test": "turbo run test",
-    "typecheck": "turbo run typecheck"
+    "test": "vp run -r test",
+    "typecheck": "vp run -r typecheck"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261104.1",
+    "@cloudflare/workers-types": "^5.20261112.1",
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
-    "@effect/tsgo": "0.64.1",
-    "@maschwenk/tsrslint": "0.1.6",
-    "@oxlint/plugins": "1.91.0",
-    "husky": "^9.1.7",
-    "lint-staged": "17.6.0",
-    "oxfmt": "^0.76.0",
-    "oxlint": "1.91.0",
-    "skills": "^1.7.6",
-    "turbo": "^2.11.10",
+    "@effect/tsgo": "0.68.1",
+    "skills": "^1.8.1",
+    "tsrs": "0.25.0-ts7.1.0-beta",
     "typescript": "^7.0.2",
+    "vite-plus": "1.4.0",
     "vitest": "5.0.5"
-  },
-  "overrides": {
-    "@effect/platform-node-shared": "4.1.2"
-  },
-  "lint-staged": {
-    "*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}": "oxlint --fix --no-error-on-unmatched-pattern",
-    "*": "oxfmt --no-error-on-unmatched-pattern"
   },
   "commitlint": {
     "extends": [
       "@commitlint/config-conventional"
     ]
   },
-  "packageManager": "bun@1.4.4",
-  "patchedDependencies": {
-    "@cloudflare/computer@0.9.0": "patches/@cloudflare__computer@0.9.0.patch",
-    "@cloudflare/vitest-plugin@1.5.1": "patches/@cloudflare__vitest-plugin@1.5.1.patch",
-    "@alchemy.run/cloudflare@2.0.0-beta.85": "patches/@alchemy.run__cloudflare@2.0.0-beta.85.patch",
-    "@earendil-works/pi-durable@1.5.0": "patches/@earendil-works__pi-durable@1.5.0.patch"
-  },
+  "packageManager": "pnpm@12.18.0",
   "pi": {
     "extensions": [
       "./packages/pi-cloudpid/src/index.ts"
     ]
-  },
-  "trustedDependencies": [
-    "@google/genai",
-    "@mongodb-js/zstd",
-    "core-js-pure",
-    "esbuild",
-    "node-liblzma",
-    "protobufjs",
-    "typescript",
-    "workerd"
-  ]
+  }
 }

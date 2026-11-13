@@ -15,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import type * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   completeMcpSignIn,
   confirmMcpSignIn,

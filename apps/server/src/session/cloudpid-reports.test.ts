@@ -5,7 +5,7 @@
 import type { CloudpidReportRequest } from "@cloudpid/extensions/cloudpid-report";
 import { RpcCallError } from "alchemy/Rpc";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AgentCloudpidReportInput } from "../registry/cloudpid-reports.ts";
 import { cloudpidReportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
 

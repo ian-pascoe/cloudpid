@@ -1,0 +1,49 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 96c4ca931a313ea1dcff6a1ba36dac94d66b8eb0..fe07a4074a9db40b1723ce80702594d136f034c2 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -161,6 +161,11 @@ export declare class Workspace {
+   #private;
+   constructor(options: WorkspaceOptions);
+   ensureMountsIndexed(): Promise<void>;
++  /**
++   * Check every mount's version again, as the first `ready()` does, and materialize again each one whose version
++   * changed (its root cleared first). Later `ready()` calls wait for it. Added by cloudpid's patch.
++   */
++  remount(): Promise<void>;
+   mounts(): Map<string, Mount>;
+   get db(): Database;
+   get observer(): WorkspaceObserver;
+diff --git a/dist/index.js b/dist/index.js
+index c40d1b0784fdc80e4089c86288cd6320a9da2851..0dc9c758cb2cc63b98160cc25d73a28a6c032212 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -5245,6 +5245,13 @@ var MountIndex = class {
+ 		});
+ 		return this.#inFlight;
+ 	}
++	reindex() {
++		const prior = this.#inFlight ?? Promise.resolve();
++		return prior.catch(() => {}).then(() => {
++			this.#done = false;
++			return this.ensureIndexed();
++		});
++	}
+ };
+ // src/mounts/registry.ts
+ function validateRoot(root) {
+@@ -6316,6 +6323,14 @@ var Workspace = class {
+ 		if (!this.#provider) this.#provider = new SQLiteWorkspaceProvider(this.#db, { now: this.#now });
+ 		return this.#provider;
+ 	}
++	remount() {
++		const pass = this.#mountIndex.reindex();
++		this.#readyPromise = pass;
++		pass.catch(() => {
++			if (this.#readyPromise === pass) this.#readyPromise = void 0;
++		});
++		return pass;
++	}
+ 	ready(options) {
+ 		if (this.#readyPromise === void 0) {
+ 			const pass = this.#mountIndex.ensureIndexed();

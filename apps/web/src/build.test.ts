@@ -17,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 const APP = fileURLToPath(new URL("..", import.meta.url));
 
@@ -34,7 +34,7 @@ beforeAll(() => {
   cpSync(APP, copy, {
     recursive: true,
     filter: (source) =>
-      !["node_modules", "dist", ".turbo"].includes(relative(APP, source).split("/")[0] ?? ""),
+      !["node_modules", "dist"].includes(relative(APP, source).split("/")[0] ?? ""),
   });
   symlinkSync(join(APP, "node_modules"), join(copy, "node_modules"));
 });
@@ -47,14 +47,14 @@ const filesUnder = (directory: string): string[] =>
     .map((entry) => relative(directory, join(entry.parentPath, entry.name)))
     .sort();
 
-/** Builds the copy as the WebBuild step does (`vite build`) and hashes every file of its `dist`. */
+/** Builds the copy as the WebBuild step does (`vp build`) and hashes every file of its `dist`. */
 const build = () => {
   const dist = join(copy, "dist");
 
   rmSync(dist, { recursive: true, force: true });
   execFileSync(
     process.execPath,
-    [join(APP, "node_modules/vite/bin/vite.js"), "build", "--logLevel", "error"],
+    [join(APP, "node_modules/vite-plus/bin/vp"), "build", "--logLevel", "error"],
     {
       cwd: copy,
       stdio: "pipe",

@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import { SessionCommandError } from "../session/client.ts";
 import { settle } from "../session/client.testing.ts";

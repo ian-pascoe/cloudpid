@@ -20,7 +20,7 @@ import {
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type EngineScript, hostServicesOver, type TestMcpHost } from "./host.fixture.ts";
 import { serverLog } from "./host.ts";
 import { openMcpHostStore } from "./store.ts";

@@ -8,7 +8,7 @@ import {
   type McpHostRequestResult,
   type McpStructuredOutput,
 } from "@cloudpid/mcp/types";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ToolDiagnostic, ToolExecutionResult } from "@earendil-works/pi-durable";
 import { utf8ByteLength } from "@earendil-works/chord/output";

@@ -5,7 +5,7 @@
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { McpQuestionsError } from "./mcp/question-records.ts";
 import { rememberSampling, SAMPLING_WRITE_TOOL } from "./mcp/sampling-write.ts";
 import { DEFAULT, setup } from "./settings-mcp.fixture.ts";

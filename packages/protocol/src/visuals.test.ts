@@ -3,7 +3,7 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off schemaSync:off preferTypedSchemaDecoder:off -- assertions over native arrays and records; decoding what a socket carries, as tests do.
 /* oxlint-disable anti-slop/no-unsafe-dictionary-type, anti-slop/no-unknown-parameters, anti-slop/no-known-value-widening, anti-slop/require-safety-comment-for-type-assertion -- a fake window and document: the shim's text is run against what a browser hands it, whose values are the page's own */
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ServerMessageJson } from "./session.ts";
 import {
   fitHeight,

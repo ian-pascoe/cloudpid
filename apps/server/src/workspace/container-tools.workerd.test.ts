@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";

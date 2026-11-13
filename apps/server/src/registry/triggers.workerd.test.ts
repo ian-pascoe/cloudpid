@@ -8,7 +8,7 @@ import {
   type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestRegistry } from "./store.fixture.ts";
 
 declare global {

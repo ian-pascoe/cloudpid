@@ -9,7 +9,7 @@
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { McpApplySet, McpEngineDiscoverResult, McpSetEntry } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { poll } from "../poll.fixture.ts";
 import { DISCOVERY_DEADLINE_MS } from "./discovery.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";

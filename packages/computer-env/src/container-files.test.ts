@@ -13,17 +13,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { type ContainerAccess, ContainerFiles } from "./container-files.ts";
 import { HostFailure } from "./failure.ts";
 
 const hasRg = spawnSync("rg", ["--version"]).status === 0;
 
 // The Container's GNU coreutils and findutils (`stat --printf`, `realpath -e`, `find -printf`), which a macOS host
-// lacks; CI runs Linux and never skips.
+// lacks; CI runs Linux and never skips. GNU's by their `--version`: on macOS, Vite Task runs a cached task's `stat` as
+// uutils', whose `--printf` differs.
+const gnu = (command: string, gnuPackage: string) =>
+  String(spawnSync(command, ["--version"]).stdout ?? "").includes(`(GNU ${gnuPackage})`);
+
 const hasGnuTools =
-  process.env["CI"] !== undefined ||
-  (spawnSync("stat", ["--version"]).status === 0 && spawnSync("find", ["--version"]).status === 0);
+  process.env["CI"] !== undefined || (gnu("stat", "coreutils") && gnu("find", "findutils"));
 
 let root: string;
 let running: boolean;

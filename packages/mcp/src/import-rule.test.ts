@@ -1,21 +1,21 @@
 /**
  * The import rule's lint test (docs/architecture/mcp.md → Packages and objects): oxlint's `no-restricted-imports`
  * fails an `@modelcontextprotocol/*` import outside `packages/mcp`, and `apps/web` may import types only from
- * `@modelcontextprotocol/ext-apps`. Each case plants a file in a real package, so that package's own `.oxlintrc.json`
- * decides, and runs oxlint on it as the package's `lint` script does.
+ * `@modelcontextprotocol/ext-apps`. Each case plants a file in a real package, so the root `vite.config.ts`'s rules for
+ * that package's path decide, and runs `vp lint` on it as the root `lint` script does.
  */
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off nodeBuiltinImport:off preferEffectArray:off
 import { execFile } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 const run = promisify(execFile);
 
 const root = (path: string) => resolve(import.meta.dirname, "../../..", path);
 
-const OXLINT = root("node_modules/.bin/oxlint");
+const VP = root("node_modules/.bin/vp");
 
 /** A planted import statement and whether `no-restricted-imports` must report it. */
 type Planted = readonly [statement: string, reported: boolean];
@@ -44,8 +44,8 @@ const reportedCases = async (packageDirectory: string, statements: ReadonlyArray
 
   await Promise.all(files.map((file, index) => writeFile(file, `${statements[index]}\n`)));
 
-  const { stdout } = await run(OXLINT, ["--format=unix", ...files], {
-    cwd: root(packageDirectory),
+  const { stdout } = await run(VP, ["lint", "--format=unix", ...files], {
+    cwd: root("."),
   }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
 
   return stdout

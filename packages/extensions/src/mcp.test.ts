@@ -9,7 +9,7 @@ import { type Extension, LiveDoc } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { HostLost, type McpHostClientService, makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import {
   build,

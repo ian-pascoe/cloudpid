@@ -1,7 +1,7 @@
 import { SESSION_DELETED_CLOSE_CODE } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 import { noticeAtom } from "../app-state.ts";
 import { pathAtom } from "../router.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";

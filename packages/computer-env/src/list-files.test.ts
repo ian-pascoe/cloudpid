@@ -3,7 +3,7 @@
 // the rest against a real Workspace.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import type { Workspace } from "@cloudflare/computer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { listFiles } from "./list-files.ts";
 
 /** A file tree of `files` (absolute path to text; a path ending in `/` is an empty directory), and the directories walked. */

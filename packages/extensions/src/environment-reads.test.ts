@@ -12,12 +12,12 @@ import {
   MAX_PAGE_BYTES,
   MAX_PAGE_CHARS,
 } from "@cloudpid/protocol/harness-tools";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { EnvironmentDetails } from "./environment.ts";
 import {
   type EnvironmentReadServices,

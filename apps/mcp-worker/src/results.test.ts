@@ -2,7 +2,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { ServerError } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { byteStream, scrubError } from "./results.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

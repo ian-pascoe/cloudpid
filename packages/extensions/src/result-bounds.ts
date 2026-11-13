@@ -49,7 +49,7 @@ export const MAX_RESULT_DETAILS_BYTES = 64 * 1024;
 
 /**
  * The most the call list of a `codemode` result's details weighs stored: the pi-durable patch's
- * `MAX_DETAILS_CALLS_BYTES` (`patches/@earendil-works__pi-durable@1.5.0.patch`), which keeps them to it.
+ * `MAX_DETAILS_CALLS_BYTES` (`patches/@earendil-works__pi-durable@1.5.2.patch`), which keeps them to it.
  */
 export const MAX_CODEMODE_CALLS_BYTES = 64 * 1024;
 

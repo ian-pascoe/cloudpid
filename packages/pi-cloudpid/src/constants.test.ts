@@ -8,7 +8,7 @@ import {
 } from "@cloudpid/protocol/mcp-api";
 import { MCP_TOOL_OPERATIONS } from "@cloudpid/protocol/mcp-tools";
 import { MAX_TITLE_LENGTH as PROTOCOL_MAX_TITLE_LENGTH } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   MAX_IMPORT_BYTES,
   MAX_SLICE_BYTES,

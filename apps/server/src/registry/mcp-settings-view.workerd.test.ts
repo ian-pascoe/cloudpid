@@ -15,7 +15,7 @@ import {
 import { env } from "cloudflare:workers";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GithubReadError } from "../github/skill-fetch.ts";
 import { fakeGithub } from "../github/skill-repo.fixture.ts";
 import { GLOBAL_DOCUMENT } from "./global.ts";

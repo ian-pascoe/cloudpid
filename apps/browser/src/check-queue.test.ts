@@ -1,7 +1,7 @@
 // docs/architecture/visuals.md → The check. The queue of a Session's checks: one at a time, in order, however the one ahead
 // ends, and no more than it holds.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { CheckQueue } from "./check-queue.ts";
 
 const busy = (held: number) => `busy ${held}` as const;

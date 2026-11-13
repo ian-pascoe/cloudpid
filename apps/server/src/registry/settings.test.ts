@@ -2,7 +2,7 @@ import { DEFAULT_SETTINGS, FALLBACK_CATALOG } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { MODEL_CATALOG_DOCUMENT } from "./model-catalog.ts";
 import { type DocumentStore, readSettings, SETTINGS_DOCUMENT, writeSettings } from "./settings.ts";
 

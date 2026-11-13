@@ -6,7 +6,7 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import type { FileListEntry } from "@earendil-works/pi-durable/env";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {

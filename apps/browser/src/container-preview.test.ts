@@ -4,7 +4,7 @@
 // here to the stand-in Workspaces Worker (`vitest.config.ts`), which says which Workspace and port it was asked for.
 // workerd's Durable Object state and RPC are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Acquired, asSession, WHERE, withHost, WORKSPACE } from "./host.testing.ts";
 
 /** Where each host of an acquisition's `outboundByHost` leads: the Workspace and port the request reached, by host. */

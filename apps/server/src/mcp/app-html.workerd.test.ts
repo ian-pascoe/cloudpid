@@ -18,7 +18,7 @@ import type {
 } from "@cloudpid/mcp/types";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { MAX_APP_STORE_BYTES, openMcpHostStore } from "./store.ts";
 import type { EngineScript, RequestScript, TestMcpHost } from "./host.fixture.ts";
 

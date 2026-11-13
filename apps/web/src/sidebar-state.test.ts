@@ -4,7 +4,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
-import { afterEach } from "vitest";
+import { afterEach } from "vite-plus/test";
 import { RegistryClient } from "./registry.ts";
 import { fakeRegistryLayer } from "./registry.testing.ts";
 import {

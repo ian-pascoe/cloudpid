@@ -1,7 +1,7 @@
 // docs/architecture/visuals.md → Tools (visual_check), The check. What the model is told of a check: the text of the findings, and
 // the bounds the host's screenshot is held to being the transcript's.
 // @effect-diagnostics preferEffectArray:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { VISUAL_CHECK_IMAGE_CHARACTERS, type VisualCheckResult } from "../browser/contract.ts";
 import { MAX_IMAGE_CHARACTERS } from "../images.ts";
 import { describeCheck } from "./check.ts";

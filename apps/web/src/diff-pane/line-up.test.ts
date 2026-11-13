@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- fixtures built over native arrays.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { lineUp, wholeFilePatch } from "./line-up.ts";
 
 const lines = (count: number, prefix: string): string =>

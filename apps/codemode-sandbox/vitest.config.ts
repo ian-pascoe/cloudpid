@@ -1,6 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { testTimeout } from "@cloudpid/config/vitest";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 
 /**
  * The Worker's tests run inside workerd, against its real entry and Durable Object. They do not merge the shared base, so

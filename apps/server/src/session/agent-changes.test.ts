@@ -3,7 +3,7 @@
 // kept for it once each.
 // @effect-diagnostics asyncFunction:off -- vitest's tests are Promise-based.
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { runCloudpidReports, runNotice } from "./agent-changes.ts";
 import type { SettingsKv } from "./settings.ts";
 

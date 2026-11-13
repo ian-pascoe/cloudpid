@@ -10,7 +10,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, type SkillUpdatePin } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { fakeGithub, type Files, skillMd } from "../github/skill-repo.fixture.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";

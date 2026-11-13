@@ -7,14 +7,10 @@
     ".": "./src/index.ts",
     "./sha256": "./src/sha256.ts",
     "./vitest": "./src/vitest.ts",
-    "./tsconfig/base.json": "./tsconfig/base.json"
-  },
-  "scripts": {
-    "typecheck": "effect-tsgo tsrs",
-    "lint": "oxlint",
-    "test": "vitest run"
+    "./tsconfig/base.json": "./tsconfig/base.json",
+    "./tasks": "./src/tasks.ts"
   },
   "dependencies": {
-    "effect": "^4.1.2"
+    "effect": "^4.1.4"
   }
 }

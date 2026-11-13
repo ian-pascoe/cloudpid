@@ -1,5 +1,5 @@
 import * as Arr from "effect/Array";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   CALL_DIFF_LINE_CAP,
   callDiffCounts,

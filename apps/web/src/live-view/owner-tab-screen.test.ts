@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off -- reads a File, which is Promise-based.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Frame } from "./connection.ts";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { keepScreen, latestScreenAtom, screenFile } from "./owner-tab-screen.ts";

@@ -4,7 +4,7 @@
 // to a client in what a conversation's watch sends, its view, its operations and its pages of entries (one socket message
 // has a size cap). Only the latest few are sent; an older one is replaced by a short text, in the request and in the
 // socket message, and stays in the transcript's storage.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Op } from "@earendil-works/chord/delta";
 import type { Message, Models, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";

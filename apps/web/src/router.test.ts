@@ -7,7 +7,7 @@ import {
   settingsPath,
 } from "@cloudpid/protocol";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { appViews } from "./app-view/teardown.ts";
 import { stubWindow } from "./router.testing.ts";
 import {

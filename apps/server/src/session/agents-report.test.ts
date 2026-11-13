@@ -2,7 +2,7 @@
 // and a write that failed written again. The host's side is covered in workerd (`subagents.workerd.test.ts`).
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off
 import type { GraphAgent, SessionAgent } from "@cloudpid/protocol";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
 
 /** What the report reads, and whether its writes fail. */

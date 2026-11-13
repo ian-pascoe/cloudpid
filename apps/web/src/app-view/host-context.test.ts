@@ -1,5 +1,5 @@
 // docs/architecture/mcp-apps.md → The bridge (hostContext, hostCapabilities). What an App View is told of its host.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   INLINE_INITIAL_HEIGHT_PX,
   hostCapabilities,

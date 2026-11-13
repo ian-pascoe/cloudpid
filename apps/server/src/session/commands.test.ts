@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { type McpAppContext, SESSION_COMMANDS } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { catalogOf, exportMarkdown, markdownExport } from "./commands.ts";
 
 /** The parts of pi's entries a fixture sets. */

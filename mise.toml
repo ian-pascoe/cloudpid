@@ -1,4 +1,6 @@
 # The tools this repo pins, for mise (locally, and on a cloudpid Container, whose bootstrap installs a repo's).
-# Bun's version is the one in package.json's `packageManager`; keep the two equal.
+# pnpm's version is the one in package.json's `packageManager`; keep the two equal. Vite+ is the project's own
+# `vite-plus` (`pnpm exec vp`), not a tool here: mise's `npm:vite-plus` is a second copy of the toolchain, not the
+# standalone global CLI that hands a command to the project's copy (docs/adr/0055-vite-plus-and-pnpm.md).
 [tools]
-bun = "1.4.4"
+pnpm = "12.18.0"

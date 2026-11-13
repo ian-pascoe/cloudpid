@@ -1,10 +1,10 @@
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { SPARE_BRANCH } from "@cloudpid/protocol";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { ExecutionError, err, ok, type Shell } from "@earendil-works/pi-durable/env";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type KeptSecret, secretEnvName } from "@cloudpid/extensions/secrets/core";
 import type { EnvironmentBuild } from "./build-record.ts";
 import type { SkillSet } from "./skill-set-schema.ts";

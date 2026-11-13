@@ -8,7 +8,7 @@
 //
 // The model's file tools reach the files directly (`WorkspaceEnvHost` over `Workspace.fs`), not through the Workspace
 // stub, so computer reports no `workspace.fs.*` span for them: this log is the one record of every change, whoever made
-// it. These are dofs' private tables, as of `@cloudflare/computer` 0.9.0 (unchanged from 0.8.0): re-check them when upgrading it
+// it. These are dofs' private tables, as of `@cloudflare/computer` 0.11.1 (unchanged from 0.8.0; 0.11 adds tables of its own): re-check them when upgrading it
 // (docs/development/dependencies.md). Reads only; a table that cannot be read throws, and `FileNotifier` logs it.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
 

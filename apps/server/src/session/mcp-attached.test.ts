@@ -3,7 +3,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- plain assertions over strings.
 import { MAX_RESOURCE_INLINE_TEXT_BYTES, resourcesBlock } from "@cloudpid/protocol";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type AttachedBudgets,
   attachedMessage,

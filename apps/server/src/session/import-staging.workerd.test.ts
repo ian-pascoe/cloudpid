@@ -5,7 +5,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { Migration } from "@cloudpid/effect-durable/sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestSession } from "./host.fixture.ts";
 import { importStaging, MIGRATIONS } from "./import-staging.ts";
 

@@ -1,6 +1,6 @@
 // docs/architecture/mcp-apps.md → Lifecycle (Server states). What a card with an App call shows.
 import type { McpAppEntry, McpAppTool } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { appAvailability } from "./availability.ts";
 
 const tool: McpAppTool = {

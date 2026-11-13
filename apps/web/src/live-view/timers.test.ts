@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- a fake clock's timers in a native array.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { TimerGroup, Throttle, type Timers } from "./timers.ts";
 
 /** Timers that run only when the test moves the clock. */

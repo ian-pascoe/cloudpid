@@ -1,5 +1,5 @@
 import { parsePatchFiles } from "@pierre/diffs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { pickLines } from "./selection.ts";
 
 /** A patch of `a.ts`: lines 10–11 kept, 12 changed, 13 added, 14 kept; then a second hunk at line 40. */

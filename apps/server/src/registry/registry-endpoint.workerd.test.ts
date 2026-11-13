@@ -6,7 +6,7 @@
 import { DEFAULT_ENVIRONMENT, variableField } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AgentChangeAuthor } from "./agent-changes.ts";
 import type { ChangeClaim } from "./change-requests.ts";
 import type { RegistryMethods } from "./Registry.ts";

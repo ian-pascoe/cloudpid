@@ -5,7 +5,7 @@
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type JsonObject } from "@earendil-works/pi-durable";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { decodeProgramCall } from "./program.fixture.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";

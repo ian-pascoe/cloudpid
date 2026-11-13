@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { effectTelemetry } from "./adapter.ts";
 import { currentTraceId, workersTracer, type WorkersSpan, type WorkersTracing } from "./workers.ts";
 

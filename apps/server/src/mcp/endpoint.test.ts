@@ -8,7 +8,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { AccessCaller, type Caller } from "../access.ts";
 import {
   type HostCalls,

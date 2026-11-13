@@ -5,7 +5,7 @@
  */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { OWNER, run, TARGET, testDeps } from "./core.fixture.ts";
 import {
   type FakeOptions,

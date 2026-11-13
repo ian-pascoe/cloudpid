@@ -9,7 +9,7 @@
 // `_meta` dropped, `annotations` passed through.
 import { type McpExposure, normalizeMcpName } from "@cloudpid/config";
 import { type JsonObject, MCP_APP_PROFILE } from "@cloudpid/mcp/types";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import { isAppResourceUri } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- expected lists are native arrays.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { defaultSection, leadOnPath, scopeSwitchPath, sectionsAt } from "./sections.ts";
 
 const GLOBAL = "*";

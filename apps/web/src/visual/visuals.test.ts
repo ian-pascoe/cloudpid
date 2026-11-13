@@ -13,7 +13,7 @@ import {
   type VisualEntry,
   type VisualRecord,
 } from "@cloudpid/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { loadOf } from "./atoms.ts";
 import {
   GROWTH_WINDOW_MS,

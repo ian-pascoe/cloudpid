@@ -12,7 +12,7 @@ import {
   type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AgentChangeAuthor, SessionChangeAuthor } from "./agent-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 

@@ -1,7 +1,7 @@
 // A spare Workspace's Durable Object preparing itself (docs/architecture/workspace.md → Spare Workspace): the object's storage, alarm,
 // idle stop and readying are faked; the clock is a number the test moves.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { WorkspaceSetup } from "./prepare.ts";
 import { SPARE_ATTEMPTS, SparePreparation, type SpareRequest } from "./spare.ts";
 

@@ -2,7 +2,7 @@
 // cloudpid reports, ADR-0051): when a rate limit says to ask again, a refused token, an answer that is not an issue, and a
 // GitHub that can't be reached. Never GitHub itself.
 // @effect-diagnostics asyncFunction:off -- GitHub is asked with `fetch`, a Promise API.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createIssue, type IssueCalls, labelExists } from "./issues.ts";
 
 /** 2026-11-09, 12:00 UTC. */

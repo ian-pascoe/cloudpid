@@ -4,7 +4,7 @@
 import { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fakeHandoffHost, LIVE_VIEW_LINKS } from "./host.fixture.ts";
 import {
   BROWSER_IDLE_MS,

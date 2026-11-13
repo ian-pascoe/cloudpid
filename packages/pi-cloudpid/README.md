@@ -57,9 +57,9 @@ Everything after `import` is the instruction, sent to the new Session when the i
 ## Develop
 
 ```sh
-pi -e packages/pi-cloudpid/src/index.ts      # the dev loop, from the repo root
-bun run --cwd packages/pi-cloudpid test      # includes an import against a stub endpoint behind a stub authorization server
-bun run --cwd packages/pi-cloudpid git-install:check  # installs a copy of the repo as pi does, and loads /cloudpid from it
+pi -e packages/pi-cloudpid/src/index.ts                     # the dev loop, from the repo root
+pnpm exec vp run @cloudpid/pi-cloudpid#test                 # includes an import against a stub endpoint behind a stub authorization server
+pnpm --filter @cloudpid/pi-cloudpid run git-install:check   # installs a copy of the repo as pi does, and loads /cloudpid from it
 ```
 
 There is no build: pi loads `src/index.ts` itself. So the repo must stay installable by npm's production install at its root (no `workspace:*` versions; a root `prepare` that does nothing without the development tools), which `git-install:check` and its CI job hold. `X-Cloudpid-Client: pi-cloudpid/<sha>` names the commit of the clone pi installed (`git rev-parse HEAD`), or `dev` outside one.

@@ -1,7 +1,7 @@
 // The page fixtures and main-content expectations come from pi-web-tools' `test/web-fetch.test.ts` (MIT; see
 // ../../NOTICE.md); the Markdown expectations are for the Worker-side converter that replaces Turndown.
 // @effect-diagnostics preferEffectArray:off globalDate:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { convertContent, type WebFetchFormat } from "./content.ts";
 import { htmlToMarkdown, MAX_FRAMES, MAX_SPANS } from "./html-markdown.ts";
 import { HtmlTooDeepError } from "./html-parse.ts";

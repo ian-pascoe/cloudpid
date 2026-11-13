@@ -3,7 +3,7 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's params are whatever it sent */
 // @effect-diagnostics preferEffectArray:off asyncFunction:off -- recorded calls in native lists, and promises a handler answers.
 import { MAX_APP_MESSAGE_CHARS, MAX_MCP_APP_CONTEXT_INPUT } from "@cloudpid/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   speechHandlers,
   textOfBlocks,

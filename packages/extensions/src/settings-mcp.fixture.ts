@@ -32,7 +32,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import {
   type ApprovalAnswer,

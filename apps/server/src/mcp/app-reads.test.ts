@@ -9,7 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { APP_SLOT_WAIT_MS, decoding, MAX_REMEMBERED, remember } from "./app-reads.ts";
 
 /** A stream of `bytes` bytes that records whether it was cancelled unread. */

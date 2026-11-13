@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → Lifecycle (Mounting): `tool-input-partial` is throttled to 250 ms, sent only when changed,
 // and stops past 1 MiB of arguments.
 // @effect-diagnostics missingPipeableSignature:off globalTimers:off -- a fake clock driven by hand.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   createPartialFeed,
   type FeedClock,

@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- Fire times shown as ISO strings.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   cronProblem,
   dueFires,

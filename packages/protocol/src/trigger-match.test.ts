@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectRecord:off -- plain objects of hundreds of keys, built to see that there is no cap.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { EVENT_PATH, matchesDelivery, matchFacts, matchProblem } from "./trigger-match.ts";
 
 const run = {

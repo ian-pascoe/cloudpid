@@ -15,7 +15,7 @@ import {
 import { MAX_MCP_APP_SCHEMA_CHARS, type McpAppDraft, type McpAppTool } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { build, DOCS, open, results, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, type McpAppRecorder } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

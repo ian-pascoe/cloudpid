@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- assertions over native arrays and records.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { PROXY_JS, proxyPage } from "./proxy.ts";
 
 const HOST = "https://pi.ianpascoe.dev";

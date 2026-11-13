@@ -7,7 +7,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off
 import { McpHostCallFailed, NotFound, ServerChanged, Unreachable } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { FakeMcpServer } from "./mcp.testing.ts";
 import {
   offers,

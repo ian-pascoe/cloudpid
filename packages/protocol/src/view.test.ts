@@ -2,7 +2,7 @@
 
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { ConversationView, EntryQuery, EntryRecord } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { pageBlock } from "./attached-pages.ts";
 import { ConversationMirror } from "./mirror.ts";
 import type { EntriesPage } from "./session.ts";

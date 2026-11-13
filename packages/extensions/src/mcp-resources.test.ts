@@ -22,7 +22,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { build, deferredIn, detailsOf, open, results, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools, mcpExtension } from "./mcp.ts";
 import { type FakeMcpAnswer, type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";

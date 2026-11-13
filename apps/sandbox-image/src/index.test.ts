@@ -4,7 +4,7 @@
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 
 const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8");

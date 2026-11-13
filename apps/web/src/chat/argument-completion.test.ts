@@ -3,7 +3,7 @@
 // answer narrowed while the next is awaited, and nothing asked again of a server that cannot answer.
 // @effect-diagnostics globalTimers:off asyncFunction:off newPromise:off preferEffectArray:off
 import type { McpCompletion } from "@cloudpid/protocol";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   type CompleteFn,
   type CompletionAsk,

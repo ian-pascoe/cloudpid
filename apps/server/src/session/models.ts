@@ -18,11 +18,15 @@ import type { ModelProxy } from "../model-proxy.ts";
 
 type AnthropicModel = Model<"anthropic-messages">;
 
-/** `models.json` caps these Claude models' context window below their catalog value, and their family's newer ones. */
+/**
+ * `models.json` caps these Claude models' context window below their catalog value, and their family's newer ones.
+ * `claude-fable-5-2` is one of those newer ones, listed since pi-ai's catalog has it (1.5.2) and it is no longer templated.
+ */
 const CLAUDE_CONTEXT_WINDOW = 400_000;
 
 const CLAUDE_CAPPED: ReadonlySet<string> = new Set([
   "claude-fable-5-1",
+  "claude-fable-5-2",
   "claude-opus-5-5",
   "claude-sonnet-5-5",
   "claude-haiku-5-5",
@@ -136,7 +140,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<AnthropicModel> = anthropicProvider().getM
 /**
  * pi-ai's models for `catalog`'s `anthropic` entries, served from `baseUrl`: pi-ai's own entry for a model it has (the
  * proxy's name, output limit and window, the window capped for the Claude models `models.json` caps); the newest model
- * of the family for a Claude model it does not (`claude-fable-5-2` takes `claude-fable-5-1`'s price, thinking levels and
+ * of the family for a Claude model it does not (`claude-fable-5-3` takes `claude-fable-5-2`'s price, thinking levels and
  * cap); a generic Anthropic Messages model, unpriced, for any other.
  */
 export const catalogModels = (

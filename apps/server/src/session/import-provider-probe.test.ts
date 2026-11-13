@@ -12,7 +12,7 @@
 // skipped without them, as in CI.
 //
 //   MODEL_PROXY_URL=https://api.ai.ianpascoe.dev MODEL_PROXY_API_KEY=<a Commissary key> \
-//     bun --cwd apps/server vitest run src/session/import-provider-probe.test.ts
+//     pnpm exec vitest run src/session/import-provider-probe.test.ts   # in apps/server
 //
 // A failure of the first test names the provider and what to change; the second fails only if flattening does not work
 // for a provider.
@@ -27,7 +27,7 @@ import type {
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { flattensFor, flattenAbsentToolCalls } from "./absent-tools.ts";
 import { NOT_RUN_TEXT } from "./import-translate.ts";
 import { proxyModels } from "./models.ts";

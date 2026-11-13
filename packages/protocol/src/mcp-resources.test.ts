@@ -2,7 +2,7 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isMcpSpillPath } from "./mcp-resources.ts";
 import { ClientMessage, Hello } from "./session.ts";
 

@@ -18,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { askMcpSignIn, STEP_UP_LIMIT, withdrawMcpSignIn } from "./mcp-sign-in-ask.ts";
 import { completeMcpSignIn, type FlowDeps, startMcpSignIn } from "./mcp-sign-in-flow.ts";
 import { signInTarget } from "./mcp-sign-in-registry.ts";

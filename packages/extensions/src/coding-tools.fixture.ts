@@ -17,7 +17,7 @@ import {
   MemoryStorage,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import {
   type BinaryReader,
   err,

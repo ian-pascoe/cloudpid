@@ -20,7 +20,7 @@ import { env } from "cloudflare:workers";
 import { modernServer } from "@cloudpid/mcp/testing";
 import { MCP_LARGE_RESULT_BYTES } from "@cloudpid/mcp/types";
 import type { Mutable } from "effect/Types";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { poll } from "../poll.fixture.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 import { DAY_MS, MINUTE_MS } from "./time.ts";

@@ -5,7 +5,7 @@ import { resolveMcpServerSet } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { EMPTY_MCP_SET_HASH, mcpServerSetOf, shouldPushMcpSet } from "./mcp-set.ts";
 import { resolveMcpServerValues } from "./mcp-values.ts";
 

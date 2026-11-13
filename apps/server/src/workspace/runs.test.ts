@@ -9,13 +9,15 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MAX_CHANGE_SIDE_BYTES, MAX_RUN_COPY_FILES, WORKSPACE_ROOT } from "@cloudpid/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { type ContainerOnly, type KeptChanges, WorkspaceChangesModule } from "./changes.ts";
 import { type RunFiles, WorkspaceRunsModule } from "./runs.ts";
 
-// The Container's GNU coreutils (`stat --printf`), which a macOS host lacks; CI runs Linux and never skips.
+// The Container's GNU coreutils (`stat --printf`), which a macOS host lacks; CI runs Linux and never skips. GNU's by its
+// `--version`: on macOS, Vite Task runs a cached task's `stat` as uutils', whose `--printf` differs.
 const hasGnuCoreutils =
-  process.env["CI"] !== undefined || spawnSync("stat", ["--version"]).status === 0;
+  process.env["CI"] !== undefined ||
+  String(spawnSync("stat", ["--version"]).stdout ?? "").includes("(GNU coreutils)");
 
 const env = {
   PATH: process.env.PATH ?? "",

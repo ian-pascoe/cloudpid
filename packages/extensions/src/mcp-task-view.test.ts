@@ -5,7 +5,7 @@
 import { McpHostTaskAck, McpHostTaskStarted, McpHostTaskState } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { DOCS } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { followViewTask, type ViewTask } from "./mcp/task-view.ts";

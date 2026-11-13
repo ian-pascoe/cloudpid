@@ -7,7 +7,7 @@
 import type { ElicitationForm } from "@cloudpid/protocol";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   answeredFields,
   ELICITATION_BOUNDS,

@@ -2,7 +2,7 @@
 // in front of them, dismissing answers -32000, and a newer request replaces the one waiting.
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's params are whatever it sent */
 // @effect-diagnostics preferEffectArray:off asyncFunction:off -- recorded calls in native lists, and promises a handler answers.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { RpcError } from "./frame-protocol.ts";
 import { DISMISSED, linkOf, openLinkHandler, type PendingLink, shownLink } from "./open-link.ts";
 

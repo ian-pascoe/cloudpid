@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- expected lines, joined as the block joins them.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type FirePayload,
   MAX_INLINE_PAYLOAD_BYTES,

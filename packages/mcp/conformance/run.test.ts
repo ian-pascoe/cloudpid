@@ -7,7 +7,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished } from "vite-plus/test";
 import { MODES, outcome, parseBaseline, runnerBaseline, scenariosRan } from "./run.ts";
 
 const committed = readFileSync(resolve(import.meta.dirname, "baseline.json"), "utf8");

@@ -1,6 +1,6 @@
 // The base64 helpers the preview shares (`./base64.ts`).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { base64Bytes, base64FromBytes, bytesFromBase64, isBase64 } from "./base64.ts";
 
 describe("base64", () => {

@@ -4,7 +4,7 @@
 // @effect-diagnostics preferEffectArray:off
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { environmentChangeOutput } from "./environment-outputs.ts";
 import {
   agentChangeOutput,

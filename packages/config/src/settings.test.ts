@@ -2,7 +2,7 @@ import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   DEFAULT_OFFERED_TOOLS,
   DEFAULT_SETTINGS,

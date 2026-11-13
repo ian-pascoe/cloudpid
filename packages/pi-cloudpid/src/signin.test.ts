@@ -5,7 +5,7 @@
  * `S256` (the stub's token endpoint verifies the verifier), the code arriving at the loopback server (exactly one request
  * with the matching `state`) or pasted, and the entry stored. A fake browser stands where `open` stands in production.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { type Config, endpointKey } from "./config.ts";
 import { Refusal } from "./errors.ts";
 import {

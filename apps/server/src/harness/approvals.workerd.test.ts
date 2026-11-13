@@ -25,7 +25,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { skillMd } from "../github/skill-repo.fixture.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { RealRegistry, ServedRepo } from "../registry/registry.fixture.ts";

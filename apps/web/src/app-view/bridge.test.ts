@@ -5,7 +5,7 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type, anti-slop/no-known-value-widening, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion, typescript/no-implied-eval -- fakes of the browser's windows and of JSON-RPC traffic: their data is whatever a case posts, a View's runtime is evaluated from the package as a function of its window (`new Function`, the only way to run it here), and the casts are cut down to a case's shape */
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off globalTimers:off newPromise:off -- fakes of the browser's windows and timers.
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { MCP_APPS_PROTOCOL_VERSION } from "../sandbox-frame/frame-protocol.ts";
 import {
   fakePage,

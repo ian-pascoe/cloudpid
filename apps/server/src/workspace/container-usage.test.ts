@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { containerRates, type ContainerUsageSums, type InstanceType } from "@cloudpid/config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AnalyticsWindow } from "./container-analytics.ts";
 import {
   ContainerUsageLedger,

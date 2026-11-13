@@ -2,7 +2,7 @@
 import { OMITTED_IMAGE, WATCH_IMAGES } from "@cloudpid/extensions/browser";
 import { type EntriesPage, MAX_ENTRIES_PAGE_BYTES } from "@cloudpid/protocol";
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { entriesPage } from "./entries-page.ts";
 
 /** The parts of pi's shapes a fixture sets. */

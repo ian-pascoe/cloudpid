@@ -12,7 +12,7 @@ import { env } from "cloudflare:workers";
 import { ASK_TOOL, modernServer, modernTaskServer, rpcMethods } from "@cloudpid/mcp/testing";
 import type { McpApplySet, McpEngineDiscoverResult } from "@cloudpid/mcp/types";
 import type * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EngineScript } from "../mcp/host.fixture.ts";
 import { constructions, type TestSession } from "./host.fixture.ts";
 

@@ -10,7 +10,7 @@
 // @effect-diagnostics asyncFunction:off nodeBuiltinImport:off preferEffectArray:off
 import { resolve } from "node:path";
 import { rolldown, type OutputChunk, type Plugin } from "rolldown";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 const here = (path: string) => resolve(import.meta.dirname, path);
 

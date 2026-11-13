@@ -1,10 +1,10 @@
 // The Call diff of `write`, and the diffs captured from a script's nested calls, as plain functions over text and over a
 // fake file system.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durable/env";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   BINARY_SCAN_BYTES,
   capturedDiffs,

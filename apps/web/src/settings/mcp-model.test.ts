@@ -14,7 +14,7 @@ import {
 import { MCP_ADJUSTMENT_OVER, resolveOverridesLeniently } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   checkMcpEntry,
   EMPTY_MCP_OAUTH,

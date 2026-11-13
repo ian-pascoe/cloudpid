@@ -3,7 +3,7 @@ import { MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AttachmentFiles, answerAttachment } from "./attachments.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { attachmentRoute } from "./routes.ts";

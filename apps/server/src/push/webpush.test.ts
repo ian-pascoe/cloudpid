@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off -- WebCrypto and `fetch` are Promise APIs.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   base64UrlDecode,
   base64UrlEncode,

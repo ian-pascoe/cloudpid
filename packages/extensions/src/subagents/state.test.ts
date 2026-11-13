@@ -2,7 +2,7 @@
 // Which conversation is the root agent's once the Session has branches (GLOSSARY.md → Session tree), where a child's
 // reports go, and what a delete leaves of a freed ID (ADR-0040).
 import { type ConversationId, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type AgentRecord,
   agentOf,

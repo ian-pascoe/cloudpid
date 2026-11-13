@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vite-plus/test";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import { NOTIFY_ATTRIBUTE, NOTIFY_ROOT_VARIABLE } from "@cloudpid/sandbox-image/notify";
 

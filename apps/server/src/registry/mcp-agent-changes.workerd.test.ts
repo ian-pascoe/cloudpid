@@ -13,7 +13,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { mcpChangeCheck, mcpGuard } from "./mcp-change-check.ts";
 import { mcpSettingsView } from "./mcp-settings-view.ts";

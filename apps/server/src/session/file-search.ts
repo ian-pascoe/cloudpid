@@ -10,7 +10,7 @@ import {
   rankCandidate,
   WORKSPACE_ROOT,
 } from "@cloudpid/protocol";
-import type { Context as ChordContext } from "@earendil-works/chord";
+import type { Context as ChordContext } from "@earendil-works/chord/context";
 import type { ExecutionEnv, FileListEntry } from "@earendil-works/pi-durable/env";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { PickerWrites, pickerWriteScript } from "./pickers.ts";
 
 describe("writing a local picker's value to the tab", () => {

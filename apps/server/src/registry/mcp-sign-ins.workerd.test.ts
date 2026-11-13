@@ -23,7 +23,7 @@ import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import type * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mcpServerSetAnswer } from "./mcp-registry.ts";
 import {
   mcpAccessToken,

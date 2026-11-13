@@ -5,7 +5,7 @@
 // workerd's WebSocketPair, Durable Object state and RPC are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalJsonInEffect:off globalDate:off
 import type { BrowserSource } from "agents/browser/pi";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { type SessionHost, textOf, WHERE, withSessionHost as withHost } from "./host.testing.ts";
 import { confinedToOwnerTabs } from "./owner-tab-agent.ts";
 

@@ -10,7 +10,7 @@
 import { DEFAULT_ENVIRONMENT, type EnvironmentTriggerInput } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { FakeHook } from "./github.fixture.ts";
 import type { TestTrigger } from "./object.fixture.ts";

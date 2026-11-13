@@ -9,7 +9,7 @@ import {
 import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   EXCHANGE_LIMIT,
   firstExchange,

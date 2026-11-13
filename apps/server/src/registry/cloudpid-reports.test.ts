@@ -1,7 +1,7 @@
 // What a cloudpid report posts, without GitHub (`cloudpid-reports.ts`; `docs/architecture/agent-capabilities.md` →
 // cloudpid reports, ADR-0051): which of the owner's Repos a title or body names, a row per term kind, exclusion and
 // boundary; the mentions it defuses; and cloudpid's footer.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type AgentCloudpidReportInput,
   cloudpidReportFooter,

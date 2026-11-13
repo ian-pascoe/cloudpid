@@ -8,7 +8,7 @@ import type {
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { absentToolFlatteningModels, flattenAbsentToolCalls } from "./absent-tools.ts";
 import { proxyModels } from "./models.ts";
 
