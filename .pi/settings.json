@@ -1,0 +1,57 @@
+{
+  "formatter": {
+    "formatters": {
+      "oxfmt": {
+        "command": "pnpm",
+        "args": ["exec", "vp", "fmt", "--no-error-on-unmatched-pattern", "$FILE"],
+        "files": {
+          "extensions": [
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".mjs",
+            ".cjs",
+            ".mts",
+            ".cts",
+            ".json",
+            ".jsonc",
+            ".md",
+            ".yml",
+            ".yaml",
+            ".css"
+          ]
+        },
+        "rootMarkers": ["pnpm-workspace.yaml"],
+        "requireRootMarker": true
+      }
+    }
+  },
+  "lsp": {
+    "servers": {
+      "typescript": {
+        "command": "pnpm",
+        "args": ["exec", "effect-tsgo", "tsrs", "--lsp", "--stdio"],
+        "languages": [
+          { "extensions": [".ts", ".mts", ".cts"], "languageId": "typescript" },
+          { "extensions": [".tsx"], "languageId": "typescriptreact" }
+        ],
+        "rootMarkers": ["tsconfig.json"],
+        "workspaceRootMarkers": ["pnpm-workspace.yaml"],
+        "requireRootMarker": true
+      },
+      "oxlint": {
+        "command": "pnpm",
+        "args": ["exec", "vp", "lint", "--lsp"],
+        "languages": [
+          { "extensions": [".js", ".mjs", ".cjs"], "languageId": "javascript" },
+          { "extensions": [".jsx"], "languageId": "javascriptreact" },
+          { "extensions": [".ts", ".mts", ".cts"], "languageId": "typescript" },
+          { "extensions": [".tsx"], "languageId": "typescriptreact" }
+        ],
+        "rootMarkers": ["pnpm-workspace.yaml"],
+        "requireRootMarker": true
+      }
+    }
+  }
+}
