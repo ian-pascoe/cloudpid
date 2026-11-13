@@ -4,6 +4,15 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
+// oxlint's type-aware backend: tsrs's linter, through the shim `pnpm-workspace.yaml` installs as `oxlint-tsgolint`
+// (tools/tsrs-lint-shim/bin/tsgolint.js). Vite+ fills the variable in only when it is unset, so an agent or a worktree
+// that inherited another checkout's value, or a stale one, would lint with that tsrs or fail. Assigned here, it holds
+// for every Vite+ entry point that lints: `vp lint`, `vp check`, `vp staged` and `vp lint --lsp`
+// (docs/adr/0055-vite-plus-and-pnpm.md → Consequences).
+process.env.OXLINT_TSGOLINT_PATH = fileURLToPath(
+  new URL("tools/tsrs-lint-shim/bin/tsgolint.js", import.meta.url),
+);
+
 /** Directories of other tools and agents, and the reference repositories (`.repos/`), which nothing here formats or lints. */
 const ignorePatterns = [
   ".agent/**",
