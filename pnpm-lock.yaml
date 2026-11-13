@@ -171,7 +171,7 @@ overrides:
 
 patchedDependencies:
   '@alchemy.run/cloudflare@2.0.0-beta.86': b2bdedbee15ddadb9214d5c1f3d89854091bcb93271acc54663cfde4f0d91950
-  '@cloudflare/computer@0.9.0': 20d814d45f918457b8849fb4bb5ee7b87bfbe4903a4f546949a08e539143fd5d
+  '@cloudflare/computer@0.11.1': a587c7dfb8b3c6543d994a8b775947207017ce1afa404c886e9f98544250a73a
   '@cloudflare/vitest-plugin@1.8.0': 9b38ab18c2ef3cf5dfa32ae352a4fcd018cd0efd4997d4fc4884609a49bd8c23
   '@earendil-works/pi-durable@1.5.2': e68593d04efd02c660a04230f50060a13da24f6377538fcd4b332c666a64e844
 
@@ -358,8 +358,8 @@ importers:
         specifier: 2.0.0-beta.86
         version: 2.0.0-beta.86(patch_hash=b2bdedbee15ddadb9214d5c1f3d89854091bcb93271acc54663cfde4f0d91950)(@effect/platform-node@4.1.4)(@types/node@26.6.6)(@voidzero-dev/vite-plus-core@1.4.0)(alchemy@2.0.0-beta.86)(effect@4.1.4)(typescript@5.9.3)
       '@cloudflare/computer':
-        specifier: ^0.9.0
-        version: 0.9.0(patch_hash=20d814d45f918457b8849fb4bb5ee7b87bfbe4903a4f546949a08e539143fd5d)(@cloudflare/workers-types@5.20261112.1)(@platformatic/vfs@0.5.0)(@voidzero-dev/vite-plus-core@1.4.0)(just-bash@3.6.0)(zod@4.6.7)
+        specifier: ^0.11.1
+        version: 0.11.1(patch_hash=a587c7dfb8b3c6543d994a8b775947207017ce1afa404c886e9f98544250a73a)(@cloudflare/workers-types@5.20261112.1)(@platformatic/vfs@0.5.0)(@voidzero-dev/vite-plus-core@1.4.0)(just-bash@3.6.0)(zod@4.6.7)
       '@cloudpid/browser':
         specifier: '*'
         version: link:../browser
@@ -588,8 +588,8 @@ importers:
   packages/computer-env:
     dependencies:
       '@cloudflare/computer':
-        specifier: ^0.9.0
-        version: 0.9.0(patch_hash=20d814d45f918457b8849fb4bb5ee7b87bfbe4903a4f546949a08e539143fd5d)(@cloudflare/workers-types@5.20261112.1)(@platformatic/vfs@0.5.0)(@voidzero-dev/vite-plus-core@1.4.0)(just-bash@3.6.0)(zod@4.6.7)
+        specifier: ^0.11.1
+        version: 0.11.1(patch_hash=a587c7dfb8b3c6543d994a8b775947207017ce1afa404c886e9f98544250a73a)(@cloudflare/workers-types@5.20261112.1)(@platformatic/vfs@0.5.0)(@voidzero-dev/vite-plus-core@1.4.0)(just-bash@3.6.0)(zod@4.6.7)
       '@earendil-works/chord':
         specifier: ^1.5.2
         version: 1.5.2(esbuild@0.28.2)(react@19.3.1)(ws@8.22.1)
@@ -1219,15 +1219,15 @@ packages:
       zod:
         optional: true
 
-  '@cloudflare/computer@0.9.0':
-    resolution: {integrity: sha512-T4LS7IYYzS6+Zq+sg/r2UFDIBCFeKHbRsXhjUKozFQp1cCz231WiEZgvXD/6aqjDtaAoTY1XcM7CxIPj6gPbTA==}
+  '@cloudflare/computer@0.11.1':
+    resolution: {integrity: sha512-f+UFzVb1mjAX9yxr1b8o3T1bWpQ8SAhxv4H2Vv5TqpoLBCu0d24SsseUlOMeoYH/xHMKTyIoW/d/A/mdKiDX/Q==}
     peerDependencies:
       '@cloudflare/workers-types': ^4.20260616.1 || ^5.20260921.1
       '@platformatic/vfs': '*'
       ai: ^6.0.196 || ^7.0.0
-      just-bash: ^3.0.1
+      just-bash: ^3.6.0
       vite: ^6.0.0 || ^7.0.0 || ^8.0.0
-      zod: ^4.4.3
+      zod: ^4.6.6
     peerDependenciesMeta:
       '@cloudflare/workers-types':
         optional: true
@@ -4283,9 +4283,6 @@ packages:
       typescript:
         optional: true
 
-  capnweb@0.10.0:
-    resolution: {integrity: sha512-lQ2nlzaifkqBeNfs8RLErn7NZ8FNf3vn1W7J3nSH73edWG+0B5nHZGR51S2S9HMZEuZcEypOO469dZRY/BluFA==}
-
   capnweb@0.12.0:
     resolution: {integrity: sha512-jgZ/LMtMVTi+RVlooIslH78Gg23XbDTdvcLghWx3oz17D6u5GuJARt+uhZk/wcTo+f81eeabfnow4d3zLBj+JQ==}
 
@@ -6970,9 +6967,9 @@ snapshots:
       '@modelcontextprotocol/sdk': 1.32.2(@cfworker/json-schema@4.1.6)(supports-color@10.2.2)(zod@4.6.7)
       zod: 4.6.7
 
-  '@cloudflare/computer@0.9.0(patch_hash=20d814d45f918457b8849fb4bb5ee7b87bfbe4903a4f546949a08e539143fd5d)(@cloudflare/workers-types@5.20261112.1)(@platformatic/vfs@0.5.0)(@voidzero-dev/vite-plus-core@1.4.0)(just-bash@3.6.0)(zod@4.6.7)':
+  '@cloudflare/computer@0.11.1(patch_hash=a587c7dfb8b3c6543d994a8b775947207017ce1afa404c886e9f98544250a73a)(@cloudflare/workers-types@5.20261112.1)(@platformatic/vfs@0.5.0)(@voidzero-dev/vite-plus-core@1.4.0)(just-bash@3.6.0)(zod@4.6.7)':
     dependencies:
-      capnweb: 0.10.0
+      capnweb: 0.12.0
     optionalDependencies:
       '@cloudflare/workers-types': 5.20261112.1
       '@platformatic/vfs': 0.5.0
@@ -9635,8 +9632,6 @@ snapshots:
   capnp-es@0.0.16(typescript@5.9.3):
     optionalDependencies:
       typescript: 5.9.3
-
-  capnweb@0.10.0: {}
 
   capnweb@0.12.0: {}
 

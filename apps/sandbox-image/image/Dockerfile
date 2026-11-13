@@ -6,7 +6,7 @@
 
 # Keep in step with the version of @cloudflare/computer the Workspace DO runs (apps/sandbox-image/src/index.test.ts
 # fails when they differ): the Workspace and computerd speak a sync protocol that is not stable across releases.
-ARG COMPUTERD_VERSION=0.9.0
+ARG COMPUTERD_VERSION=0.11.1
 ARG MISE_VERSION=v2026.11.7
 ARG MISE_SHA256=8f5426d9971eaf713b37509749174ca69cf2f08b8b25e389168dcfcab9cd1a4d
 
@@ -15,7 +15,7 @@ ARG MISE_SHA256=8f5426d9971eaf713b37509749174ca69cf2f08b8b25e389168dcfcab9cd1a4d
 # `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Ubuntu's the index of `ubuntu:26.04`.
 
 # A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
-FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:fd6a0bcd033345a34f9106f916898c2a63619d51c91c56f1044960a49714d17c AS computerd
+FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:b7a22f8488238a2da850a69316f5e66b2d4b1aa6f81139fdd577c28d46370c70 AS computerd
 
 # mise is fetched and checked against its digest in a stage of its own, so the final image holds only the binary.
 FROM --platform=linux/amd64 ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS mise
