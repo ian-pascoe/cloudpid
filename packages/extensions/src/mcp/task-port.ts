@@ -4,7 +4,7 @@
 import type { McpHostRequestContext } from "@cloudpid/mcp/types";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { InboxDoc, type ConversationId, type DocumentObserver } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import * as Arr from "effect/Array";
 import type { Mutable } from "effect/Types";
 import type { McpCallOrigin } from "./exchange.ts";

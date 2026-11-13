@@ -9,7 +9,7 @@ import { mcpServerNamespace, signsInOnItsOwn } from "@cloudpid/config";
 import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
 import { isJsonObject, type JsonObject, type McpServerInventory } from "@cloudpid/mcp/types";
 import { MAX_SIGN_IN_REASON } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type {
   ToolExecutionApi,
   ToolExecutionResult,

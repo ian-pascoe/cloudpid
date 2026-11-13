@@ -14,7 +14,7 @@ import {
   type WorkspaceClient,
   type WorkspaceHandle,
 } from "@cloudflare/computer";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import {
   err,
   ExecutionError,

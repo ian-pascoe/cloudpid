@@ -15,7 +15,8 @@
 // that differ, does not depend on a clock. The line-up costs about the square of it, so the bound is what keeps the
 // worst case (every line of a large file differs) near a second at most. The timeout stays as a second guard.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off -- plain functions over text and native arrays.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { decodeRecordedDiff, type RecordedDiff } from "@cloudpid/protocol/call-diff";
 import * as Diff from "diff";

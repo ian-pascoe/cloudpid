@@ -6,7 +6,7 @@ import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { loadQuickJSWasm, InlineCodemodeSandbox } from "@earendil-works/pi-codemode";
 import {

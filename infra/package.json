@@ -10,13 +10,13 @@
     "github-app:setup": "node github-app-setup.ts"
   },
   "dependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.85",
-    "@alchemy.run/github": "2.0.0-beta.85",
+    "@alchemy.run/cloudflare": "2.0.0-beta.86",
+    "@alchemy.run/github": "2.0.0-beta.86",
     "@cloudpid/app-sandbox": "*",
     "@cloudpid/config": "*",
     "@cloudpid/server": "*",
-    "@effect/platform-node": "^4.1.2",
-    "alchemy": "2.0.0-beta.85",
-    "effect": "^4.1.2"
+    "@effect/platform-node": "^4.1.4",
+    "alchemy": "2.0.0-beta.86",
+    "effect": "^4.1.4"
   }
 }

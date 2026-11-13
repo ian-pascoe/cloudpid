@@ -11,7 +11,8 @@ import {
   McpHostPagesRequired,
   type McpInputAnswer,
 } from "@cloudpid/mcp/types";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";

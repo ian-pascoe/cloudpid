@@ -1,6 +1,6 @@
 // Effect-defined pi-durable tools (ADR-0003): Effect `Schema` parameters, Chord cancellation as fiber interruption, and
 // typed failures as error results.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Chord from "@earendil-works/chord/context";
 import type {
   ToolExecutionApi,

@@ -6,7 +6,7 @@
 // source of truth for where the task stands, written in the commit that makes each move: a rerun after a restart finds
 // it by the call's id, and the markers `mcp.task` and `mcp.detached` mirror it. A `tools/call` is never sent again.
 import type { McpHostTaskStarted } from "@cloudpid/mcp/types";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails } from "./details.ts";

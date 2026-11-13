@@ -735,8 +735,13 @@ export class TestWorkspace extends Workspace {
     return structuredClone(this.#bridge?.state ?? { requests: [], healthPolls: 0, streams: [] });
   }
 
-  /** The fake bridge writes `text` on its stream `index`. */
+  /**
+   * The fake bridge writes `text` on its stream `index`, unless its reader has cancelled it: workerd tells the stream of a
+   * cancel at once since 1.20261110, where it waited for the next chunk before.
+   */
   bridgeSend(index: number, text: string): void {
+    if (this.#bridge?.state.streams[index]?.cancelled === true) return;
+
     this.#bridge?.controllers[index]?.enqueue(new TextEncoder().encode(text));
   }
 

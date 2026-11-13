@@ -21,7 +21,7 @@ import {
   skillField,
   skillSourceText,
 } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";

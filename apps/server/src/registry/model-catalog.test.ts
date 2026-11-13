@@ -51,7 +51,7 @@ describe("the Model catalog the Registry keeps", () => {
     expect(await keeper.refresh()).toEqual({ status: "fetched", models: 10 });
     expect(keeper.current().fetchedAt).toBe(1_000);
     expect(keeper.current().models.map((model) => model.id)).toContain(
-      "anthropic/claude-fable-5-2",
+      "anthropic/claude-fable-5-3",
     );
     expect(
       keeper.current().models.find((model) => model.id === "anthropic/claude-fable-5-dd-5-tpg"),

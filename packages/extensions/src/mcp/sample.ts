@@ -20,7 +20,7 @@ import type { McpSampledMode } from "@cloudpid/config";
 import type { McpDeferredSample } from "./deferred-questions.ts";
 import type { ClockHold } from "./elicit.ts";
 import type { McpElicitationSource } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type {
   ConversationId,
   ToolDiagnostic,

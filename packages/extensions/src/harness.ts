@@ -14,7 +14,7 @@ import {
   MAX_PAGE_CHARS,
   type Surface,
 } from "@cloudpid/protocol/harness-tools";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Effect from "effect/Effect";
 import type { RunChange } from "./environment.ts";
 import { cutStored, type Stored, storedBytes } from "./stored-bytes.ts";

@@ -26,7 +26,7 @@ import {
   type McpTaskSnapshot,
 } from "@cloudpid/mcp/types";
 import { declaresSampling, samplingOf } from "@cloudpid/config";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";

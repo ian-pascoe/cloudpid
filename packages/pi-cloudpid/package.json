@@ -13,15 +13,15 @@
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.13.0",
     "@modelcontextprotocol/client": "2.4.0",
-    "effect": "^4.1.2"
+    "effect": "^4.1.4"
   },
   "devDependencies": {
     "@cloudpid/config": "*",
     "@cloudpid/mcp": "*",
     "@cloudpid/protocol": "*",
-    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
     "@types/node": "^26.6.6",
-    "typebox": "1.4.4"
+    "typebox": "1.4.6"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

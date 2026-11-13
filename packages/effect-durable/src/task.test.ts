@@ -1,6 +1,6 @@
 // pi-durable's Harness is Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Chord from "@earendil-works/chord/context";
 import { defineExtension, type Task, type TaskRuntime } from "@earendil-works/pi-durable";
 import * as Context from "effect/Context";

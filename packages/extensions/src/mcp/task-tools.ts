@@ -7,7 +7,7 @@
 // besides the inline window: at most 30 minutes, one open wait per task, its deadline kept in a memo so a rerun after a
 // restart waits for what is left; a result it returns is claimed, and the follower never posts it.
 import type { JsonObject } from "@cloudpid/mcp/types";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
   ToolExecutionApi,

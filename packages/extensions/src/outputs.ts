@@ -12,7 +12,7 @@ import type {
   ApprovalOutcome,
   ScopeRef,
 } from "@cloudpid/protocol/harness-tools";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";

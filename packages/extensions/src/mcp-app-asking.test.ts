@@ -14,7 +14,7 @@ import {
   McpHostTaskState,
   ServerError,
 } from "@cloudpid/mcp/types";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";

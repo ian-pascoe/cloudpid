@@ -1,5 +1,5 @@
 // A page of the model proxy's `GET /v1/models`, as Commissary answered it on 2026-11-09, cut to ten of its 120 models:
-// Claude models pi-ai's catalog has (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5, Opus 4.6), one it does not (Fable 5.2),
+// Claude models pi-ai's catalog has (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5, Opus 4.6), one it does not (Fable 5.3, renamed from the page's Fable 5.2 once pi-ai 1.5.2 added that),
 // Claude models no family template fits (Opus 4.6 Thinking, 3.5 Haiku), and two non-Claude models under the aliases
 // the proxy serves them as (GPT-5, SubQ Snap).
 export const COMMISSARY_MODELS_PAGE = {
@@ -24,11 +24,11 @@ export const COMMISSARY_MODELS_PAGE = {
       max_tokens: 128000,
     },
     {
-      id: "claude-fable-5-2",
+      id: "claude-fable-5-3",
       object: "model",
       owned_by: "opencode",
       type: "model",
-      display_name: "Claude Fable 5.2",
+      display_name: "Claude Fable 5.3",
       max_input_tokens: 1000000,
       max_tokens: 128000,
     },

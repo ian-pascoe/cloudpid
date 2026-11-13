@@ -1,7 +1,7 @@
 // What the Workspace Session tests share (`session.workerd.test.ts`, `skills.workerd.test.ts`): a Session on a Workspace
 // that runs a scripted model's tool calls. It is not a test file, so importing it registers no tests.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off missingPipeableSignature:off
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { expect } from "vite-plus/test";

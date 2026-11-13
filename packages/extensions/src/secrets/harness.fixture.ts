@@ -2,7 +2,7 @@
 // stand-in tools, driven by a scripted model whose requests are recorded. Time is a `TestClock`, so a test can pass a
 // Secret's lifetime at once. pi-durable's Harness and the faux provider are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off globalRandom:off globalJsonInEffect:off strictEffectProvide:off
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AssistantMessage,

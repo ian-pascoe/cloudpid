@@ -11,7 +11,7 @@ import {
   type McpStructuredOutput,
   MiB,
 } from "@cloudpid/mcp/types";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";

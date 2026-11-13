@@ -7,15 +7,15 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.85",
+    "@alchemy.run/cloudflare": "2.0.0-beta.86",
     "@cloudpid/protocol": "*",
     "@cloudpid/server": "*",
     "@cloudpid/telemetry": "*",
-    "alchemy": "2.0.0-beta.85",
-    "effect": "^4.1.2"
+    "alchemy": "2.0.0-beta.86",
+    "effect": "^4.1.4"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.5.1",
+    "@cloudflare/vitest-plugin": "^1.8.0",
     "@cloudpid/config": "*",
     "vitest": "5.0.5"
   }

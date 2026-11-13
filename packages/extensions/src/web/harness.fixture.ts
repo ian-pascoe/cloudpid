@@ -2,7 +2,7 @@
 // driving `web_search` and `web_fetch` through real tool calls. pi-durable's Harness and the faux provider are
 // Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off strictEffectProvide:off preferEffectArray:off schemaSync:off globalJsonInEffect:off
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
 import {

@@ -6,7 +6,7 @@
 // with `runProgram` / `runSized`. pi-durable's Harness and the faux provider are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createModels,

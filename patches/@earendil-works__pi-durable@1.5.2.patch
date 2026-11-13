@@ -1,8 +1,8 @@
 diff --git a/dist/codemode/codemode.d.ts b/dist/codemode/codemode.d.ts
-index 429bfd1e491008edca6b9ff146ab25a50baa1d9e..fdbc3c1e245a226eb6eb02d0b1f8b353b022a06d 100644
+index 18b1278a42809e0e28593775746249df5673edb7..a61d645d37219171f8055c070fed88ca6f3951b6 100644
 --- a/dist/codemode/codemode.d.ts
 +++ b/dist/codemode/codemode.d.ts
-@@ -138,6 +138,11 @@ export type CodemodeNestedCall = {
+@@ -139,6 +139,11 @@ export type CodemodeNestedCall = {
   */
  export type CodemodeToolDetails = {
      calls: CodemodeNestedCall[];
@@ -15,10 +15,10 @@ index 429bfd1e491008edca6b9ff146ab25a50baa1d9e..fdbc3c1e245a226eb6eb02d0b1f8b353
      fullOutputPath?: string;
  };
 diff --git a/dist/codemode/codemode.js b/dist/codemode/codemode.js
-index 9ef1da0d2b59fd84ee03aae503c308cf73f6d641..8b28888619e37c70f6be4659f2083c40ce5e2ba0 100644
+index aa51bd52815007c82b7425d467b8fd9c0e0b0cd2..4e1e97c76f724e58b35ef57d6293fbec72305251 100644
 --- a/dist/codemode/codemode.js
 +++ b/dist/codemode/codemode.js
-@@ -84,6 +84,11 @@ export const CodemodeStoreDoc = defineDoc({
+@@ -48,6 +48,11 @@ export const CodemodeStoreDoc = defineDoc({
  });
  const ARGS_PREVIEW_CHARS = 200;
  const ERROR_PREVIEW_CHARS = 500;
@@ -30,7 +30,7 @@ index 9ef1da0d2b59fd84ee03aae503c308cf73f6d641..8b28888619e37c70f6be4659f2083c40
  function cut(text, max) {
      // A copy: the row outlives the arguments or error text it previews.
      return text.length > max ? `${ownedSlice(text, 0, max - 3)}...` : text;
-@@ -389,7 +394,8 @@ class CodemodeCall {
+@@ -353,7 +358,8 @@ class CodemodeCall {
              generatedImages: this.generatedImages,
              wallMs: this.api.now() - this.start.startedAt,
              maxOutputTokens: this.start.maxOutputTokens,
@@ -40,7 +40,7 @@ index 9ef1da0d2b59fd84ee03aae503c308cf73f6d641..8b28888619e37c70f6be4659f2083c40
              limits: OUTPUT_LIMITS,
              write: this.outputFiles(),
          });
-@@ -720,11 +726,33 @@ class CodemodeCall {
+@@ -684,11 +690,33 @@ class CodemodeCall {
              row.error = cut(error, ERROR_PREVIEW_CHARS);
      }
      /** The rows in call order; calls still running when the script ended were cancelled. */
@@ -78,10 +78,10 @@ index 9ef1da0d2b59fd84ee03aae503c308cf73f6d641..8b28888619e37c70f6be4659f2083c40
      async callGlobal(call) {
          const discovery = DISCOVERY_GLOBALS.includes(call.name);
 diff --git a/dist/harness/scheduler.js b/dist/harness/scheduler.js
-index 365ea3ab42dd4406ab11a03d6702b238dfd0776b..b0d0c581df0904bbd5fe957bfe7706dee023d0d8 100644
+index df651a4f8f0769d10daee02292ea91380b158d5e..367608bb524297b454853d8010cd919d951a79cd 100644
 --- a/dist/harness/scheduler.js
 +++ b/dist/harness/scheduler.js
-@@ -2537,6 +2537,25 @@ export class TaskScheduler {
+@@ -2566,6 +2566,25 @@ export class TaskScheduler {
                      return candidate;
                  }, rest[1]);
              }),
@@ -108,7 +108,7 @@ index 365ea3ab42dd4406ab11a03d6702b238dfd0776b..b0d0c581df0904bbd5fe957bfe7706de
              watchDoc: ((...args) => this.#watchDoc(invocation, args)),
              snapshot: ((...args) => this.#read(invocation, () => sessionMethod(this.#session, "snapshot")(...args))),
 diff --git a/dist/harness/tool.js b/dist/harness/tool.js
-index 225b96f1174dfb71a8efe4a589041ee377bf78c7..cc81a79f1bb16d3058180bd7e028a0666109e2d7 100644
+index 2da76582241fad1f38970312a9135c290333560e..63c0400f6da553aae18fcdcb36ea0db372db8961 100644
 --- a/dist/harness/tool.js
 +++ b/dist/harness/tool.js
 @@ -343,6 +343,11 @@ async function run(runtime, input, call, tool, args, context) {
@@ -124,10 +124,10 @@ index 225b96f1174dfb71a8efe4a589041ee377bf78c7..cc81a79f1bb16d3058180bd7e028a066
              const child = options.ownership.kind === "task" && !resumes ? { abandonOnRestart: true, ...options } : options;
              let id;
 diff --git a/dist/harness/types.d.ts b/dist/harness/types.d.ts
-index eb64e474162b158a43563e6c68d8ffea8c18b74a..05e2d9155b051c57fcb992204112d4b4d2d34d77 100644
+index 7f4a0ba59df6d5870248c60c055dd188fdab51c4..cc723981f0528d58716240ab4f06e91f16b4b1c7 100644
 --- a/dist/harness/types.d.ts
 +++ b/dist/harness/types.d.ts
-@@ -226,6 +226,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
+@@ -228,6 +228,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
      commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context, options?: CommitOptions): Promise<T>;
      memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
      memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
@@ -144,10 +144,10 @@ index eb64e474162b158a43563e6c68d8ffea8c18b74a..05e2d9155b051c57fcb992204112d4b4
       * Create a task in one commit. A child task of a tool that is not replay-safe defaults to `abandonOnRestart`: the
       * tool never resumes after a restart, so nothing awaits the child then.
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index b43143c5e7998b36034ffe9577f74f3d88ab932b..24aa8b21188229bca19acba8758e762d94239a2f 100644
+index 783d56468bdd1c4d2f07e1e58a38b9ae004c2e97..95f281790463f7de1639476d4fbfa22c64b85b21 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -255,6 +255,12 @@ export interface TaskRuntime<I, S, R, H extends object> extends DocumentObserver
+@@ -257,6 +257,12 @@ export interface TaskRuntime<I, S, R, H extends object> extends DocumentObserver
      memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
      /** Store `candidate` unless a memo already exists; return the durable winner. */
      memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;

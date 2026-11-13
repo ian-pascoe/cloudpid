@@ -7,7 +7,7 @@
 // leaves a model-visible `cloudpid.mcp-task-notice` and starts no Run. Every sleep commit resets pi-durable's restart
 // count, so evictions and deploys never end it; the abort sends `tasks/cancel`. It never runs in `McpHost`, whose
 // alarm schedules no work: it only holds the object in memory while a discovery is in flight.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import {
   type ConversationId,
   defineTask,

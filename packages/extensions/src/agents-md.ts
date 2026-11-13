@@ -17,7 +17,7 @@
 // so after a Handoff or a compaction took a result out, the instructions it showed are added again at the next touch.
 // A call of a script (`codemode`) leaves no result in the context, so it adds nothing.
 import { callDurable, effectHook, frozenSection, Harness } from "@cloudpid/effect-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import {

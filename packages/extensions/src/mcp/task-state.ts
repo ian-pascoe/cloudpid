@@ -5,7 +5,7 @@
 // where a task stands, and the markers (`mcp.task`, `mcp.detached`) only mirror it. The server's `taskId` lives here and
 // in the follower's input, never in anything a model, a client, a log or a span is given: only the handle
 // (`mcp-task-<n>`, cloudpid's own) leaves this file.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
   type ConversationId,
   defineDoc,

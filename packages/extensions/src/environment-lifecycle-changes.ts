@@ -29,7 +29,7 @@ import {
   type SessionHarnessToolName,
   type Surface,
 } from "@cloudpid/protocol/harness-tools";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

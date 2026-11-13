@@ -23,10 +23,10 @@ allowBuilds:
   workerd: true
 
 patchedDependencies:
+  "@alchemy.run/cloudflare@2.0.0-beta.86": patches/@alchemy.run__cloudflare@2.0.0-beta.86.patch
   "@cloudflare/computer@0.9.0": patches/@cloudflare__computer@0.9.0.patch
-  "@cloudflare/vitest-plugin@1.5.1": patches/@cloudflare__vitest-plugin@1.5.1.patch
-  "@alchemy.run/cloudflare@2.0.0-beta.85": patches/@alchemy.run__cloudflare@2.0.0-beta.85.patch
-  "@earendil-works/pi-durable@1.5.0": patches/@earendil-works__pi-durable@1.5.0.patch
+  "@cloudflare/vitest-plugin@1.8.0": patches/@cloudflare__vitest-plugin@1.8.0.patch
+  "@earendil-works/pi-durable@1.5.2": patches/@earendil-works__pi-durable@1.5.2.patch
 
 overrides:
   # Vite+ (docs/adr/0055-vite-plus-and-pnpm.md) brings its own Vite core and Vitest: every package that asks for `vite`

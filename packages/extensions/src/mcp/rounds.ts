@@ -10,7 +10,7 @@ import type {
   McpTaskInputResponses,
 } from "@cloudpid/mcp/types";
 import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";

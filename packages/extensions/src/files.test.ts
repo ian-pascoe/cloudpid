@@ -2,7 +2,7 @@
 // flags `details` sets), and where a result is cut. The calls' Promise-based harness makes this file Promise-based too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off strictEffectProvide:off preferEffectArray:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { err, FileError, ok } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";

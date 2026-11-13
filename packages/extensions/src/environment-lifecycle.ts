@@ -9,7 +9,7 @@
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange, EnvironmentRepo } from "@cloudpid/protocol";
 import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";

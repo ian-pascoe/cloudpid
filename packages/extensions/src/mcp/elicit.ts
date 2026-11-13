@@ -25,7 +25,7 @@ import {
 } from "@cloudpid/mcp/types";
 import { checkElicitationUrl, type ElicitationPageProblem } from "@cloudpid/mcp/elicitation-url";
 import type { ElicitationContent, ElicitationForm, McpElicitationSource } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type {
   ConversationId,
   ToolDiagnostic,

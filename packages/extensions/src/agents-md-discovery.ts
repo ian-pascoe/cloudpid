@@ -6,7 +6,7 @@
 // so a lookup costs one RPC however deep the directory is. It is a module of its own because the Workspaces Worker loads
 // it, and must not load the harness with it.
 // @effect-diagnostics missingPipeableSignature:off
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";

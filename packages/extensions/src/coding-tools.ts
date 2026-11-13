@@ -18,7 +18,7 @@
 // The `coding_tools` section tells the model to use `read`, `edit` and `write` for files rather than shell commands or
 // scripts, and to leave the Container to the commands that need it.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import {
   defineExtension,
   defineTool,

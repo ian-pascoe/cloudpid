@@ -1,5 +1,5 @@
 // @effect-diagnostics strictEffectProvide:off -- each test is its own entry point, run on a test clock.
-// The patched alchemy retry around a new Worker's deployments read (patches/@alchemy.run__cloudflare@2.0.0-beta.85.patch,
+// The patched alchemy retry around a new Worker's deployments read (patches/@alchemy.run__cloudflare@2.0.0-beta.86.patch,
 // docs/development/dependencies.md): Cloudflare can answer `WorkerNotFound` (10007) for a script it registered moments
 // ago, which failed the first Preview deploy of a new stage (#615).
 import { retryDeploymentsRead } from "@alchemy.run/cloudflare/Workers/WorkerProvider";

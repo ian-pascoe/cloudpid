@@ -17,7 +17,8 @@ import {
   TimedOut,
   TooLarge,
 } from "@cloudpid/mcp/types";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ImageContent, JsonValue as DetailsValue, TextContent } from "@earendil-works/pi-ai";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";

@@ -2,7 +2,7 @@
 // `Result`, and the call's abort honored before and after it.
 // pi-durable's `ExecutionEnv` is Promise-native and stays so (ADR-0003); this adapter follows it.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { err, FileError, type Result } from "@earendil-works/pi-durable/env";
 import {
   type EnvRequest,
