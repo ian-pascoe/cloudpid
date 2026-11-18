@@ -11,6 +11,16 @@ linkWorkspacePackages: true
 minimumReleaseAgeExclude:
   - "@pierre/diffs@1.6.2"
   - "@pierre/highlights@0.3.0"
+  - "@voidzero-dev/vite-plus-core@8.3.8000"
+  - "@voidzero-dev/vite-plus-darwin-arm64@1.7.0"
+  - "@voidzero-dev/vite-plus-darwin-x64@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.7.0"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@1.7.0"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.7.0"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.7.0"
+  - vite-plus@1.7.0
 
 allowBuilds:
   "@google/genai": true
@@ -32,13 +42,13 @@ overrides:
   # Vite+ (docs/adr/0055-vite-plus-and-pnpm.md) brings its own Vite core and Vitest: every package that asks for `vite`
   # or `vitest` gets those, so there is one of each. Plain versions, not a catalog: npm's production install of the root
   # cannot read `catalog:`, as it cannot read `workspace:`.
-  vite@*: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite@*: npm:@voidzero-dev/vite-plus-core@8.3.8000
   vitest@*: 5.0.5
+  # Vite+ 1.7 asks for 5.1; a second copy gives `vite-plus/test` a second Vitest (docs/development/dependencies.md).
+  "@vitest/browser-preview": 5.0.5
   # One `ws` for every package: chord pins 8.21.0 and the rest resolve 8.22, and each `ws` is a peer variant of alchemy,
   # whose two copies then fail the typecheck of `infra` (`AlchemyContext | AlchemyContext`).
   ws: 8.22.1
-  # Vite+'s type-aware lint backend runs tsrs's linter instead of tsgolint (tools/tsrs-lint-shim/bin/tsgolint.js).
-  oxlint-tsgolint: link:./tools/tsrs-lint-shim
 
 # Vite+'s core stands in for `vite`, and packages that peer an older `vite` or `vitest` accept it (`vp migrate`'s rule).
 peerDependencyRules:

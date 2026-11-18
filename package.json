@@ -26,9 +26,8 @@
     "@commitlint/config-conventional": "21.2.4",
     "@effect/tsgo": "0.68.1",
     "skills": "^1.8.1",
-    "tsrs": "0.25.0-ts7.1.0-beta",
     "typescript": "^7.0.2",
-    "vite-plus": "1.4.0",
+    "vite-plus": "1.7.0",
     "vitest": "5.0.5"
   },
   "commitlint": {
