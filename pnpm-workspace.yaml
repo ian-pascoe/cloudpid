@@ -7,7 +7,8 @@ packages:
 # (`pi install git:github.com/ian-pascoe/cloudpid`) can read them; this links them to the workspace's packages.
 linkWorkspacePackages: true
 
-# pnpm's default minimum release age (a day) holds; these vetted versions are exempt.
+# pnpm's default minimum release age (a day) holds; these vetted versions are exempt (an entry can go once its version
+# is a day old, or with the upgrade that replaces it).
 minimumReleaseAgeExclude:
   - "@pierre/diffs@1.6.2"
   - "@pierre/highlights@0.3.0"
