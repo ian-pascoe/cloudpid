@@ -990,11 +990,13 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
           const deadline = (yield* Clock.currentTimeMillis) + waitMs;
 
-          const waited = yield* backend
-            .wait(id, after === undefined ? { deadline } : { after, deadline })
-            // The RPC was cut on the Session's side (a deploy or an eviction cut it, or it could not be reached): the
-            // Run goes on, so the wait says so and hands the caller's cursor back instead of failing.
-            .pipe(Effect.catchCause(() => interruptedOutcome(id, after)));
+          const waited = yield* (
+            backend
+              .wait(id, after === undefined ? { deadline } : { after, deadline })
+              // The RPC was cut on the Session's side (a deploy or an eviction cut it, or it could not be reached): the
+              // Run goes on, so the wait says so and hands the caller's cursor back instead of failing.
+              .pipe(Effect.catchCause(() => interruptedOutcome(id, after)))
+          );
 
           return waited.ok
             ? apiOk<WaitResult>({
