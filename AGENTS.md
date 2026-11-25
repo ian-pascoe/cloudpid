@@ -11,12 +11,12 @@
 pnpm installs dependencies (`pnpm install`, configured in `pnpm-workspace.yaml`; the version is `packageManager`'s and `mise.toml`'s), and Vite+ (`vite-plus`, whose CLI is `vp`) formats, lints and runs the tasks ([ADR-0055](docs/adr/0055-vite-plus-and-pnpm.md)). Typecheck is `effect-tsgo tsrs`, the Effect-patched native checker ([ADR-0028](docs/adr/0028-bun-for-installs-and-scripts-and-tsrs-for-typecheck.md)). Run scripts with `pnpm run` (one package's: `pnpm --filter @cloudpid/<dir> run <script>`) and binaries with `pnpm exec`.
 
 - **Always the project's own `vp`**: `pnpm exec vp …`, or a `pnpm run` script. mise's `npm:vite-plus` is a second copy of the toolchain, whose `vp test` brings its own Vitest, and the workerd projects then fail with `Cannot read properties of undefined (reading 'config')`. The standalone global CLI from vite.plus hands commands to the project's copy.
-- **Root scripts**: `pnpm run check` runs `vp check` (format, lint and type-aware lint, once at the root), then every package's `typecheck` and `test` (`vp run -r`). `pnpm run typecheck`, `pnpm test`, `pnpm run lint`, `pnpm run format`, `pnpm run format:check` and `pnpm run build` run one part.
+- **Root scripts**: `pnpm run check` runs `vp check` (format, lint and type-aware lint, once at the root), then every package's `typecheck` and `test` (`vp run -r`). CI runs it; agents do not (see _Agents run focused checks only_). `pnpm run typecheck`, `pnpm test`, `pnpm run lint`, `pnpm run format`, `pnpm run format:check` and `pnpm run build` run one part.
 - **Tasks**: each package's `typecheck` and `test` (`vitest run`) are Vite Task tasks, cached. Vite Task tracks the files a task reads, so a change to another package's source reruns the tasks that read it. A test's cache is keyed on the variables `packages/config/src/tasks.ts` names (`CI`, the live tests' and benchmarks' switches, `UPDATE_SNAPSHOT`); other variables reach it without keying the cache. `apps/sandbox-image`'s `test` is uncached: on macOS a cached task runs uutils' coreutils, which its memory-guard tests fail under. Run one package's task with `pnpm exec vp run @cloudpid/protocol#test`, and one test file with `cd <package dir> && pnpm exec vitest run <file>` (for workerd tests, add `--project workerd`).
 - **Focused lint and format**: `pnpm exec vp lint <files>` (type-aware rules included) and `pnpm exec vp fmt --check <files>` (`pnpm exec vp fmt <files>` writes).
 - `pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set.
 
-**In the cloudpid harness, run focused checks only.** If you are an agent in a cloudpid Workspace (the repo is under `/workspace`, next to `/workspace/.cloudpid`), do not run `pnpm run check`, a whole-repo `vp check`, a root `test`, or a whole package's test suite, and do not have your sub-agents run them. CI runs the full suite on every push. Run only:
+**Agents run focused checks only.** Every agent in this repo, whether in a cloudpid Workspace or on a shared machine, runs no `pnpm run check`, whole-repo `vp check`, `vp run -r …`, root `test`, whole package test suite or background check unless the user asks, and has no sub-agent run one. CI runs the full suite and repo-wide checks on every pull request. Run only:
 
 - the typecheck of the packages you touched (`pnpm exec vp run @cloudpid/<dir>#typecheck`);
 - `pnpm exec vp lint <files>` and `pnpm exec vp fmt --check <files>` on the files you changed;
@@ -49,9 +49,8 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 
 Vite+ runs the hooks in `.vite-hooks/`, installed by `prepare` (`vp config`); `VP_GIT_HOOKS=0` disables them.
 
-- **pre-commit**: `vp staged` runs `vp lint --fix` and `vp fmt` on staged files (the root `vite.config.ts`'s `staged`).
+- **pre-commit**: `vp staged` runs `vp lint --fix` and `vp fmt` on staged files (the root `vite.config.ts`'s `staged`). No pre-push hook: typecheck, tests and the build are CI's.
 - **commit-msg**: commitlint requires [Conventional Commits](https://www.conventionalcommits.org/) (`feat: …`, `fix: …`, `chore: …`).
-- **pre-push**: `vp check` (format, lint and type-aware lint) and `vp run -r typecheck` (cached by Vite Task). Tests run in CI.
 - **post-merge / post-checkout**: `vp install --frozen-lockfile` when `pnpm-lock.yaml` changed, otherwise a reference-repository sync.
 
 ## Agent skills
